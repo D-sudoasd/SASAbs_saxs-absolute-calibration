@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saxsabs"
+version = "0.1.0"
+description = "SAXS absolute intensity calibration and robust 1D profile utilities"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "BSD-3-Clause" }
+authors = [
+  { name = "BL19B2 Team" }
+]
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0"
+]
+
+[project.optional-dependencies]
+io = ["fabio>=2023.0"]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.5"
+]
+
+[project.scripts]
+saxsabs = "saxsabs.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100

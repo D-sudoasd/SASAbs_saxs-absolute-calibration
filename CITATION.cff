@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "saxsabs"
+version: "0.1.0"
+date-released: "2026-02-25"
+type: software
+authors:
+  - family-names: "BL19B2"
+    given-names: "Team"
+repository-code: "https://github.com/your-org/saxsabs"
+license: "BSD-3-Clause"

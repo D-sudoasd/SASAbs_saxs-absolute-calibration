@@ -1,0 +1,2 @@
+period_start,period_end,calibration_runs,external1d_runs,unique_users,time_before_min,time_after_min,fail_rate_before_pct,fail_rate_after_pct,manual_interventions,metadata_log_coverage_pct,cli_replay_coverage_pct,notes
+2026-01-01,2026-03-31,,,,,,,,,,
