@@ -125,7 +125,7 @@ software is organized into four layers:
 
 ![Calibration workflow of saxsabs. Input data (2D images, instrument metadata, and a reference standard from the pluggable registry) flow through header parsing, normalization, 2D background subtraction, pyFAI integration, and robust K-factor estimation to produce calibrated 1D profiles with structured audit outputs. Optional post-processing steps include buffer subtraction and multi-format export.](fig_workflow.png){#fig:workflow width="95%"}
 
-This architecture enables unit testing of core functions independently of the GUI (50 automated tests across 3 OS × 4 Python versions), while preserving the GUI for interactive beamline use (\autoref{fig:gui}). The incremental migration from monolithic script to modular library avoids abrupt workflow disruption.
+This architecture enables unit testing of core functions independently of the GUI (50 automated tests across 3 OS × 4 Python versions), while preserving the GUI for interactive beamline use (\autoref{fig:gui}). The incremental migration from monolithic script to modular library avoids abrupt workflow disruption. For public reproducibility, the repository includes a deterministic minimal anonymized 2D package (`examples/minimal_2d/`) that demonstrates 2D image reduction, robust K-factor estimation, absolute scaling, and canSAS/NXcanSAS export without proprietary beamline files.
 
 ![The saxsabs graphical user interface in English mode, showing the four-tab layout: K-Factor Calibration, Batch Processing, External 1D Conversion, and Help.](fig_gui.png){#fig:gui width="95%"}
 
@@ -193,11 +193,11 @@ The GUI batch-processing pipeline automates the complete chain from raw 2D image
 
 # Research impact statement
 
-`saxsabs` has been deployed for routine absolute intensity calibration at the Institute of Metal Research, Chinese Academy of Sciences, processing data from multiple synchrotron beamlines. It has replaced manual spreadsheet-based procedures, reducing operator intervention and eliminating errors from inconsistent header parsing.
+`saxsabs` has been deployed for routine absolute intensity calibration at the Institute of Metal Research, Chinese Academy of Sciences, processing data from multiple synchrotron beamlines. It has replaced manual spreadsheet-based procedures, reducing operator intervention and substantially reducing risk from inconsistent header parsing.
 
 The software defines its impact along four dimensions:
 
-- **Operational efficiency**: Calibration previously requiring manual metadata extraction and iterative K-factor fitting is now a single CLI invocation or GUI session, reducing processing time from minutes to seconds.
+- **Operational efficiency**: Calibration previously requiring manual metadata extraction and iterative K-factor fitting is now a single CLI invocation or GUI session, reducing typical analysis turnaround and manual bookkeeping overhead.
 - **Reliability**: Defensive parsing and format-agnostic ingestion have eliminated silent data-misinterpretation failures when switching between instruments.
 - **Traceability**: Every run produces structured, deterministic output suitable for version control and audit.
 - **Interoperability**: Native canSAS XML and NXcanSAS HDF5 export enables seamless data exchange with downstream analysis tools (SasView, ATSAS, etc.) and institutional data repositories.

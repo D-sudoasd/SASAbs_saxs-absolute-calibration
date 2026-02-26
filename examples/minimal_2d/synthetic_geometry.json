@@ -1,0 +1,8 @@
+{
+  "description": "Anonymized synthetic SAXS detector image for reviewer reproducibility",
+  "pixel_size_m": 0.0001,
+  "distance_m": 1.6,
+  "wavelength_A": 1.033,
+  "beam_center_px": [4.0, 4.0],
+  "q_per_pixel_Ainv": 0.005
+}

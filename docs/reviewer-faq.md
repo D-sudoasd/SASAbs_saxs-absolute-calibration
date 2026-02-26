@@ -10,7 +10,21 @@ Core logic is exposed as importable APIs and CLI commands. Tests run headlessly 
 
 ## Data cannot be fully public. How is reproducibility addressed?
 
-The repository includes synthetic examples and deterministic test cases. A manual verification checklist documents expected outputs and tolerances.
+The repository includes synthetic examples, a deterministic minimal 2D
+end-to-end package (`examples/minimal_2d/`), and automated tests. A manual
+verification checklist documents exact commands and expected acceptance ranges.
+
+## Can reviewers verify an end-to-end 2D workflow without beamline data?
+
+Yes. Run:
+
+```bash
+python examples/minimal_2d/run_minimal_2d_pipeline.py
+```
+
+The script produces deterministic outputs (CSV/TSV/canSAS XML and optional
+NXcanSAS HDF5) and writes `summary.json` with an expected `k_factor` range of
+`[1.99, 2.01]`.
 
 ## What is the software boundary?
 

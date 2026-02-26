@@ -38,7 +38,7 @@ gui = [
   "sv-ttk>=2.6",
 ]
 io = ["fabio>=2023.0"]
-hdf5 = ["h5py>=3.8", "lxml>=4.9"]
+hdf5 = ["h5py>=3.8"]
 dev = [
   "pytest>=8.0",
   "ruff>=0.5",
@@ -46,7 +46,7 @@ dev = [
 
 [project.scripts]
 saxsabs = "saxsabs.cli:main"
-saxsabs-workbench = "saxsabs_workbench:main"
+saxsabs-workbench = "saxsabs.workbench_launcher:main"
 
 [project.urls]
 Homepage = "https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration"

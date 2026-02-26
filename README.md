@@ -85,6 +85,9 @@ saxsabs-workbench --version
 saxsabs-workbench --lang zh
 ```
 
+Note: `saxsabs-workbench` expects `SASAbs.py` to be available in the current
+repository workspace.
+
 ## Quick CLI examples
 
 Compute normalization factor:
@@ -147,6 +150,11 @@ pytest -q
 50 automated tests across 3 OS × 4 Python versions (3.10–3.13).
 
 Manual workflow verification checklist is in `examples/manual-verification.md`.
+
+Minimal anonymized 2D end-to-end reproducibility package:
+
+- `examples/minimal_2d/README.md`
+- `python examples/minimal_2d/run_minimal_2d_pipeline.py`
 
 ## Documentation
 

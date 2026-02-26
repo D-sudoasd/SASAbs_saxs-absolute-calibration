@@ -40,7 +40,7 @@
 
 - [x] Synthetic examples for parser/calibration logic (expanded to 36 points)
 - [x] Public anonymized mini-dataset or documented legal/data constraints statement
-      (synthetic 36-point examples serve as open test data; no proprietary data required)
+      (includes deterministic minimal 2D package in `examples/minimal_2d/`; no proprietary data required)
 
 ## Pre-submission dry run
 

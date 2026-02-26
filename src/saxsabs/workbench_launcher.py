@@ -1,3 +1,5 @@
+"""Installed launcher for the SAXSAbs Workbench GUI."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,12 +11,13 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
 
+from . import __version__
+
 
 APP_NAME = "SAXSAbs Workbench"
-APP_VERSION = "1.0.0"
+APP_VERSION = __version__
 SUPPORTED_LANGUAGES = ("en", "zh")
-BASE_DIR = Path(__file__).resolve().parent
-LOG_PATH = BASE_DIR / "logs" / "saxsabs_workbench.log"
+LOG_PATH = Path.cwd() / "logs" / "saxsabs_workbench.log"
 
 
 def _setup_logging() -> None:
@@ -29,12 +32,16 @@ def _setup_logging() -> None:
 
 def _resolve_app_source() -> Path:
     candidates = [
-        BASE_DIR / "SASAbs.py",
+        Path.cwd() / "SASAbs.py",
+        Path(__file__).resolve().parents[2] / "SASAbs.py",
     ]
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    raise FileNotFoundError("Cannot find main application script (SASAbs.py)")
+    raise FileNotFoundError(
+        "Cannot find SASAbs.py. Run this command inside the repository root, "
+        "or launch the GUI with: python saxsabs_workbench.py"
+    )
 
 
 def _load_legacy_module():
@@ -47,7 +54,7 @@ def _load_legacy_module():
     return module
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
     _setup_logging()
     parser = argparse.ArgumentParser(description=APP_NAME)
     parser.add_argument("--session", type=str, default="", help="Path to session json")
@@ -78,7 +85,7 @@ if __name__ == "__main__":
     except Exception:
         err = traceback.format_exc()
         logging.exception("Launcher failed")
-        (Path(__file__).resolve().parent / "launch_error.log").write_text(err, encoding="utf-8")
+        (Path.cwd() / "launch_error.log").write_text(err, encoding="utf-8")
         try:
             root = tk.Tk()
             root.withdraw()

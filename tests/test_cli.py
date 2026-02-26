@@ -50,3 +50,16 @@ def test_cli_estimate_k(tmp_path: Path, capsys: pytest.CaptureFixture[str], monk
     main()
     out = json.loads(capsys.readouterr().out)
     assert out["k_factor"] == pytest.approx(2.0, rel=1e-6)
+
+
+def test_cli_parse_external1d(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch):
+    profile = tmp_path / "profile.csv"
+    profile.write_text("q,i,err\n0.01,10,0.2\n0.02,9,0.2\n0.03,8,0.2\n", encoding="utf-8")
+
+    monkeypatch.setattr(sys, "argv", ["saxsabs", "parse-external1d", "--input", str(profile)])
+    main()
+    out = json.loads(capsys.readouterr().out)
+    assert out["points"] == 3
+    assert out["x_col"] == "q"
+    assert out["i_col"] == "i"
+    assert out["err_col"] == "err"
