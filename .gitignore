@@ -17,3 +17,9 @@ env/
 Thumbs.db
 
 launch_error.log
+
+# Stale test / build outputs
+test_output*.txt
+test_results*.txt
+*.docx
+logs/

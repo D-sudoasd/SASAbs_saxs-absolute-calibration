@@ -1,3 +1,12 @@
+"""Robust K-factor estimation for SAXS absolute intensity calibration.
+
+The K-factor relates measured intensity to the absolute scale via a
+reference standard (by default NIST SRM 3600 glassy carbon).  The
+algorithm interpolates the measured profile onto the reference grid,
+computes point-wise ratios, and applies median / MAD-based outlier
+filtering to produce a robust estimate.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,6 +18,17 @@ from saxsabs.constants import NIST_SRM3600_DATA
 
 @dataclass(frozen=True)
 class KFactorEstimationResult:
+    """Container for the results of a robust K-factor estimation.
+
+    Attributes:
+        k_factor: Median K-factor (absolute-scale multiplier).
+        k_std: Standard deviation of the inlier ratio distribution.
+        q_min_overlap: Lower bound of the q-overlap region (Å⁻¹).
+        q_max_overlap: Upper bound of the q-overlap region (Å⁻¹).
+        points_total: Total reference points in the overlap region.
+        points_used: Number of inlier points after MAD filtering.
+        ratios_used: 1-D array of inlier I_ref / I_meas ratios.
+    """
     k_factor: float
     k_std: float
     q_min_overlap: float
@@ -19,6 +39,22 @@ class KFactorEstimationResult:
 
 
 def _regularize_profile(q: np.ndarray, i: np.ndarray, min_points: int = 3) -> tuple[np.ndarray, np.ndarray]:
+    """Validate, clean, sort, and deduplicate a 1-D scattering profile.
+
+    Non-finite values are dropped, duplicate q-values are averaged, and
+    the result is returned sorted in ascending q order.
+
+    Args:
+        q: Momentum-transfer vector (Å⁻¹).
+        i: Corresponding intensity values.
+        min_points: Minimum number of valid unique points required.
+
+    Returns:
+        Tuple ``(q_clean, i_clean)`` of 1-D float64 arrays.
+
+    Raises:
+        ValueError: On shape mismatch or insufficient valid data.
+    """
     q_arr = np.asarray(q, dtype=np.float64)
     i_arr = np.asarray(i, dtype=np.float64)
     if q_arr.shape != i_arr.shape:
@@ -58,6 +94,31 @@ def estimate_k_factor_robust(
     positive_floor: float = 1e-9,
     min_points: int = 3,
 ) -> KFactorEstimationResult:
+    """Estimate the absolute-intensity K-factor from measured and reference curves.
+
+    The function interpolates *i_meas* onto the reference q-grid within the
+    specified *q_window*, computes point-wise ``I_ref / I_meas`` ratios, and
+    applies median ± 3×MAD outlier rejection to yield a robust K estimate.
+
+    When *q_ref* / *i_ref* are ``None``, the built-in NIST SRM 3600 glassy
+    carbon reference data are used.
+
+    Args:
+        q_meas: Momentum-transfer values of the measured profile (Å⁻¹).
+        i_meas_per_cm: Measured intensity in absolute or relative units.
+        q_ref: Reference q-values (optional; defaults to SRM 3600).
+        i_ref: Reference intensity values (optional; defaults to SRM 3600).
+        q_window: ``(q_min, q_max)`` bounding the comparison region.
+        positive_floor: Threshold below which measured intensity is rejected.
+        min_points: Minimum number of valid overlap points required.
+
+    Returns:
+        A :class:`KFactorEstimationResult` containing the K-factor and
+        associated statistics.
+
+    Raises:
+        ValueError: On insufficient overlap, non-positive result, etc.
+    """
     q_m, i_m = _regularize_profile(q_meas, i_meas_per_cm, min_points=min_points)
 
     if q_ref is None or i_ref is None:

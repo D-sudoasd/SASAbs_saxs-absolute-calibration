@@ -1,6 +1,25 @@
+"""Robust parsing of SAXS instrument headers and external 1-D profiles.
+
+This module addresses two common reproducibility pain points:
+
+1. **Header heterogeneity** – different instruments store exposure time,
+   monitor counts, and transmission under varying key names and units.
+   :func:`parse_header_values` normalizes keys and coerces values.
+
+2. **1-D text-format diversity** – external 1-D files come in CSV, space-
+   delimited, and semicolon-delimited flavours, sometimes without a header
+   row.  :func:`read_external_1d_profile` tries several parsing strategies
+   and infers column roles heuristically.
+
+3. **Community standard formats** – canSAS 1D XML (``urn:cansas1d:1.1``)
+   and NXcanSAS HDF5 files can be read via :func:`read_cansas1d_xml` and
+   :func:`read_nxcansas_h5` respectively.
+"""
+
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -125,6 +144,18 @@ def parse_header_values(header_mapping: dict[str, Any] | None) -> tuple[float | 
 
 
 def read_external_1d_profile(path: str | Path) -> dict[str, Any]:
+    p = Path(path)
+    ext = p.suffix.lower()
+
+    # Route to specialized readers based on file extension
+    if ext == ".xml":
+        try:
+            return read_cansas1d_xml(p)
+        except Exception:
+            pass  # fall through to generic text parser
+    elif ext in (".h5", ".hdf5", ".hdf", ".nxs"):
+        return read_nxcansas_h5(p)
+
     dfs: list[pd.DataFrame] = []
     errs: list[str] = []
 
@@ -217,3 +248,134 @@ def read_external_1d_profile(path: str | Path) -> dict[str, Any]:
     if best is None:
         raise ValueError(f"Cannot identify valid numeric columns in {Path(path).name}")
     return best
+
+
+# ---------------------------------------------------------------------------
+# canSAS 1D XML reader  (urn:cansas1d:1.1)
+# ---------------------------------------------------------------------------
+_CANSAS_NS = "urn:cansas1d:1.1"
+
+
+def read_cansas1d_xml(path: str | Path) -> dict[str, Any]:
+    """Read a canSAS 1D XML file and return a profile dict.
+
+    Returns the same ``{"x", "i_rel", "err_rel", ...}`` dict as
+    :func:`read_external_1d_profile`.
+    """
+    p = Path(path)
+    tree = ET.parse(str(p))
+    root = tree.getroot()
+
+    # Handle both namespaced and non-namespaced XML.
+    ns = ""
+    if root.tag.startswith("{"):
+        ns = root.tag.split("}")[0] + "}"
+
+    # Find SASdata → Idata elements
+    q_vals: list[float] = []
+    i_vals: list[float] = []
+    e_vals: list[float] = []
+
+    for idata in root.iter(f"{ns}Idata"):
+        q_el = idata.find(f"{ns}Q")
+        i_el = idata.find(f"{ns}I")
+        if q_el is None or i_el is None:
+            continue
+        try:
+            q_vals.append(float(q_el.text))
+            i_vals.append(float(i_el.text))
+        except (TypeError, ValueError):
+            continue
+        e_el = idata.find(f"{ns}Idev")
+        if e_el is not None and e_el.text:
+            try:
+                e_vals.append(float(e_el.text))
+            except (TypeError, ValueError):
+                e_vals.append(np.nan)
+        else:
+            e_vals.append(np.nan)
+
+    if len(q_vals) < 2:
+        raise ValueError(f"canSAS XML contains too few data points: {p.name}")
+
+    x = np.asarray(q_vals, dtype=np.float64)
+    i_rel = np.asarray(i_vals, dtype=np.float64)
+    err = np.asarray(e_vals, dtype=np.float64) if e_vals else np.full_like(x, np.nan)
+
+    order = np.argsort(x)
+    return {
+        "x": x[order],
+        "i_rel": i_rel[order],
+        "err_rel": err[order],
+        "x_col": "Q",
+        "i_col": "I",
+        "err_col": "Idev",
+    }
+
+
+# ---------------------------------------------------------------------------
+# NXcanSAS HDF5 reader
+# ---------------------------------------------------------------------------
+
+def read_nxcansas_h5(path: str | Path) -> dict[str, Any]:
+    """Read an NXcanSAS HDF5 file and return a profile dict.
+
+    Requires the ``h5py`` package.  Returns the same dict format as
+    :func:`read_external_1d_profile`.
+    """
+    try:
+        import h5py
+    except ImportError as exc:
+        raise ImportError(
+            "h5py is required for reading NXcanSAS files. "
+            "Install it with:  pip install saxsabs[hdf5]"
+        ) from exc
+
+    p = Path(path)
+    with h5py.File(str(p), "r") as f:
+        # Walk groups to find the first SASdata containing Q and I datasets.
+        q_ds = None
+        i_ds = None
+        e_ds = None
+
+        def _find_sasdata(group: Any) -> bool:
+            nonlocal q_ds, i_ds, e_ds
+            cls = group.attrs.get("canSAS_class", "")
+            if isinstance(cls, bytes):
+                cls = cls.decode()
+            if cls == "SASdata" or group.name.rsplit("/", 1)[-1].startswith("sasdata"):
+                if "Q" in group and "I" in group:
+                    q_ds = group["Q"][()]
+                    i_ds = group["I"][()]
+                    if "Idev" in group:
+                        e_ds = group["Idev"][()]
+                    return True
+            for key in group:
+                item = group[key]
+                if hasattr(item, "keys"):  # is a group
+                    if _find_sasdata(item):
+                        return True
+            return False
+
+        _find_sasdata(f)
+
+    if q_ds is None or i_ds is None:
+        raise ValueError(f"Cannot find SASdata/Q,I datasets in {p.name}")
+
+    x = np.asarray(q_ds, dtype=np.float64).ravel()
+    i_rel = np.asarray(i_ds, dtype=np.float64).ravel()
+    err = (
+        np.asarray(e_ds, dtype=np.float64).ravel()
+        if e_ds is not None
+        else np.full_like(x, np.nan)
+    )
+
+    order = np.argsort(x)
+    return {
+        "x": x[order],
+        "i_rel": i_rel[order],
+        "err_rel": err[order],
+        "x_col": "Q",
+        "i_col": "I",
+        "err_col": "Idev" if e_ds is not None else "",
+    }

@@ -1,0 +1,29 @@
+{
+  "title": "saxsabs: A Robust Workflow for Small-Angle X-ray Scattering Absolute Intensity Calibration",
+  "description": "SAXS absolute intensity calibration and robust 1D profile utilities",
+  "upload_type": "software",
+  "license": "BSD-3-Clause",
+  "version": "1.0.0",
+  "creators": [
+    {
+      "name": "Gong, Delun",
+      "orcid": "0000-0001-7877-7707",
+      "affiliation": "Institute of Metal Research, Chinese Academy of Sciences"
+    }
+  ],
+  "keywords": [
+    "SAXS",
+    "absolute intensity calibration",
+    "synchrotron",
+    "small-angle X-ray scattering",
+    "glassy carbon",
+    "SRM 3600",
+    "Python"
+  ],
+  "related_identifiers": [
+    {
+      "relation": "isSupplementTo",
+      "identifier": "https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration"
+    }
+  ]
+}

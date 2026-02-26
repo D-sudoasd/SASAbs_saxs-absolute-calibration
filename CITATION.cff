@@ -1,11 +1,19 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it using the metadata below."
 title: "saxsabs"
-version: "0.1.0"
-date-released: "2026-02-25"
+version: "1.0.0"
+date-released: "2026-02-26"
 type: software
 authors:
-  - family-names: "BL19B2"
-    given-names: "Team"
-repository-code: "https://github.com/your-org/saxsabs"
+  - family-names: "Gong"
+    given-names: "Delun"
+    orcid: "https://orcid.org/0000-0001-7877-7707"
+    affiliation: "Institute of Metal Research, Chinese Academy of Sciences"
+    email: "dlgong@imr.ac.cn"
+repository-code: "https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration"
 license: "BSD-3-Clause"
+keywords:
+  - SAXS
+  - absolute intensity calibration
+  - synchrotron
+  - small-angle X-ray scattering

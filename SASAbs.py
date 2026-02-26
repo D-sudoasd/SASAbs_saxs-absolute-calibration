@@ -1,3 +1,9 @@
+"""SAXSAbs Workbench — GUI for SAXS absolute intensity calibration.
+
+Part of the saxsabs package.
+Repository: https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration
+License: BSD-3-Clause
+"""
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import argparse
@@ -20,22 +26,803 @@ import concurrent.futures
 import threading
 from types import SimpleNamespace
 
+APP_NAME = "SAXSAbs Workbench"
+APP_VERSION = "1.0.0"
+SUPPORTED_LANGUAGES = ("en", "zh")
+
+I18N = {
+    "en": {
+        "app_title": f"{APP_NAME} v{APP_VERSION}",
+        "header_title": f"{APP_NAME}  |  Absolute Intensity Calibration",
+        "theme_toggle": "🌓 Theme",
+        "lang_toggle_to_zh": "中文",
+        "lang_toggle_to_en": "English",
+        "tab1": "1. K-Factor Calibration",
+        "tab2": "2. Batch Processing",
+        "tab3": "3. External 1D -> Abs",
+        "tab4": "4. Help",
+        "t1_guide_title": "Quick Start",
+        "t1_guide_text": "① Select standard/background/dark/geometry files\n② Verify auto-loaded Time, I0, T\n③ Set standard thickness (mm)\n④ Run calibration to obtain K\n⑤ Check Std Dev and valid points",
+        "t1_files_title": "1. Calibration Files (Required)",
+        "t1_phys_title": "2. Physical Parameters",
+        "t1_run_btn": ">>> Run Robust K Calibration <<<",
+        "t1_hist_btn": "K History",
+        "t1_report_title": "Analysis Report",
+        "t1_plot_tip": "Plot: black dashed=net signal; blue=K-corrected; red circles=NIST",
+        "t2_guide_title": "Batch Workflow",
+        "t2_guide_text": "① Ensure K, BG/Dark, and poni are ready\n② Select thickness logic\n③ Select one or more integration modes\n④ Add sample files and run dry-check\n⑤ Start batch and review batch_report.csv",
+        "t2_mid_title": "Sample Queue",
+        "t2_add_btn": "Add Files",
+        "t2_clear_btn": "Clear Queue",
+        "t2_check_btn": "Dry Check",
+        "t2_run_btn": ">>> Start Robust Batch Processing <<<",
+        "t3_guide_title": "External 1D Workflow",
+        "t3_guide_text": "① Obtain K in Tab1\n② Select pipeline mode (scaled/raw)\n③ Import external 1D files\n④ Select correction formula and X-axis type\n⑤ Dry-check then batch-export absolute intensity",
+        "t3_mid_title": "External 1D Queue",
+        "t3_add_btn": "Add 1D Files",
+        "t3_clear_btn": "Clear Queue",
+        "t3_check_btn": "Dry Check",
+        "t3_run_btn": ">>> Start External 1D Absolute Calibration <<<",
+        "queue_files": "Queue files",
+        "queue_dedup": "deduplicated",
+        "out_auto_prefix": "Output directories will be created",
+        "out_write_prefix": "Output directories under",
+        "out_none_mode": "Output: no integration mode selected",
+        "msg_help_title": "Help",
+        "msg_help_copied": "Help text has been copied to clipboard.",
+        "msg_preview_title": "Dry Check",
+        "msg_ext_done_title": "External 1D Completed",
+        "msg_ext_error_title": "External 1D Error",
+        "msg_calib_error_title": "Calibration Error",
+        "msg_k_history_title": "K History",
+        "msg_batch_error_title": "Batch Processing Error",
+        "msg_iq_preview_error_title": "I-Q Preview Error",
+        "msg_ichi_preview_error_title": "I-chi Preview Error",
+        "msg_warning_title": "Warning",
+        "msg_input_error_title": "Input Error",
+        "help_panel_title": "Program Help",
+        "help_panel_intro": "Goal: obtain a reliable K factor in Tab1, then process robust batches in Tab2.",
+        "help_scroll_label": "Help text:",
+        "help_copy_btn": "Copy Help Text",
+        "help_copy_tooltip": "Copy full help text for sharing or records.",
+        "hint_prefix": "Note",
+        "session_error_title": "Session Error",
+        "session_error_body": "Failed to read session:\n{err}",
+        "session_loaded_title": "Session Loaded",
+        # --- Tab1 labels ---
+        "lbl_t1_std_file": "Standard (GC):",
+        "lbl_t1_bg_file": "Background:",
+        "lbl_t1_dark_file": "Dark image:",
+        "lbl_t1_poni_file": "Geometry (.poni):",
+        "lbl_i0_semantic": "I0 mode:",
+        "cb_solid_angle": "SolidAngle correction",
+        # --- Tab1 hints ---
+        "hint_t1_files": "Standard recommended: Glassy Carbon (GC); BG/Dark/poni must share the same geometry and energy.",
+        "hint_t1_phys": "Time(s)=exposure; I0=incident monitor; T=transmission(0–1). Normalisation follows selected I0 mode.",
+        # --- Tab1 tooltips ---
+        "tip_t1_guide": "Follow steps 1–5 to avoid missing key parameters.",
+        "tip_t1_std_entry": "Standard sample 2D image for absolute calibration (GC recommended).",
+        "tip_t1_std_btn": "Browse to select standard file.",
+        "tip_t1_bg_entry": "Empty-cell / air / background 2D image for subtraction.",
+        "tip_t1_bg_btn": "Browse to select background image.",
+        "tip_t1_bg_multi": "Multi-select BG images & average (normalised); for capillary blanks / repeats.",
+        "tip_t1_dark_entry": "Detector dark-current / electronic noise image.",
+        "tip_t1_dark_btn": "Browse to select dark image.",
+        "tip_t1_poni_entry": "pyFAI geometry file; controls q conversion accuracy.",
+        "tip_t1_poni_btn": "Browse to select .poni file.",
+        "tip_t1_std_exp": "Standard exposure time (s).",
+        "tip_t1_std_i0": "Standard I0 (monitor reading).",
+        "tip_t1_std_t": "Standard transmission; should be in 0–1.",
+        "tip_t1_std_thk": "Standard thickness (mm); for volume normalisation.",
+        "tip_t1_bg_exp": "Background exposure time (s).",
+        "tip_t1_bg_i0": "Background I0 (monitor reading).",
+        "tip_t1_bg_t": "Background transmission.",
+        "tip_t1_norm_mode": "rate: I0 is count rate; integrated: I0 is integrated counts.",
+        "tip_t1_norm_hint": "Choose according to beamline output. Wrong choice adds exposure-related systematic error.",
+        "tip_t1_solid_angle": "Shared by Tab1 calibration & Tab2 batch. Must be consistent or K is invalid.",
+        "tip_t1_calibrate": "Run 2D BG subtraction + 1D integration + NIST matching; writes K factor.",
+        "tip_t1_history": "View historical K factor trend to monitor instrument drift.",
+        "tip_t1_report": "Displays calibration key metrics: K, valid points, Q overlap range and dispersion.",
+        "tip_t1_plot": "If the blue line tracks the red dots, K calibration quality is good.",
+        # --- Tab2 labels ---
+        "lf_t2_global": "1. Global Settings",
+        "lbl_t2_k_factor": "K factor:",
+        "lbl_t2_bg_file": "Background:",
+        "lbl_t2_i0_semantic": "I0 mode:",
+        "lf_t2_thickness": "2. Thickness Strategy",
+        "rb_t2_auto_thk": "Auto thickness (d = −ln(T)/μ)",
+        "lbl_t2_mu": " μ(cm⁻¹):",
+        "btn_t2_mu_est": "μ est.",
+        "rb_t2_fix_thk": "Fixed thickness (mm):",
+        "lf_t2_integration": "3. Integration Modes (post BG subtraction)",
+        "cb_t2_full_ring": "I-Q full ring",
+        "cb_t2_sector": "I-Q sector",
+        "btn_t2_iq_preview": "Preview I-Q",
+        "lbl_t2_multi_sector": " Multi-sector:",
+        "lbl_t2_sector_example": " e.g. -25~25;45~65",
+        "cb_t2_sec_save_each": "Save sectors separately",
+        "cb_t2_sec_save_sum": "Save merged sector",
+        "cb_t2_texture": "I-chi texture",
+        "btn_t2_chi_preview": "Preview I-chi",
+        "lf_t2_correction": "4. Correction Parameters",
+        "cb_t2_solid_angle": "Apply Solid Angle correction",
+        "lbl_t2_error_model": "Error model:",
+        "lbl_t2_mask": "Mask file:",
+        "lbl_t2_flat": "Flat file:",
+        "lf_t2_execution": "5. Reference Matching & Execution",
+        "rb_t2_ref_fixed": "Fixed BG/Dark",
+        "rb_t2_ref_auto": "Auto-match BG/Dark",
+        "btn_t2_bg_lib": "BG Library",
+        "btn_t2_dark_lib": "Dark Library",
+        "btn_t2_clear_lib": "Clear Lib",
+        "lbl_t2_workers": "Workers:",
+        "cb_t2_resume": "Resume (skip existing output)",
+        "cb_t2_overwrite": "Force overwrite",
+        "cb_t2_strict": "Strict instrument consistency",
+        "lbl_t2_tolerance": "Tolerance(%):",
+        "lbl_t2_outdir": "Output dir:",
+        # --- Tab2 hints ---
+        "hint_t2_global": "K from Tab1. I0 mode selects normalisation formula; BG path for quick confirmation.",
+        "hint_t2_thickness": "Auto: d=−ln(T)/μ ; Fixed: all samples use same thickness (mm).",
+        "hint_t2_integration": "Multi-select & output to different folders: full-ring / sector / texture run simultaneously.",
+        "hint_t2_correction": "Recommend enabling solid angle. Optional mask / flat / polarisation & error model.",
+        "hint_t2_execution": "Fix BG/Dark, or auto-match the closest BG/Dark by metadata.",
+        "hint_t2_queue": "Add multiple files. Click 'Dry Check' first to verify headers & thickness.",
+        # --- Tab2 tooltips ---
+        "tip_t2_guide": "Pre-check before running batch significantly reduces mid-run failures.",
+        "tip_t2_k_factor": "Absolute intensity scale factor. Must be > 0.",
+        "tip_t2_bg_label": "Current background path (shared from Tab1).",
+        "tip_t2_norm_mode": "Global: rate means I0 is count rate; integrated means I0 is integrated counts.",
+        "tip_t2_norm_hint": "Affects normalisation factors in both calibration and batch.",
+        "tip_t2_auto_thk": "Suitable when every sample has reliable transmission T.",
+        "tip_t2_mu": "Linear attenuation coefficient μ, unit cm⁻¹, must be > 0.",
+        "tip_t2_mu_est": "Estimate μ from alloy composition (30 keV empirical).",
+        "tip_t2_fix_thk": "When transmission is unreliable or missing, use fixed thickness.",
+        "tip_t2_fix_thk_val": "Uniform thickness for all samples, in mm.",
+        "tip_t2_mu_label": "Larger μ → smaller thickness for same T.",
+        "tip_t2_full": "Recommended for isotropic samples. Can be combined with other modes.",
+        "tip_t2_sector": "Integrate a specified azimuthal sector, highlighting directional structure.",
+        "tip_t2_sec_min": "Sector start angle (°). Supports wrap-around ±180° (e.g. 170 to −170).",
+        "tip_t2_sec_max": "Sector end angle (°). Same as start (mod 360) is invalid.",
+        "tip_t2_sec_preview": "Open 2D preview of I-Q integration region (sector or full ring).",
+        "tip_t2_sec_multi": "Multi-sector list. '-25~25;45~65' or '-25,25 45,65'; empty = use single sector above.",
+        "tip_t2_sec_each": "Each sector outputs to its own subfolder (sector_XX_*).",
+        "tip_t2_sec_sum": "Merge all sectors by pixel weight into one I-Q and save separately.",
+        "tip_t2_texture": "Output I vs azimuthal angle chi in a given q range. Runs alongside I-Q.",
+        "tip_t2_qmin": "Texture analysis q minimum (Å⁻¹).",
+        "tip_t2_qmax": "Texture analysis q maximum (Å⁻¹), must exceed q_min.",
+        "tip_t2_chi_preview": "Open 2D preview of I-chi q-ring band range.",
+        "tip_t2_solid_angle": "Must match Tab1 calibration. Mismatch will block batch.",
+        "tip_t2_error_model": "azimuthal: azimuthal scatter; poisson: counting stats; none: no errors.",
+        "tip_t2_polarization": "Polarisation factor, usually −1 to 1. 0 = unpolarised.",
+        "tip_t2_mask": "Mask image: non-zero pixels are excluded.",
+        "tip_t2_flat": "Flat-field correction image (optional).",
+        "tip_t2_ref_fixed": "All samples use Tab1 BG/Dark.",
+        "tip_t2_ref_auto": "Auto-select BG & Dark closest in exposure/I0/T/time.",
+        "tip_t2_bg_lib": "Select background file library for auto-matching.",
+        "tip_t2_dark_lib": "Select dark file library for auto-matching.",
+        "tip_t2_clear_lib": "Clear BG/Dark libraries.",
+        "tip_t2_workers": "Parallel threads; 1 = serial. Suggest 1–8.",
+        "tip_t2_resume": "Skip existing output files; supports resume after interruption.",
+        "tip_t2_overwrite": "Ignore existing output and recalculate.",
+        "tip_t2_strict": "Check energy/wavelength/distance/pixel/size consistency; stop on mismatch.",
+        "tip_t2_tolerance": "Consistency tolerance %, e.g. 0.5 means 0.5%.",
+        "tip_t2_add": "Multi-select TIFF files.",
+        "tip_t2_clear": "Clear queue; does not delete files on disk.",
+        "tip_t2_check": "Batch-check each file's exp/mon/T and thickness availability.",
+        "tip_t2_listbox": "Current sample queue.",
+        "tip_t2_run": "Run batch. Single-file failure does not abort the batch.",
+        "tip_t2_progress": "Batch processing progress.",
+        "tip_t2_outdir": "Optional. Empty = output next to sample files.",
+        "tip_t2_out_label": "Output files and batch_report.csv will be written here.",
+        # --- Tab3 labels ---
+        "lf_t3_global": "1. Global & Formula",
+        "lbl_t3_k_factor": "K factor:",
+        "lbl_t3_pipeline": "Pipeline:",
+        "rb_t3_scaled": "Scale only",
+        "rb_t3_raw": "Raw 1D full correction",
+        "rb_t3_kd_formula": "Ext. 1D w/o thickness: I_abs = I_rel × K / d",
+        "lbl_t3_thk": "Fixed thickness(mm):",
+        "rb_t3_k_formula": "Ext. 1D w/ thickness: I_abs = I_rel × K",
+        "lbl_t3_x_type": "X-axis type:",
+        "lbl_t3_i0_semantic": "I0 mode:",
+        "lf_t3_execution": "2. Execution Strategy",
+        "cb_t3_resume": "Resume (skip existing output)",
+        "cb_t3_overwrite": "Force overwrite",
+        "lbl_t3_formats": "Supported: .dat .txt .chi .csv (need X & I columns; Error optional)",
+        "lf_t3_raw_params": "3. Raw 1D Correction Params (raw pipeline)",
+        "btn_t3_meta_from_batch": "Generate metadata from Tab2 report",
+        "cb_t3_meta_thk": "Prefer thk_mm from metadata",
+        "cb_t3_sync_bg": "Sync BG params with Tab1 global (bg_exp/bg_i0/bg_t)",
+        "lbl_t3_sample_params": "Sample fixed params exp/i0/T:",
+        "lbl_t3_bg_params": "BG fixed params exp/i0/T:",
+        "lbl_t3_outdir": "Output dir:",
+        # --- Tab3 hints ---
+        "hint_t3_global": "K from Tab1. Choose pipeline, then formula. Raw pipeline uses exp/I0/T and BG1D/Dark1D.",
+        "hint_t3_execution": "Recommend dry-check first. Resume to avoid redundant overwrites.",
+        "hint_t3_raw": "Only active when pipeline = Raw 1D. Can use Tab2's batch_report.csv or metadata.csv directly.",
+        "hint_t3_queue": "Click 'Dry Check' to verify column parsing for each file.",
+        # --- Tab3 tooltips ---
+        "tip_t3_guide": "For data already integrated in pyFAI or other software; absolute calibration only.",
+        "tip_t3_k": "Must be > 0. Uses latest Tab1 calibration value.",
+        "tip_t3_scaled": "For external 1D already BG-subtracted & normalised; just apply absolute scale.",
+        "tip_t3_raw": "For external 1D with raw integrated intensity; full 1D-level BG subtraction & normalisation here.",
+        "tip_t3_kd": "For external integrated result still in relative intensity (not divided by thickness).",
+        "tip_t3_thk": "Only used in K/d mode. Unit: mm.",
+        "tip_t3_k_only": "For external integrated result already divided by thickness.",
+        "tip_t3_x_mode": "'auto' infers Q_Å⁻¹ or Chi_deg from column names / suffix.",
+        "tip_t3_resume": "Skip if output exists; for resuming large batches.",
+        "tip_t3_overwrite": "Ignore existing results and recalculate.",
+        "tip_t3_meta": "Optional. Supports metadata.csv or Tab2's batch_report.csv.",
+        "tip_t3_bg1d": "Required (raw pipeline). BG 1D integrated the same way as the sample.",
+        "tip_t3_dark1d": "Optional. Not supplied → treated as zero.",
+        "tip_t3_meta_from_batch": "One-click: generate Tab3 metadata.csv from Tab2 batch_report.csv; auto-fill path.",
+        "tip_t3_meta_thk": "If enabled and sample's metadata has thk_mm, overrides fixed thickness.",
+        "tip_t3_sync_bg": "When enabled, Tab3 BG params auto-update from Tab1/global, avoiding stale values.",
+        "tip_t3_add": "Multi-select external integration result files.",
+        "tip_t3_clear": "Clear queue only; does not delete files on disk.",
+        "tip_t3_check": "Check column recognition, point count, and X-axis type inference.",
+        "tip_t3_listbox": "Current external 1D file list for conversion.",
+        "tip_t3_run": "Batch-convert external 1D relative intensity to absolute using chosen formula.",
+        "tip_t3_progress": "External 1D batch progress.",
+        "tip_t3_outdir": "Optional. Empty = output next to first input file.",
+        # --- Window titles ---
+        "title_t3_dryrun": "External 1D Dry Check Results",
+        "title_k_history": "K Factor History Trend",
+        "title_t2_dryrun": "Batch Dry Check Results",
+        "title_iq_preview": "I-Q 2D Preview – {name}",
+        "title_ichi_preview": "I-chi 2D Preview – {name}",
+        "title_mu_tool": "Universal μ Calculator (any energy)",
+        # --- Standard selector ---
+        "lbl_t1_std_type": "Standard:",
+        "opt_std_srm3600": "NIST SRM 3600 (GC)",
+        "opt_std_water": "Water (H\u2082O)",
+        "opt_std_lupolen": "Lupolen (user curve)",
+        "opt_std_custom": "Custom (user file)",
+        "lbl_t1_water_temp": "Water T (°C):",
+        "lbl_t1_std_ref_file": "Ref. curve file:",
+        "hint_t1_std_water": "Water: q-independent, dΣ/dΩ = 0.01632 cm\u207b\xb9 at 20 \u00b0C (Orthaber et al. 2000)",
+        "hint_t1_std_lupolen": "Lupolen: batch-dependent; load your beamline calibration curve.",
+        # --- Buffer subtraction ---
+        "lf_t3_buffer": "Buffer / Solvent Subtraction",
+        "cb_t3_buffer_enable": "Enable buffer subtraction",
+        "lbl_t3_buffer_file": "Buffer 1D file:",
+        "lbl_t3_alpha": "\u03b1 (scale):",
+        "lbl_t3_buffer_status": "(not loaded)",
+        "lbl_t2_alpha": "BG \u03b1-scale:",
+        "cb_t2_buffer_enable": "Enable BG \u03b1-scaling",
+        # --- Output format ---
+        "lbl_output_format": "Output format:",
+        "opt_fmt_tsv": "TSV (tab-separated)",
+        "opt_fmt_csv": "CSV (comma-separated)",
+        "opt_fmt_cansas_xml": "canSAS 1D XML",
+        "opt_fmt_nxcansas_h5": "NXcanSAS HDF5",
+        # --- Mu tool new keys ---
+        "lbl_mu_energy": "Energy (keV):",
+        "lbl_mu_energy_or_wl": "or wavelength (Å):",
+        "lbl_mu_preset": "Preset material:",
+        "lbl_mu_custom_comp": "Custom (El:wt%, ...)",
+        "lbl_mu_result_murho": "\u03bc/\u03c1 (cm\xb2/g):",
+        "lbl_mu_result_mu": "\u03bc_linear (cm\u207b\xb9):",
+        "btn_mu_add_row": "+ Element",
+        "btn_mu_del_row": "- Element",
+        "lbl_mu_contrib": "Element contributions",
+        # --- Messagebox bodies ---
+        "msg_meta_gen_title": "Metadata Generated",
+        "msg_batch_done_title": "Batch Completed",
+        "msg_k_history_empty": "No K history yet; run calibration first.",
+        "msg_k_history_file_empty": "History file is empty.",
+        "msg_k_history_read_error": "Failed to read history: {e}",
+        # --- Dry-run panel labels ---
+        "pre_k_factor": "K factor:",
+        "pre_pipeline": "Pipeline:",
+        "pre_corr_mode": "Correction mode:",
+        "pre_fixed_thk": "Fixed thickness(mm):",
+        "pre_x_mode": "X-axis mode:",
+        "pre_i0_semantic": "I0 mode:",
+        "pre_warning_header": "[Dry-Check Warnings]",
+        "pre_pass_t3": "[Dry-Check Passed] No obvious issues with parameters.",
+        "pre_i0_norm": "I0 normalisation mode:",
+        "pre_integ_mode": "Integration mode:",
+        "pre_integ_none": "None",
+        "pre_sector_output": "Sector output:",
+        "pre_sector_list": "Sector list:",
+        "pre_ref_mode": "Reference mode:",
+        "pre_error_model": "Error model:",
+        "pre_workers": "Workers:",
+        "pre_pass_t2": "[Dry-Check Passed] No obvious configuration issues.",
+        # --- Status / health labels ---
+        "status_ok": "OK",
+        "status_fail": "FAIL",
+        "status_no_match": "No match",
+        "status_match_fail": "Match failed",
+        # --- Lib info ---
+        "var_bg_lib": "BG lib: {n}",
+        "var_dark_lib": "Dark lib: {n}",
+        # --- Mu tool ---
+        "lbl_mu_wt_pct": "Wt% fraction",
+        "lbl_mu_density": "Density ρ (g/cm³):",
+        "btn_mu_apply": "Apply to batch",
+        # --- File row labels (Tab3) ---
+        "lbl_t3_bg1d_file": "BG 1D file:",
+        "lbl_t3_dark1d_file": "Dark 1D file:",
+        # --- Report messages ---
+        "rpt_start_calib": "Start calibration (robust mode)...",
+        "rpt_i0_norm_mode": "I0 normalisation mode: {mode} (norm={formula})",
+        "rpt_solid_angle": "SolidAngle correction: {state}",
+        "rpt_calib_ok": "Calibration succeeded (robust estimate)",
+        # --- Ext 1D done messagebox ---
+        "msg_ext_done_body": "External 1D absolute calibration completed.\nSuccess: {ok}\nSkipped: {skip}\nFailed: {fail}\nOutput dir: {out_dir}\nReport: {report}\nMeta: {meta}",
+        # --- Dry-run warnings (Tab3) ---
+        "warn_k_le_zero": "K factor ≤ 0.",
+        "warn_kd_thk_le_zero": "K/d mode: fixed thickness must be > 0 mm.",
+        "warn_meta_read_fail": "metadata CSV read failed: {e}",
+        "warn_raw_no_meta": "Raw pipeline: no metadata CSV; fixed sample params will be used for all.",
+        "warn_raw_no_bg1d": "Raw pipeline: BG 1D file is missing.",
+        "warn_bg1d_read_fail": "BG 1D read failed: {e}",
+        "warn_dark1d_read_fail": "Dark 1D read failed: {e}",
+        "warn_bg_norm_invalid": "BG normalisation factor ≤ 0; check BG exp/i0/T.",
+        # --- Dry-run warnings (Tab2) ---
+        "warn_no_integ_mode": "No integration mode selected (check at least one).",
+        "warn_sector_no_output": "Sector mode: no output selected (save each / merge).",
+        "warn_sector_angle_invalid": "Sector angle range invalid: {e}",
+        "warn_texture_q_invalid": "Texture q range invalid: qmin must be < qmax.",
+        "warn_auto_thk_mu": "Auto thickness mode: μ must be > 0.",
+        "warn_fix_thk_le_zero": "Fixed thickness must be > 0 mm.",
+        "warn_auto_bg_empty": "Auto-match mode: BG library is empty.",
+        "warn_auto_dark_empty": "Auto-match mode: Dark library is empty.",
+        "warn_inst_issues": "Instrument consistency found {n} issues (see details below).",
+        "warn_bg_norm_mismatch": "BG_Norm vs sample Norm_s magnitude mismatch (BG/sample median={ratio:.3g}, BG_Norm={bg_norm:.6g}, SampleMed={med:.6g}).",
+        # --- Dry-run ext 1D status/reason ---
+        "reason_norm_invalid": "Sample normalisation factor invalid (exp/i0/T)",
+        "reason_thk_invalid": "Thickness invalid (fixed thickness or metadata thk_mm)",
+        # --- Ext 1D messagebox ---
+        "msg_t3_queue_empty": "Queue is empty; please add external 1D files first.",
+        # --- Preview info labels ---
+        "info_iq_sector": "Sector mode({n}): {desc}",
+        "info_iq_full": "Full ring (valid pixels)",
+        "info_iq_title": "Tab2 I-Q Integration Preview",
+        "info_ichi_title": "Tab2 I-chi (q-ring) Preview",
+        "info_iq_line1": "Sample: {name} | Mode: {mode} | Coverage: {pct:.2f}%",
+        "info_iq_line2": "Angle convention (pyFAI chi): 0° right, +90° down, -90° up, ±180° left.",
+        "info_ichi_line1": "Sample: {name} | q range: [{qmin:.4g}, {qmax:.4g}] Å⁻¹ | Coverage: {pct:.2f}%",
+        "info_ichi_line2": "q-map unit: {src} (corresponds to Tab2 radial_chi q selection).",
+        # --- Mu tool messagebox ---
+        "msg_mu_wt_warn": "Total wt% = {w_tot}",
+        "msg_mu_fail": "μ estimation failed: {e}",
+    },
+    "zh": {
+        "app_title": f"{APP_NAME} v{APP_VERSION}",
+        "header_title": f"{APP_NAME}｜绝对强度校正",
+        "theme_toggle": "🌓 切换深色/浅色模式",
+        "lang_toggle_to_zh": "中文",
+        "lang_toggle_to_en": "English",
+        "tab1": "1. K 因子标定",
+        "tab2": "2. 批处理",
+        "tab3": "3. 外部 1D -> 绝对强度",
+        "tab4": "4. 帮助",
+        "t1_guide_title": "快速流程（新手）",
+        "t1_guide_text": "① 选择标准样/本底/暗场/几何文件\n② 核对自动读取的 Time、I0、T\n③ 填写标准样厚度(mm)\n④ 点击运行标定，得到 K 因子\n⑤ 查看报告中的 Std Dev 与点数",
+        "t1_files_title": "1. 标定文件（必须）",
+        "t1_phys_title": "2. 物理参数（核心输入）",
+        "t1_run_btn": ">>> 运行 K 因子标定（稳健模式） <<<",
+        "t1_hist_btn": "K 历史",
+        "t1_report_title": "分析报告（建议重点看 Std Dev）",
+        "t1_plot_tip": "图示说明：黑虚线=净信号；蓝线=K 校正后；红圈=NIST 参考点",
+        "t2_guide_title": "批处理工作流（推荐顺序）",
+        "t2_guide_text": "① 先确认 K 因子和 BG/暗场/poni 已就绪\n② 选择厚度逻辑（自动/固定）\n③ 选择一个或多个积分模式（可同时勾选）\n④ 添加样品文件并点击预检查\n⑤ 启动批处理并查看 batch_report.csv",
+        "t2_mid_title": "样品队列",
+        "t2_add_btn": "添加文件",
+        "t2_clear_btn": "清空队列",
+        "t2_check_btn": "预检查",
+        "t2_run_btn": ">>> 开始稳健批处理（2D 扣背景 + 误差棒） <<<",
+        "t3_guide_title": "外部 1D 绝对强度校正流程",
+        "t3_guide_text": "① 先在 Tab1 得到可信 K 因子\n② 选择流程：仅比例缩放 / 原始1D完整校正\n③ 导入外部1D文件（原始模式还需 BG1D/Dark1D 与参数）\n④ 选择校正公式（K/d 或 K）与 X 轴类型\n⑤ 先预检查，再批量输出绝对强度表格",
+        "t3_mid_title": "外部 1D 文件队列",
+        "t3_add_btn": "添加1D文件",
+        "t3_clear_btn": "清空队列",
+        "t3_check_btn": "预检查",
+        "t3_run_btn": ">>> 开始外部1D绝对强度校正 <<<",
+        "queue_files": "队列文件",
+        "queue_dedup": "去重后",
+        "out_auto_prefix": "输出目录将自动创建",
+        "out_write_prefix": "输出目录将写入",
+        "out_none_mode": "输出目录: 未选择积分模式",
+        "msg_help_title": "帮助",
+        "msg_help_copied": "帮助文本已复制到剪贴板。",
+        "msg_preview_title": "预检查",
+        "msg_ext_done_title": "外部1D校正完成",
+        "msg_ext_error_title": "外部1D校正错误",
+        "msg_calib_error_title": "标定错误",
+        "msg_k_history_title": "K 历史",
+        "msg_batch_error_title": "批处理错误",
+        "msg_iq_preview_error_title": "I-Q 预览错误",
+        "msg_ichi_preview_error_title": "I-chi 预览错误",
+        "msg_warning_title": "警告",
+        "msg_input_error_title": "输入错误",
+        "help_panel_title": "程序帮助（新手版）",
+        "help_panel_intro": "目标：先在 Tab1 得到可靠 K 因子，再在 Tab2 做稳健批处理。",
+        "help_scroll_label": "帮助文本（可滚动）：",
+        "help_copy_btn": "复制帮助文本",
+        "help_copy_tooltip": "复制完整帮助内容，方便发给同事或存档。",
+        "hint_prefix": "注释",
+        "session_error_title": "会话错误",
+        "session_error_body": "读取会话失败:\n{err}",
+        "session_loaded_title": "会话已加载",
+        # --- Tab1 labels ---
+        "lbl_t1_std_file": "标准样 (GC):",
+        "lbl_t1_bg_file": "背景图像:",
+        "lbl_t1_dark_file": "暗场图像:",
+        "lbl_t1_poni_file": "几何文件 (.poni):",
+        "lbl_i0_semantic": "I0 语义:",
+        "cb_solid_angle": "SolidAngle修正",
+        # --- Tab1 hints ---
+        "hint_t1_files": "标准样建议用玻璃碳（GC）；背景/暗场/poni 应与样品保持同一实验几何与能量。",
+        "hint_t1_phys": "Time(s)=曝光时间；I0=入射强度监测值；T=透过率(0~1)。归一化按下方 I0 语义选择公式。",
+        # --- Tab1 tooltips ---
+        "tip_t1_guide": "按 1~5 步执行，基本不会漏关键参数。",
+        "tip_t1_std_entry": "用于绝对强度标定的标准样二维图像（推荐 GC）。",
+        "tip_t1_std_btn": "点击选择标准样文件。",
+        "tip_t1_bg_entry": "空样品/空气或本底散射图像，用于 2D 本底扣除。",
+        "tip_t1_bg_btn": "点击选择背景图像。",
+        "tip_t1_bg_multi": "多选背景图并合并扣除（归一化后平均），适用于空毛细管/空白重复。",
+        "tip_t1_dark_entry": "探测器暗电流/本底噪声图像。",
+        "tip_t1_dark_btn": "点击选择暗场图像。",
+        "tip_t1_poni_entry": "pyFAI 几何标定文件，决定 q 转换精度。",
+        "tip_t1_poni_btn": "点击选择 .poni 文件。",
+        "tip_t1_std_exp": "标准样曝光时间（秒）。",
+        "tip_t1_std_i0": "标准样 I0（监测器读数）。",
+        "tip_t1_std_t": "标准样透过率，建议在 0~1 之间。",
+        "tip_t1_std_thk": "标准样厚度（mm），用于体积归一化。",
+        "tip_t1_bg_exp": "背景图曝光时间（秒）。",
+        "tip_t1_bg_i0": "背景图 I0（监测器读数）。",
+        "tip_t1_bg_t": "背景图透过率。",
+        "tip_t1_norm_mode": "rate: I0 是每秒计数率；integrated: I0 是曝光积分计数。",
+        "tip_t1_norm_hint": "请按线站实际输出选择。选错会引入曝光时间相关系统误差。",
+        "tip_t1_solid_angle": "Tab1标定与Tab2批处理共用此设置。两者必须一致，否则 K 因子无效。",
+        "tip_t1_calibrate": "执行 2D 扣背景 + 1D 积分 + NIST 匹配，自动写入 K 因子。",
+        "tip_t1_history": "查看历史 K 因子趋势，监控仪器漂移。",
+        "tip_t1_report": "会显示标定关键指标：K、有效点数、Q 重叠区间和离散度。",
+        "tip_t1_plot": "若蓝线与红点趋势一致，通常说明 K 标定质量较好。",
+        # --- Tab2 labels ---
+        "lf_t2_global": "1. 全局配置",
+        "lbl_t2_k_factor": "K 因子:",
+        "lbl_t2_bg_file": "背景文件:",
+        "lbl_t2_i0_semantic": "I0 语义:",
+        "lf_t2_thickness": "2. 厚度策略",
+        "rb_t2_auto_thk": "自动厚度 (d = -ln(T)/μ)",
+        "lbl_t2_mu": " μ(cm⁻¹):",
+        "btn_t2_mu_est": "μ估算",
+        "rb_t2_fix_thk": "固定厚度 (mm):",
+        "lf_t2_integration": "3. 积分模式（2D 扣背景后）",
+        "cb_t2_full_ring": "I-Q 全环",
+        "cb_t2_sector": "I-Q 扇区",
+        "btn_t2_iq_preview": "预览I-Q",
+        "lbl_t2_multi_sector": " 多扇区:",
+        "lbl_t2_sector_example": " 例:-25~25;45~65",
+        "cb_t2_sec_save_each": "分扇区分别保存",
+        "cb_t2_sec_save_sum": "扇区合并保存",
+        "cb_t2_texture": "I-chi 织构",
+        "btn_t2_chi_preview": "预览I-chi",
+        "lf_t2_correction": "4. 修正参数",
+        "cb_t2_solid_angle": "应用 Solid Angle 修正",
+        "lbl_t2_error_model": "误差模型:",
+        "lbl_t2_mask": "Mask 文件:",
+        "lbl_t2_flat": "Flat 文件:",
+        "lf_t2_execution": "5. 参考匹配与执行",
+        "rb_t2_ref_fixed": "固定 BG/Dark",
+        "rb_t2_ref_auto": "自动匹配 BG/Dark",
+        "btn_t2_bg_lib": "选择 BG 库",
+        "btn_t2_dark_lib": "选择 Dark 库",
+        "btn_t2_clear_lib": "清空库",
+        "lbl_t2_workers": "并行线程:",
+        "cb_t2_resume": "断点续跑(跳过已存在输出)",
+        "cb_t2_overwrite": "强制覆盖输出",
+        "cb_t2_strict": "严格仪器一致性校验",
+        "lbl_t2_tolerance": "阈值(%):",
+        "lbl_t2_outdir": "输出根目录:",
+        # --- Tab2 hints ---
+        "hint_t2_global": "K 因子来自 Tab1 标定结果。I0 语义决定归一化公式；BG 路径仅用于快速确认。",
+        "hint_t2_thickness": "自动模式: d=-ln(T)/mu；固定模式: 所有样品使用同一厚度(mm)。",
+        "hint_t2_integration": "可多选并一次性输出到不同文件夹：全环/扇区/织构可同时运行。",
+        "hint_t2_correction": "建议开启 solid angle。可选 mask/flat/polarization 与误差模型。",
+        "hint_t2_execution": "可固定 BG/Dark，或按元数据自动匹配最接近的 BG/Dark。",
+        "hint_t2_queue": '可一次添加多个文件。建议先点"预检查"，确认头信息与厚度计算是否正常。',
+        # --- Tab2 tooltips ---
+        "tip_t2_guide": "先预检查再正式跑批，可显著减少中途失败。",
+        "tip_t2_k_factor": "绝对强度比例因子。必须大于 0。",
+        "tip_t2_bg_label": "当前启用的背景图路径（由 Tab1 共享）。",
+        "tip_t2_norm_mode": "全局生效：rate 表示 I0 为计数率；integrated 表示 I0 为积分计数。",
+        "tip_t2_norm_hint": "该设置会影响标定与批处理的所有归一化因子。",
+        "tip_t2_auto_thk": "适合每个样品都具有可靠透过率 T 的情况。",
+        "tip_t2_mu": "线性衰减系数 mu，单位 cm^-1，必须大于 0。",
+        "tip_t2_mu_est": "按合金成分估算 mu（30 keV 经验）。",
+        "tip_t2_fix_thk": "透过率不稳定或缺失时，建议改为固定厚度。",
+        "tip_t2_fix_thk_val": "所有样品统一厚度值，单位 mm。",
+        "tip_t2_mu_label": "mu 越大，按同样 T 算出的厚度越小。",
+        "tip_t2_full": "对各向同性样品优先推荐。可与其他模式同时勾选。",
+        "tip_t2_sector": "仅对指定方位角扇区积分，突出方向性结构。可多选并行输出。",
+        "tip_t2_sec_min": "扇区起始角（度）。支持跨 ±180°（例如 170 到 -170）。",
+        "tip_t2_sec_max": "扇区结束角（度）。与起始角相同（模360）无效。",
+        "tip_t2_sec_preview": "弹出2D窗口预览 I-Q 积分区域（扇区或全环），用于确认选区。",
+        "tip_t2_sec_multi": "多扇区列表。支持 `-25~25;45~65`、`-25,25 45,65` 等格式；留空时使用上方单扇区。",
+        "tip_t2_sec_each": "每个扇区输出到独立子文件夹（sector_XX_*）。",
+        "tip_t2_sec_sum": "将所有扇区按像素权重合并成一条 I-Q，并单独输出。",
+        "tip_t2_texture": "在给定 q 范围内输出 I 随方位角 chi 的分布。可与 I-Q 同时输出。",
+        "tip_t2_qmin": "织构分析 q 最小值（A^-1）。",
+        "tip_t2_qmax": "织构分析 q 最大值（A^-1），需大于 q_min。",
+        "tip_t2_chi_preview": "弹出2D窗口预览 I-chi 使用的 q 环带范围。",
+        "tip_t2_solid_angle": "必须与 Tab1 标定时保持一致。若不一致程序会阻断批处理。",
+        "tip_t2_error_model": "azimuthal: 方位离散；poisson: 计数统计；none: 不计算误差。",
+        "tip_t2_polarization": "偏振因子，通常在 -1 到 1。0 表示不偏振。",
+        "tip_t2_mask": "掩膜图：非零像素视为无效区域。",
+        "tip_t2_flat": "平场校正图（可选）。",
+        "tip_t2_ref_fixed": "全批次统一使用 Tab1 指定的 BG/Dark。",
+        "tip_t2_ref_auto": "按曝光/I0/T/时间与样品最接近原则自动选 BG 和 Dark。",
+        "tip_t2_bg_lib": "选择可供自动匹配的背景文件集合。",
+        "tip_t2_dark_lib": "选择可供自动匹配的暗场文件集合。",
+        "tip_t2_clear_lib": "清空 BG/Dark 库。",
+        "tip_t2_workers": "并行线程数，1 表示串行。建议 1~8。",
+        "tip_t2_resume": "已存在输出文件时自动跳过，支持中断后续跑。",
+        "tip_t2_overwrite": "忽略已存在输出并重新计算。",
+        "tip_t2_strict": "检查能量/波长/距离/像素/尺寸一致性，不一致则停止。",
+        "tip_t2_tolerance": "一致性阈值百分比，例如 0.5 表示 0.5%。",
+        "tip_t2_add": "支持多选 TIFF 文件。",
+        "tip_t2_clear": "清空队列，不会删除磁盘文件。",
+        "tip_t2_check": "批量检查每个文件的 exp/mon/T 和厚度可用性。",
+        "tip_t2_listbox": "显示当前待处理样品列表。",
+        "tip_t2_run": "执行批处理。单文件失败不会中断整批。",
+        "tip_t2_progress": "显示批处理进度。",
+        "tip_t2_outdir": "可选。不填时默认输出到样品所在目录。",
+        "tip_t2_out_label": "输出文件与 batch_report.csv 会写入该目录。",
+        # --- Tab3 labels ---
+        "lf_t3_global": "1. 全局与公式",
+        "lbl_t3_k_factor": "K 因子:",
+        "lbl_t3_pipeline": "流程:",
+        "rb_t3_scaled": "仅比例缩放",
+        "rb_t3_raw": "原始1D完整校正",
+        "rb_t3_kd_formula": "外部1D未除厚度: I_abs = I_rel * K / d",
+        "lbl_t3_thk": "固定厚度(mm):",
+        "rb_t3_k_formula": "外部1D已除厚度: I_abs = I_rel * K",
+        "lbl_t3_x_type": "X轴类型:",
+        "lbl_t3_i0_semantic": "I0语义:",
+        "lf_t3_execution": "2. 执行策略",
+        "cb_t3_resume": "断点续跑(跳过已存在输出)",
+        "cb_t3_overwrite": "强制覆盖输出",
+        "lbl_t3_formats": "支持格式: .dat .txt .chi .csv（列至少包含 X 与 I；Error 可选）",
+        "lf_t3_raw_params": "3. 原始1D校正参数（raw流程）",
+        "btn_t3_meta_from_batch": "由 Tab2 报告生成 metadata",
+        "cb_t3_meta_thk": "优先使用 metadata 中的 thk_mm",
+        "cb_t3_sync_bg": "BG参数跟随 Tab1 全局(bg_exp/bg_i0/bg_t)",
+        "lbl_t3_sample_params": "样品固定参数 exp/i0/T:",
+        "lbl_t3_bg_params": "BG固定参数 exp/i0/T:",
+        "lbl_t3_outdir": "输出根目录:",
+        # --- Tab3 hints ---
+        "hint_t3_global": "K 来自 Tab1。先选流程，再选公式。原始1D流程会用到 exp/I0/T 与 BG1D/Dark1D。",
+        "hint_t3_execution": "建议先预检查。可断点续跑，避免重复覆盖。",
+        "hint_t3_raw": "仅当流程=原始1D完整校正时生效。可直接使用 Tab2 的 batch_report.csv 或 metadata.csv。",
+        "hint_t3_queue": '建议先点"预检查"确认每个文件的列解析情况。',
+        # --- Tab3 tooltips ---
+        "tip_t3_guide": "适合你在 pyFAI/其他软件完成积分后，仅在本程序做绝对标定。",
+        "tip_t3_k": "必须 >0。优先使用 Tab1 最新标定值。",
+        "tip_t3_scaled": "适合外部1D已做过本底/归一化，仅需绝对强度映射。",
+        "tip_t3_raw": "适合外部1D是原始积分强度，需要在本页完成1D级扣本底和归一化。",
+        "tip_t3_kd": "适用于外部积分结果仍是相对强度（尚未除厚度）。",
+        "tip_t3_thk": "仅在 K/d 模式下使用。单位 mm。",
+        "tip_t3_k_only": "适用于外部积分结果已经做了厚度归一化。",
+        "tip_t3_x_mode": "auto 会根据列名/后缀推断 Q_A^-1 或 Chi_deg。",
+        "tip_t3_resume": "输出存在时跳过，适合大批量中断后继续。",
+        "tip_t3_overwrite": "忽略已存在结果并重算。",
+        "tip_t3_meta": "可选。支持 metadata.csv，或直接选择 Tab2 的 batch_report.csv。",
+        "tip_t3_bg1d": "必填（raw流程）。与样品同积分方式得到的 BG 1D。",
+        "tip_t3_dark1d": "可选。未提供则按 0 处理。",
+        "tip_t3_meta_from_batch": "从 Tab2 的 batch_report.csv 一键生成 Tab3 可用 metadata.csv，并自动回填路径。",
+        "tip_t3_meta_thk": "开启后，若某样品 metadata 含 thk_mm，则覆盖固定厚度。",
+        "tip_t3_sync_bg": "开启后 Tab3 的 BG 参数会随 Tab1/全局变化自动更新，避免陈旧值。",
+        "tip_t3_add": "支持多选外部积分结果文件。",
+        "tip_t3_clear": "仅清空队列，不删除磁盘文件。",
+        "tip_t3_check": "检查列识别、点数和坐标类型推断。",
+        "tip_t3_listbox": "当前待转换的外部1D文件列表。",
+        "tip_t3_run": "将外部1D相对强度按选定公式批量转换为绝对强度。",
+        "tip_t3_progress": "显示外部1D批处理进度。",
+        "tip_t3_outdir": "可选。不填时默认输出到首个输入文件所在目录。",
+        # --- Window titles ---
+        "title_t3_dryrun": "外部1D预检查结果",
+        "title_k_history": "K 因子历史趋势",
+        "title_t2_dryrun": "批处理预检查结果",
+        "title_iq_preview": "I-Q 2D预览 - {name}",
+        "title_ichi_preview": "I-chi 2D预览 - {name}",
+        "title_mu_tool": "通用 μ 计算器（任意能量）",
+        # --- 标准样选择 ---
+        "lbl_t1_std_type": "标准样品:",
+        "opt_std_srm3600": "NIST SRM 3600 (GC)",
+        "opt_std_water": "纯水 (H\u2082O)",
+        "opt_std_lupolen": "Lupolen (用户曲线)",
+        "opt_std_custom": "自定义 (用户文件)",
+        "lbl_t1_water_temp": "水温 (°C):",
+        "lbl_t1_std_ref_file": "参考曲线文件:",
+        "hint_t1_std_water": "水标准: q无关, dΣ/dΩ=0.01632 cm\u207b\xb9 (20 \u00b0C) (Orthaber et al. 2000)",
+        "hint_t1_std_lupolen": "Lupolen: 批次相关; 请加载光束线标定曲线。",
+        # --- 缓冲液扣除 ---
+        "lf_t3_buffer": "缓冲液/溶剂扣除",
+        "cb_t3_buffer_enable": "启用缓冲液扣除",
+        "lbl_t3_buffer_file": "缓冲液1D文件:",
+        "lbl_t3_alpha": "\u03b1 (缩放):",
+        "lbl_t3_buffer_status": "(未加载)",
+        "lbl_t2_alpha": "背景 \u03b1缩放:",
+        "cb_t2_buffer_enable": "启用背景 \u03b1-缩放",
+        # --- 输出格式 ---
+        "lbl_output_format": "输出格式:",
+        "opt_fmt_tsv": "TSV (制表符分隔)",
+        "opt_fmt_csv": "CSV (逗号分隔)",
+        "opt_fmt_cansas_xml": "canSAS 1D XML",
+        "opt_fmt_nxcansas_h5": "NXcanSAS HDF5",
+        # --- μ 计算器新键 ---
+        "lbl_mu_energy": "能量 (keV):",
+        "lbl_mu_energy_or_wl": "或波长 (Å):",
+        "lbl_mu_preset": "预设材料:",
+        "lbl_mu_custom_comp": "自定义 (El:wt%, ...)",
+        "lbl_mu_result_murho": "\u03bc/\u03c1 (cm\xb2/g):",
+        "lbl_mu_result_mu": "\u03bc_linear (cm\u207b\xb9):",
+        "btn_mu_add_row": "+ 元素",
+        "btn_mu_del_row": "- 元素",
+        "lbl_mu_contrib": "各元素贡献",
+        # --- Messagebox bodies ---
+        "msg_meta_gen_title": "metadata 已生成",
+        "msg_batch_done_title": "批处理完成",
+        "msg_k_history_empty": "尚无 K 历史记录，请先运行一次标定。",
+        "msg_k_history_file_empty": "历史文件为空。",
+        "msg_k_history_read_error": "读取历史失败: {e}",
+        # --- Dry-run panel labels ---
+        "pre_k_factor": "K 因子:",
+        "pre_pipeline": "流程:",
+        "pre_corr_mode": "校正模式:",
+        "pre_fixed_thk": "固定厚度(mm):",
+        "pre_x_mode": "X轴模式:",
+        "pre_i0_semantic": "I0语义:",
+        "pre_warning_header": "[预检查警告]",
+        "pre_pass_t3": "[预检查通过] 参数未见明显问题。",
+        "pre_i0_norm": "I0 归一化模式:",
+        "pre_integ_mode": "积分模式:",
+        "pre_integ_none": "无",
+        "pre_sector_output": "扇区输出:",
+        "pre_sector_list": "扇区列表:",
+        "pre_ref_mode": "参考模式:",
+        "pre_error_model": "误差模型:",
+        "pre_workers": "并行线程:",
+        "pre_pass_t2": "[预检查通过] 未发现明显配置问题。",
+        # --- Status / health labels ---
+        "status_ok": "正常",
+        "status_fail": "失败",
+        "status_no_match": "无匹配",
+        "status_match_fail": "匹配失败",
+        # --- Lib info ---
+        "var_bg_lib": "BG库: {n}",
+        "var_dark_lib": "Dark库: {n}",
+        # --- Mu tool ---
+        "lbl_mu_wt_pct": "质量分数 (wt%)",
+        "lbl_mu_density": "密度 rho (g/cm3):",
+        "btn_mu_apply": "应用到批处理",
+        # --- File row labels (Tab3) ---
+        "lbl_t3_bg1d_file": "BG 1D 文件:",
+        "lbl_t3_dark1d_file": "Dark 1D 文件:",
+        # --- Report messages ---
+        "rpt_start_calib": "开始标定（稳健模式）...",
+        "rpt_i0_norm_mode": "I0 归一化模式: {mode} (norm={formula})",
+        "rpt_solid_angle": "SolidAngle 修正: {state}",
+        "rpt_calib_ok": "标定成功（稳健估计）",
+        # --- Ext 1D done messagebox ---
+        "msg_ext_done_body": "外部1D绝对强度校正完成。\n成功: {ok}\n跳过: {skip}\n失败: {fail}\n输出目录: {out_dir}\n报告: {report}\n元数据: {meta}",
+        # --- Dry-run warnings (Tab3) ---
+        "warn_k_le_zero": "K 因子 <= 0。",
+        "warn_kd_thk_le_zero": "K/d 模式下固定厚度必须 > 0 mm。",
+        "warn_meta_read_fail": "metadata CSV 读取失败: {e}",
+        "warn_raw_no_meta": "raw流程未提供 metadata CSV，将全部使用固定样品参数。",
+        "warn_raw_no_bg1d": "raw流程缺少 BG 1D 文件。",
+        "warn_bg1d_read_fail": "BG 1D 读取失败: {e}",
+        "warn_dark1d_read_fail": "Dark 1D 读取失败: {e}",
+        "warn_bg_norm_invalid": "BG 归一化因子 <=0，请检查 BG exp/i0/T。",
+        # --- Dry-run warnings (Tab2) ---
+        "warn_no_integ_mode": "未选择积分模式（至少勾选一种）。",
+        "warn_sector_no_output": "扇区模式未勾选任何输出（分别保存/合并保存）。",
+        "warn_sector_angle_invalid": "扇区角度范围无效：{e}",
+        "warn_texture_q_invalid": "织构 q 范围无效：qmin 必须 < qmax。",
+        "warn_auto_thk_mu": "自动厚度模式下 mu 必须 > 0。",
+        "warn_fix_thk_le_zero": "固定厚度必须 > 0 mm。",
+        "warn_auto_bg_empty": "自动匹配模式下 BG 库为空。",
+        "warn_auto_dark_empty": "自动匹配模式下 Dark 库为空。",
+        "warn_inst_issues": "仪器一致性发现 {n} 项问题（见下方详情）。",
+        "warn_bg_norm_mismatch": "BG_Norm 与样品 Norm_s 量级差异过大 (BG/样品中位={ratio:.3g}, BG_Norm={bg_norm:.6g}, SampleMed={med:.6g})。",
+        # --- Dry-run ext 1D status/reason ---
+        "reason_norm_invalid": "样品归一化因子无效（exp/i0/T）",
+        "reason_thk_invalid": "厚度无效（固定厚度或metadata thk_mm）",
+        # --- Ext 1D messagebox ---
+        "msg_t3_queue_empty": "队列为空，请先添加外部1D文件。",
+        # --- Preview info labels ---
+        "info_iq_sector": "扇区模式({n}): {desc}",
+        "info_iq_full": "全环 (有效像素)",
+        "info_iq_title": "Tab2 I-Q 积分区域预览",
+        "info_ichi_title": "Tab2 I-chi (q环带) 预览",
+        "info_iq_line1": "样品: {name} | 模式: {mode} | 覆盖像素: {pct:.2f}%",
+        "info_iq_line2": "角度定义（pyFAI chi）：0°向右，+90°向下，-90°向上，±180°向左。",
+        "info_ichi_line1": "样品: {name} | q区间: [{qmin:.4g}, {qmax:.4g}] A^-1 | 覆盖像素: {pct:.2f}%",
+        "info_ichi_line2": "q 映射单位: {src}（用于对应 Tab2 radial_chi 的 q 选区）。",
+        # --- Mu tool messagebox ---
+        "msg_mu_wt_warn": "总 wt% = {w_tot}",
+        "msg_mu_fail": "μ 估算失败: {e}",
+    },
+}
+
 try:
     from saxs_ui_kit import apply_ios_theme, promote_primary_buttons, toggle_theme, ToolTip
 except Exception:
+    # ---- sv_ttk Sun-Valley theme (lightweight Win11-style) ----
+    try:
+        import sv_ttk as _sv_ttk
+    except ImportError:
+        _sv_ttk = None
+
     def apply_ios_theme(root):
-        return None
+        if _sv_ttk is not None:
+            _sv_ttk.set_theme("light")
 
     def promote_primary_buttons(root):
-        return None
+        return None  # sv_ttk handles Accent.TButton natively
 
     def toggle_theme(root):
-        return None
+        if _sv_ttk is not None:
+            _sv_ttk.toggle_theme()
+            # update native tk widgets after theme switch
+            app = getattr(root, '_app_ref', None)
+            if app is not None:
+                app._sync_native_widget_colors()
 
     class ToolTip:
+        """Minimal cross-platform tooltip for ttk / tk widgets."""
+        _DELAY_MS = 450
         def __init__(self, widget, text):
             self.widget = widget
             self.text = text
+            self._tw = None
+            self._id_after = None
+            widget.bind("<Enter>", self._schedule, add="+")
+            widget.bind("<Leave>", self._hide, add="+")
+            widget.bind("<ButtonPress>", self._hide, add="+")
+
+        def _schedule(self, event=None):
+            self._hide()
+            self._id_after = self.widget.after(self._DELAY_MS, self._show)
+
+        def _show(self):
+            if not self.text:
+                return
+            x = self.widget.winfo_rootx() + 20
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+            tw = tk.Toplevel(self.widget)
+            tw.wm_overrideredirect(True)
+            tw.wm_geometry(f"+{x}+{y}")
+            # Adapt colours to current theme
+            is_dark = (_sv_ttk is not None and _sv_ttk.get_theme() == "dark")
+            bg = "#3a3a3a" if is_dark else "#ffffe1"
+            fg = "#e0e0e0" if is_dark else "#1a1a1a"
+            lbl = tk.Label(tw, text=self.text, justify="left",
+                           background=bg, foreground=fg,
+                           relief="solid", borderwidth=1,
+                           font=("Segoe UI", 9), wraplength=360,
+                           padx=6, pady=4)
+            lbl.pack()
+            self._tw = tw
+
+        def _hide(self, event=None):
+            if self._id_after:
+                self.widget.after_cancel(self._id_after)
+                self._id_after = None
+            if self._tw:
+                self._tw.destroy()
+                self._tw = None
+
+        def update_text(self, new_text):
+            self.text = new_text
 
 try:
     from saxs_core import load_session, session_geometry
@@ -69,29 +856,61 @@ try:
 except Exception:
     estimate_k_factor_robust = None
 
-# --- 物理常数 ---
-NIST_SRM3600_DATA = np.array([
-    [0.008, 35.0], [0.010, 34.2], [0.020, 30.8], [0.030, 28.8], 
-    [0.040, 27.5], [0.050, 26.8], [0.060, 26.3], [0.080, 25.4], 
-    [0.100, 23.6], [0.120, 20.8], [0.150, 15.8], [0.180, 10.9],
-    [0.200, 8.4],  [0.220, 6.5],  [0.250, 4.2]
-])
+try:
+    from saxsabs.constants import (
+        NIST_SRM3600_DATA,
+        STANDARD_REGISTRY,
+        get_reference_data,
+        water_dsdw,
+    )
+except Exception:
+    NIST_SRM3600_DATA = np.array([
+        [0.008, 35.0], [0.010, 34.2], [0.020, 30.8], [0.030, 28.8],
+        [0.040, 27.5], [0.050, 26.8], [0.060, 26.3], [0.080, 25.4],
+        [0.100, 23.6], [0.120, 20.8], [0.150, 15.8], [0.180, 10.9],
+        [0.200, 8.4],  [0.220, 6.5],  [0.250, 4.2]
+    ])
+    STANDARD_REGISTRY = None
+    get_reference_data = None
+    water_dsdw = None
 
-# 30 keV 估算值
-XCOM_30KEV = {
-    "Ti": 1.17, "V": 1.54, "Al": 0.11, "Nb": 7.56, "Zr": 7.15,
-    "Sn": 11.23, "Mo": 6.05, "Fe": 2.26, "Ni": 3.01, "Cr": 1.58, "Cu": 3.44
-}
+try:
+    from saxsabs.core.mu_calculator import (
+        calculate_mu,
+        mu_rho_single,
+        parse_composition_string,
+        MATERIAL_PRESETS,
+    )
+except Exception:
+    calculate_mu = None
+    mu_rho_single = None
+    parse_composition_string = None
+    MATERIAL_PRESETS = None
+
+try:
+    from saxsabs.core.buffer_subtraction import subtract_buffer
+except Exception:
+    subtract_buffer = None
+
+try:
+    from saxsabs.io.writers import write_cansas1d_xml, write_nxcansas_h5
+except Exception:
+    write_cansas1d_xml = None
+    write_nxcansas_h5 = None
 
 FLOAT_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 HC_KEV_A = 12.398419843320025  # E(keV) * lambda(A)
 MONITOR_NORM_MODES = ("rate", "integrated")
 
-class BL19B2_RobustApp:
-    def __init__(self, root):
+class SAXSAbsWorkbenchApp:
+    def __init__(self, root, language="en"):
         self.root = root
-        self.root.title("BL19B2 SAXS Workstation v8.1 (Error Bars)")
+        self.language = (language or "en").strip().lower()
+        if self.language not in SUPPORTED_LANGUAGES:
+            self.language = "en"
+        self.root.title(self.tr("app_title"))
         self.root.geometry("1280x900")
+        self.root.minsize(1024, 700)
         
         # Apply Nature style globally
         saxs_mpl_style.apply_nature_style()
@@ -101,10 +920,19 @@ class BL19B2_RobustApp:
         
         # Top bar for theme toggle
         top_bar = ttk.Frame(self.root)
-        top_bar.pack(fill="x", padx=10, pady=(10, 0))
+        top_bar.pack(fill="x", padx=16, pady=(12, 6))
         top_bar.columnconfigure(0, weight=1)
-        ttk.Label(top_bar, text="SAXS Absolute Intensity Calibration", style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Button(top_bar, text="🌓 切换深色/浅色模式", command=lambda: toggle_theme(self.root)).grid(row=0, column=1, sticky="e")
+        self.lbl_header_title = ttk.Label(top_bar, text=self.tr("header_title"), style="Title.TLabel")
+        self.lbl_header_title.grid(row=0, column=0, sticky="w")
+
+        self.btn_theme = ttk.Button(top_bar, text=self.tr("theme_toggle"), command=lambda: toggle_theme(self.root))
+        self.btn_theme.grid(row=0, column=1, sticky="e", padx=(8, 0))
+
+        self.btn_lang = ttk.Button(top_bar, text=self._lang_button_text(), width=10, command=self.toggle_language)
+        self.btn_lang.grid(row=0, column=2, sticky="e", padx=(8, 0))
+
+        # Separator under top bar
+        ttk.Separator(self.root, orient="horizontal").pack(fill="x", padx=12, pady=(0, 4))
         
         # === 全局共享状态 ===
         self.global_vars = {
@@ -123,17 +951,26 @@ class BL19B2_RobustApp:
 
         # === 布局 ===
         self.nb = ttk.Notebook(root)
-        self.nb.pack(expand=1, fill="both")
+        self.nb.pack(expand=1, fill="both", padx=8, pady=(0, 8))
 
         self.tab1 = ttk.Frame(self.nb)
         self.tab2 = ttk.Frame(self.nb)
         self.tab3 = ttk.Frame(self.nb)
         self.tab_help = ttk.Frame(self.nb)
 
-        self.nb.add(self.tab1, text="1. K-Factor Calibration (稳健标定)")
-        self.nb.add(self.tab2, text="2. Batch Processing (2D运算+误差棒)")
-        self.nb.add(self.tab3, text="3. External 1D -> Abs")
-        self.nb.add(self.tab_help, text="4. Help (新手指南)")
+        self.nb.add(self.tab1, text=self.tr("tab1"))
+        self.nb.add(self.tab2, text=self.tr("tab2"))
+        self.nb.add(self.tab3, text=self.tr("tab3"))
+        self.nb.add(self.tab_help, text=self.tr("tab4"))
+
+        # --- Status bar ---
+        status_sep = ttk.Separator(self.root, orient="horizontal")
+        status_sep.pack(fill="x", side="bottom")
+        self._status_var = tk.StringVar(value="Ready")
+        self._status_bar = ttk.Label(
+            self.root, textvariable=self._status_var, style="Status.TLabel", anchor="w"
+        )
+        self._status_bar.pack(fill="x", side="bottom")
 
         self.init_tab1_k_calc()
         self.init_tab2_batch()
@@ -141,24 +978,411 @@ class BL19B2_RobustApp:
         self.init_tab_help()
         promote_primary_buttons(self.root)
 
+    def tr(self, key):
+        lang_pack = I18N.get(self.language, I18N["en"])
+        return lang_pack.get(key, key)
+
+    def _lang_button_text(self):
+        return self.tr("lang_toggle_to_zh") if self.language == "en" else self.tr("lang_toggle_to_en")
+
+    def toggle_language(self):
+        self.language = "zh" if self.language == "en" else "en"
+        self.refresh_ui_language()
+
+    def refresh_ui_language(self):
+        self.root.title(self.tr("app_title"))
+        if hasattr(self, "lbl_header_title"):
+            self.lbl_header_title.configure(text=self.tr("header_title"))
+        if hasattr(self, "btn_theme"):
+            self.btn_theme.configure(text=self.tr("theme_toggle"))
+        if hasattr(self, "btn_lang"):
+            self.btn_lang.configure(text=self._lang_button_text())
+        if hasattr(self, "nb"):
+            self.nb.tab(self.tab1, text=self.tr("tab1"))
+            self.nb.tab(self.tab2, text=self.tr("tab2"))
+            self.nb.tab(self.tab3, text=self.tr("tab3"))
+            self.nb.tab(self.tab_help, text=self.tr("tab4"))
+        if hasattr(self, "_i18n_widgets"):
+            for widget, key in self._i18n_widgets:
+                try:
+                    widget.configure(text=self.tr(key))
+                except Exception:
+                    pass
+        if hasattr(self, "_i18n_tooltips"):
+            for tt, key in self._i18n_tooltips:
+                try:
+                    tt.text = self.tr(key)
+                except Exception:
+                    pass
+        if hasattr(self, "_i18n_hints"):
+            for lbl, key in self._i18n_hints:
+                try:
+                    lbl.configure(text=f"{self.tr('hint_prefix')}: {self.tr(key)}")
+                except Exception:
+                    pass
+        self.refresh_help_text()
+        self.refresh_queue_status()
+        self.refresh_external_1d_status()
+
+    def _register_i18n_widget(self, widget, key):
+        if not hasattr(self, "_i18n_widgets"):
+            self._i18n_widgets = []
+        self._i18n_widgets.append((widget, key))
+
+    def _fmt_queue_info(self, total, uniq):
+        if total == uniq:
+            return f"{self.tr('queue_files')}: {uniq}"
+        return f"{self.tr('queue_files')}: {total} ({self.tr('queue_dedup')} {uniq})"
+
+    def split_path_list(self, raw):
+        if raw is None:
+            return []
+        s = str(raw).strip()
+        if not s:
+            return []
+
+        tokens = [t.strip().strip('"').strip("'") for t in re.split(r"[;\n\|]+", s) if t.strip()]
+        if not tokens:
+            tokens = [s]
+
+        out = []
+        seen = set()
+        for t in tokens:
+            p = str(Path(t))
+            k = p.lower()
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(p)
+        return out
+
+    def build_composite_bg_net(self, bg_paths, d_dark, monitor_mode, fallback_triplet, ref_shape=None):
+        nets = []
+        norms = []
+        used_paths = []
+        dark = np.asarray(d_dark, dtype=np.float64)
+
+        for bg_path in bg_paths:
+            img = fabio.open(bg_path)
+            d_bg = np.asarray(img.data, dtype=np.float64)
+            self._assert_same_shape(d_bg, dark, "bg", "dark")
+            if ref_shape is not None and tuple(d_bg.shape) != tuple(ref_shape):
+                raise ValueError(f"BG 尺寸不匹配: {d_bg.shape} vs {ref_shape}")
+
+            exp, mon, trans = self.parse_header(bg_path, header_dict=getattr(img, "header", {}))
+            n = self.compute_norm_factor(exp, mon, trans, monitor_mode)
+            if not np.isfinite(n) or n <= 0:
+                n = self.compute_norm_factor(fallback_triplet[0], fallback_triplet[1], fallback_triplet[2], monitor_mode)
+            if not np.isfinite(n) or n <= 0:
+                raise ValueError(f"背景归一化因子无效: {Path(bg_path).name}")
+
+            nets.append((d_bg - dark) / float(n))
+            norms.append(float(n))
+            used_paths.append(str(bg_path))
+
+        if not nets:
+            raise ValueError("未提供可用背景图像。")
+
+        bg_net = np.nanmean(np.stack(nets, axis=0), axis=0)
+        return bg_net, norms, used_paths
+
+    def _localize_runtime_text(self, msg):
+        if self.language != "en":
+            return msg
+        text = str(msg)
+        repl = {
+            # --- Report / log prefixes ---
+            "开始标定（稳健模式）": "Start calibration (robust mode)",
+            "标定成功（稳健估计）": "Calibration succeeded (robust estimate)",
+            "批处理错误": "Batch processing error",
+            "外部1D绝对强度校正完成": "External 1D absolute calibration completed",
+            "批处理完成": "Batch processing completed",
+            # --- Status values ---
+            "成功": "Success",
+            "失败": "Failed",
+            "已跳过": "Skipped",
+            "部分成功": "Partially successful",
+            "正常": "OK",
+            "无匹配": "No match",
+            "匹配失败": "Match failed",
+            # --- Queue / output ---
+            "输出目录将自动创建": "Output directories will be created",
+            "输出目录将写入": "Output directories under",
+            "队列文件": "Queue files",
+            "去重后": "deduplicated",
+            # --- Log prefixes ---
+            "配置": "Config",
+            "提示": "Hint",
+            "警告": "Warning",
+            "错误": "Error",
+            "跳过": "Skip",
+            # --- Log messages ---
+            "所有输出已存在": "all outputs already exist",
+            "所有模式输出已存在": "all mode outputs already exist",
+            "无输出": "no output",
+            "净信号全部为无效值，无法输出": "Net signal all invalid; cannot output",
+            # --- Exception / validation messages ---
+            "文件不完整：请先选择标准样、背景、暗场和 poni": "Incomplete files: select standard, BG, dark, and poni first",
+            "标准样厚度必须 > 0 mm": "Standard thickness must be > 0 mm",
+            "队列为空：请先添加外部1D文件": "Queue is empty: add external 1D files first",
+            "K 因子无效（必须 > 0）": "K factor invalid (must be > 0)",
+            "未知流程模式": "Unknown pipeline mode",
+            "未知校正模式": "Unknown correction mode",
+            "K/d 模式下固定厚度必须 > 0 mm": "K/d mode: fixed thickness must be > 0 mm",
+            "raw流程必须提供 BG 1D 文件": "Raw pipeline: BG 1D file required",
+            "raw流程下 BG 归一化因子无效，请检查 BG exp/i0/T": "Raw pipeline: BG norm factor invalid; check BG exp/i0/T",
+            "样品归一化因子无效（exp/i0/T）": "Sample norm factor invalid (exp/i0/T)",
+            "厚度无效（固定厚度或metadata thk_mm）": "Thickness invalid (fixed or metadata thk_mm)",
+            "BG 尺寸不匹配": "BG shape mismatch",
+            "背景归一化因子无效": "Background norm factor invalid",
+            "未提供可用背景图像": "No usable background images provided",
+            "未提供背景图像": "No background images provided",
+            "归一化因子 <= 0": "Normalisation factor <= 0",
+            "扣背景后信号过弱": "Signal too weak after BG subtraction",
+            # --- I0 / normalisation ---
+            "I0 归一化模式仅支持": "I0 normalisation mode only supports",
+            "未知 I0 归一化模式": "Unknown I0 normalisation mode",
+            # --- Parser messages ---
+            "角度非法": "Invalid angle",
+            "扇区角度范围无效": "Invalid sector angle range",
+            "扇区解析后为空": "Sector parsing result is empty",
+            "无法解析文件": "Cannot parse file",
+            "无法识别有效数值列": "Cannot identify valid numeric columns",
+            "文件无法读取": "File unreadable",
+            # --- Metadata ---
+            "metadata CSV 缺少文件列": "metadata CSV missing file column",
+            "未从报告中提取到可用 metadata 行": "No usable metadata rows extracted from report",
+            # --- Instrument check ---
+            "无法读取文件头": "Cannot read file header",
+            "图像尺寸不一致": "Image dimensions inconsistent",
+            "探测器型号不一致": "Detector model inconsistent",
+            "无法读取 poni 做一致性检查": "Cannot read poni for consistency check",
+            # --- Batch / load_data ---
+            "缺少输出目录映射": "Missing output directory mapping",
+            "扇区结果不完整，无法合并": "Sector results incomplete; cannot merge",
+            "不支持的积分模式": "Unsupported integration mode",
+            "文件头缺少关键字段": "File header missing key fields",
+            "自动匹配失败": "Auto-match failed",
+            "并行线程数必须为正整数": "Worker count must be a positive integer",
+            # --- Preview ---
+            "请先在 Tab1/Tab2 设置 poni 文件": "Please set poni file in Tab1/Tab2 first",
+            "I-chi q 环带为空": "I-chi q-ring band is empty",
+            "I-Q 预览区域为空，请检查扇区范围或 mask": "I-Q preview area empty; check sector range or mask",
+            "I-chi 预览 q 范围无效：qmin 必须 < qmax": "I-chi preview q range invalid: qmin must be < qmax",
+            # --- Misc ---
+            "计算得到的 K <= 0": "Computed K <= 0",
+            "输出已存在": "output already exists",
+            "缺少文件头字段": "Missing header fields",
+            "匹配到的 BG 头参数不完整": "Matched BG header params incomplete",
+            "pyFAI 不支持 radial_unit，q 区间已按 A^-1->nm^-1 转换": "pyFAI unsupported radial_unit; q range converted A^-1->nm^-1",
+            "模式失败": "Mode failed",
+        }
+        for k, v in repl.items():
+            text = text.replace(k, v)
+        return text
+
+    def show_info(self, title_key, message):
+        messagebox.showinfo(self.tr(title_key), message)
+
+    def show_error(self, title_key, message):
+        messagebox.showerror(self.tr(title_key), message)
+
+    def show_warning(self, title_key, message):
+        messagebox.showwarning(self.tr(title_key), message)
+
     def set_style(self):
+        # Apply Sun-Valley theme first (light by default)
         apply_ios_theme(self.root)
         style = ttk.Style()
-        try: style.theme_use("clam")
-        except: pass
-        style.configure("Bold.TLabel", font=("Segoe UI", 9, "bold"))
-        style.configure("Title.TLabel", font=("Segoe UI", 11, "bold"), foreground="#2c3e50")
-        style.configure("Group.TLabelframe.Label", font=("Segoe UI", 9, "bold"), foreground="#2980b9")
-        style.configure("Hint.TLabel", font=("Segoe UI", 8), foreground="#4f5b66")
+        # Only fall back to clam if sv_ttk is not active
+        current = style.theme_use()
+        if "sun-valley" not in current and "sv" not in current:
+            try:
+                style.theme_use("clam")
+            except Exception:
+                pass
 
-    def add_tooltip(self, widget, text):
-        if widget is None or not text:
+        # --- Unified typography hierarchy ---
+        _FONT_FAMILY = "Segoe UI"
+        # Detect current theme for adaptive foreground colours
+        try:
+            import sv_ttk as _sv
+            _is_dark = _sv.get_theme() == "dark"
+        except Exception:
+            _is_dark = False
+        _title_fg = "#e0e0e0" if _is_dark else "#1a1a2e"
+        _accent_fg = "#60a5fa" if _is_dark else "#0078d4"
+        _hint_fg = "#9ca3af" if _is_dark else "#6b7280"
+
+        style.configure("Title.TLabel",
+                        font=(_FONT_FAMILY, 13, "bold"),
+                        foreground=_title_fg)
+        style.configure("Bold.TLabel",
+                        font=(_FONT_FAMILY, 9, "bold"))
+        style.configure("Group.TLabelframe.Label",
+                        font=(_FONT_FAMILY, 9, "bold"),
+                        foreground=_accent_fg)
+        style.configure("Hint.TLabel",
+                        font=(_FONT_FAMILY, 8),
+                        foreground=_hint_fg)
+        # Accent button font (sv_ttk supplies colours automatically)
+        style.configure("Accent.TButton",
+                        font=(_FONT_FAMILY, 10, "bold"))
+        # Tab label – slightly larger, padded
+        style.configure("TNotebook.Tab",
+                        font=(_FONT_FAMILY, 10),
+                        padding=(14, 6))
+        # LabelFrame internal padding – breathable
+        style.configure("Group.TLabelframe",
+                        padding=(10, 8))
+        # Status bar style
+        style.configure("Status.TLabel",
+                        font=(_FONT_FAMILY, 8),
+                        foreground=_hint_fg,
+                        padding=(8, 3))
+
+        # Store references for dark-mode syncing (initialise only once)
+        if not hasattr(self, "_native_widgets"):
+            self._native_widgets: list = []
+        if not hasattr(self, "_scroll_canvases"):
+            self._scroll_canvases: list = []
+        self.root._app_ref = self  # allow toggle_theme callback to reach us
+
+    def _register_native_widget(self, widget):
+        """Track a tk.Text or tk.Listbox so its colours follow the theme."""
+        self._native_widgets.append(widget)
+        self._apply_native_colors(widget)
+
+    def _apply_native_colors(self, widget):
+        """Set bg/fg on a single native tk widget according to current theme."""
+        try:
+            import sv_ttk as _sv
+            is_dark = _sv.get_theme() == "dark"
+        except Exception:
+            is_dark = False
+        if is_dark:
+            bg, fg, sel_bg, sel_fg = "#2b2b2b", "#e0e0e0", "#264f78", "#ffffff"
+            ins = "#e0e0e0"
+        else:
+            bg, fg, sel_bg, sel_fg = "#ffffff", "#1a1a1a", "#0078d4", "#ffffff"
+            ins = "#1a1a1a"
+        try:
+            widget.configure(bg=bg, fg=fg, selectbackground=sel_bg, selectforeground=sel_fg)
+            if isinstance(widget, tk.Text):
+                widget.configure(insertbackground=ins)
+        except Exception:
+            pass
+
+    def _sync_native_widget_colors(self):
+        """Called after theme toggle to update all native tk widgets + mpl."""
+        # Re-apply adaptive ttk styles (Title, Hint, Group, Status, Tab)
+        self.set_style()
+
+        alive = []
+        for w in self._native_widgets:
+            try:
+                w.winfo_exists()  # raises TclError if destroyed
+                self._apply_native_colors(w)
+                alive.append(w)
+            except Exception:
+                pass
+        self._native_widgets = alive
+
+        # Update scroll-canvas backgrounds
+        try:
+            import sv_ttk as _sv
+            is_dark = _sv.get_theme() == "dark"
+        except Exception:
+            is_dark = False
+        canvas_bg = "#1e1e1e" if is_dark else "#fafafa"
+        alive_c = []
+        for c in self._scroll_canvases:
+            try:
+                c.winfo_exists()
+                c.configure(bg=canvas_bg)
+                alive_c.append(c)
+            except Exception:
+                pass
+        self._scroll_canvases = alive_c
+
+        # Update matplotlib figure backgrounds if present
+        fig_bg = "#2b2b2b" if is_dark else "#fafafa"
+        ax_bg = "#1e1e1e" if is_dark else "#ffffff"
+        txt_c = "#e0e0e0" if is_dark else "#1a1a1a"
+        import matplotlib as mpl
+        mpl.rcParams.update({
+            "figure.facecolor": fig_bg,
+            "axes.facecolor": ax_bg,
+            "text.color": txt_c,
+            "axes.labelcolor": txt_c,
+            "xtick.color": txt_c,
+            "ytick.color": txt_c,
+        })
+        for attr in ("fig", "fig_preview"):
+            fig = getattr(self, attr, None)
+            if fig is not None:
+                fig.set_facecolor(fig_bg)
+                for ax in fig.get_axes():
+                    ax.set_facecolor(ax_bg)
+                fig.canvas.draw_idle()
+
+    def _make_scrollable_frame(self, parent):
+        """Wrap *parent* with a vertical-scrollable Canvas; return inner Frame."""
+        # Choose canvas bg matching theme
+        try:
+            import sv_ttk as _sv
+            _bg = "#1e1e1e" if _sv.get_theme() == "dark" else "#fafafa"
+        except Exception:
+            _bg = "#fafafa"
+        canvas = tk.Canvas(parent, highlightthickness=0, borderwidth=0, bg=_bg)
+        vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind(
+            "<Configure>",
+            lambda _: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.bind(
+            "<Configure>",
+            lambda e: canvas.itemconfig(win_id, width=e.width),
+        )
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind("<Enter>", lambda _: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        canvas.bind("<Leave>", lambda _: canvas.unbind_all("<MouseWheel>"))
+        # Track for dark-mode sync
+        self._scroll_canvases.append(canvas)
+        return inner
+
+    def add_tooltip(self, widget, text_or_key):
+        if widget is None or not text_or_key:
             return
-        self._tooltips.append(ToolTip(widget, text))
+        # If text_or_key is a known i18n key, resolve it; otherwise use raw text
+        lang_pack = I18N.get("en", {})
+        is_key = text_or_key in lang_pack
+        resolved = self.tr(text_or_key) if is_key else text_or_key
+        tt = ToolTip(widget, resolved)
+        self._tooltips.append(tt)
+        if is_key:
+            if not hasattr(self, "_i18n_tooltips"):
+                self._i18n_tooltips = []
+            self._i18n_tooltips.append((tt, text_or_key))
 
-    def add_hint(self, parent, text, wraplength=420):
-        lbl = ttk.Label(parent, text=f"注释: {text}", style="Hint.TLabel", justify="left", wraplength=wraplength)
+    def add_hint(self, parent, text_or_key, wraplength=420):
+        lang_pack = I18N.get("en", {})
+        is_key = text_or_key in lang_pack
+        resolved = self.tr(text_or_key) if is_key else text_or_key
+        lbl = ttk.Label(parent, text=f"{self.tr('hint_prefix')}: {resolved}", style="Hint.TLabel", justify="left", wraplength=wraplength)
         lbl.pack(fill="x", padx=3, pady=(1, 3))
+        if is_key:
+            if not hasattr(self, "_i18n_hints"):
+                self._i18n_hints = []
+            self._i18n_hints.append((lbl, text_or_key))
         return lbl
 
     # =========================================================================
@@ -792,17 +2016,34 @@ class BL19B2_RobustApp:
                     targets.append(("1d_sector_sum", d / f"{out_stem}.dat"))
         return targets
 
-    def save_profile_table(self, out_path, x, i_abs, i_err, x_label):
+    def save_profile_table(self, out_path, x, i_abs, i_err, x_label, output_format="tsv"):
         # Origin-friendly text table: first row is column names, tab-separated.
+        out_path = Path(out_path)
+        x_arr = np.asarray(x, dtype=np.float64)
+        i_arr = np.asarray(i_abs, dtype=np.float64)
+        e_arr = np.asarray(i_err, dtype=np.float64)
+
+        if output_format == "cansas_xml" and write_cansas1d_xml is not None:
+            xml_path = out_path.with_suffix(".xml")
+            write_cansas1d_xml(xml_path, x_arr, i_arr, e_arr)
+            return
+        if output_format == "nxcansas_h5" and write_nxcansas_h5 is not None:
+            h5_path = out_path.with_suffix(".h5")
+            write_nxcansas_h5(h5_path, x_arr, i_arr, e_arr)
+            return
+
         df = pd.DataFrame({
-            x_label: np.asarray(x, dtype=np.float64),
-            "I_abs_cm^-1": np.asarray(i_abs, dtype=np.float64),
-            "Error_cm^-1": np.asarray(i_err, dtype=np.float64),
+            x_label: x_arr,
+            "I_abs_cm^-1": i_arr,
+            "Error_cm^-1": e_arr,
         })
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        sep = "," if output_format == "csv" else "\t"
+        suffix = ".csv" if output_format == "csv" else ".dat"
+        final_path = out_path.with_suffix(suffix) if output_format == "csv" else out_path
         df.to_csv(
-            out_path,
-            sep="\t",
+            final_path,
+            sep=sep,
             index=False,
             encoding="utf-8-sig",
             na_rep="",
@@ -900,55 +2141,88 @@ class BL19B2_RobustApp:
         left_panel.pack(side="left", fill="y", padx=5, pady=5)
 
         # 流程提示
-        f_guide = ttk.LabelFrame(left_panel, text="快速流程（新手）", style="Group.TLabelframe")
+        f_guide = ttk.LabelFrame(left_panel, text=self.tr("t1_guide_title"), style="Group.TLabelframe")
+        self._register_i18n_widget(f_guide, "t1_guide_title")
         f_guide.pack(fill="x", pady=5)
-        guide_text = (
-            "① 选择标准样/本底/暗场/几何文件\n"
-            "② 核对自动读取的 Time、I0、T\n"
-            "③ 填写标准样厚度(mm)\n"
-            "④ 点击运行标定，得到 K 因子\n"
-            "⑤ 查看报告中的 Std Dev 与点数"
-        )
+        guide_text = self.tr("t1_guide_text")
         lbl_guide = ttk.Label(f_guide, text=guide_text, justify="left", style="Hint.TLabel")
+        self._register_i18n_widget(lbl_guide, "t1_guide_text")
         lbl_guide.pack(fill="x", padx=4, pady=3)
-        self.add_tooltip(lbl_guide, "按 1~5 步执行，基本不会漏关键参数。")
+        self.add_tooltip(lbl_guide, "tip_t1_guide")
 
         # 1. 文件区
-        f_files = ttk.LabelFrame(left_panel, text="1. 标定文件（必须）", style="Group.TLabelframe")
+        f_files = ttk.LabelFrame(left_panel, text=self.tr("t1_files_title"), style="Group.TLabelframe")
+        self._register_i18n_widget(f_files, "t1_files_title")
         f_files.pack(fill="x", pady=5)
-        self.add_hint(
-            f_files,
-            "标准样建议用玻璃碳（GC）；背景/暗场/poni 应与样品保持同一实验几何与能量。",
-        )
+        self.add_hint(f_files, "hint_t1_files")
         
         self.t1_files = {
             "std": tk.StringVar(), "bg": self.global_vars["bg_path"],
             "dark": self.global_vars["dark_path"], "poni": self.global_vars["poni_path"]
         }
 
-        row_std = self.add_file_row(f_files, "标准样 (GC):", self.t1_files["std"], "*.tif", self.on_load_std_t1)
-        self.add_tooltip(row_std["entry"], "用于绝对强度标定的标准样二维图像（推荐 GC）。")
-        self.add_tooltip(row_std["button"], "点击选择标准样文件。")
+        # --- Standard type selector row ---
+        self.t1_std_type = tk.StringVar(value="SRM3600")
+        self.t1_water_temp = tk.DoubleVar(value=20.0)
+        self.t1_std_ref_path = tk.StringVar()
 
-        row_bg = self.add_file_row(f_files, "背景图像:", self.t1_files["bg"], "*.tif", self.on_load_bg_t1)
-        self.add_tooltip(row_bg["entry"], "空样品/空气或本底散射图像，用于 2D 本底扣除。")
-        self.add_tooltip(row_bg["button"], "点击选择背景图像。")
+        row_std_type = ttk.Frame(f_files); row_std_type.pack(fill="x", pady=1)
+        lbl_std_type = ttk.Label(row_std_type, text=self.tr("lbl_t1_std_type"), width=15, anchor="e")
+        lbl_std_type.pack(side="left")
+        self._register_i18n_widget(lbl_std_type, "lbl_t1_std_type")
+        std_options = [
+            self.tr("opt_std_srm3600"),
+            self.tr("opt_std_water"),
+            self.tr("opt_std_lupolen"),
+            self.tr("opt_std_custom"),
+        ]
+        self._t1_std_option_map = {
+            self.tr("opt_std_srm3600"): "SRM3600",
+            self.tr("opt_std_water"): "Water_20C",
+            self.tr("opt_std_lupolen"): "Lupolen",
+            self.tr("opt_std_custom"): "Custom",
+        }
+        self.t1_std_combo = ttk.Combobox(row_std_type, values=std_options, width=25, state="readonly")
+        self.t1_std_combo.current(0)
+        self.t1_std_combo.pack(side="left", padx=5)
+        self.t1_std_combo.bind("<<ComboboxSelected>>", self._on_std_type_changed)
 
-        row_dark = self.add_file_row(f_files, "暗场图像:", self.t1_files["dark"], "*.tif")
-        self.add_tooltip(row_dark["entry"], "探测器暗电流/本底噪声图像。")
-        self.add_tooltip(row_dark["button"], "点击选择暗场图像。")
+        # Water temperature row (hidden by default)
+        self.t1_water_row = ttk.Frame(f_files)
+        lbl_wt = ttk.Label(self.t1_water_row, text=self.tr("lbl_t1_water_temp"), width=15, anchor="e")
+        lbl_wt.pack(side="left")
+        self._register_i18n_widget(lbl_wt, "lbl_t1_water_temp")
+        ttk.Entry(self.t1_water_row, textvariable=self.t1_water_temp, width=8).pack(side="left", padx=5)
+        # Not packed initially — shown when Water is selected
 
-        row_poni = self.add_file_row(f_files, "几何文件 (.poni):", self.t1_files["poni"], "*.poni")
-        self.add_tooltip(row_poni["entry"], "pyFAI 几何标定文件，决定 q 转换精度。")
-        self.add_tooltip(row_poni["button"], "点击选择 .poni 文件。")
+        # Reference curve file row (hidden by default)
+        self.t1_ref_row = self.add_file_row(f_files, self.tr("lbl_t1_std_ref_file"), self.t1_std_ref_path, "*.dat *.txt *.csv *.xml")
+        self.t1_ref_row["frame"].pack_forget()  # hidden by default
+
+        row_std = self.add_file_row(f_files, self.tr("lbl_t1_std_file"), self.t1_files["std"], "*.tif", self.on_load_std_t1)
+        self.add_tooltip(row_std["entry"], "tip_t1_std_entry")
+        self.add_tooltip(row_std["button"], "tip_t1_std_btn")
+
+        row_bg = self.add_file_row(f_files, self.tr("lbl_t1_bg_file"), self.t1_files["bg"], "*.tif", self.on_load_bg_t1)
+        self.add_tooltip(row_bg["entry"], "tip_t1_bg_entry")
+        self.add_tooltip(row_bg["button"], "tip_t1_bg_btn")
+        btn_bg_multi = ttk.Button(row_bg["frame"], text="+", width=3, command=self.select_multi_bg_t1)
+        btn_bg_multi.pack(side="left", padx=(2, 0))
+        self.add_tooltip(btn_bg_multi, "tip_t1_bg_multi")
+
+        row_dark = self.add_file_row(f_files, self.tr("lbl_t1_dark_file"), self.t1_files["dark"], "*.tif")
+        self.add_tooltip(row_dark["entry"], "tip_t1_dark_entry")
+        self.add_tooltip(row_dark["button"], "tip_t1_dark_btn")
+
+        row_poni = self.add_file_row(f_files, self.tr("lbl_t1_poni_file"), self.t1_files["poni"], "*.poni")
+        self.add_tooltip(row_poni["entry"], "tip_t1_poni_entry")
+        self.add_tooltip(row_poni["button"], "tip_t1_poni_btn")
 
         # 2. 物理参数
-        f_phys = ttk.LabelFrame(left_panel, text="2. 物理参数（核心输入）", style="Group.TLabelframe")
+        f_phys = ttk.LabelFrame(left_panel, text=self.tr("t1_phys_title"), style="Group.TLabelframe")
+        self._register_i18n_widget(f_phys, "t1_phys_title")
         f_phys.pack(fill="x", pady=5)
-        self.add_hint(
-            f_phys,
-            "Time(s)=曝光时间；I0=入射强度监测值；T=透过率(0~1)。归一化按下方 I0 语义选择公式。",
-        )
+        self.add_hint(f_phys, "hint_t1_phys")
         f_phys_grid = ttk.Frame(f_phys)
         f_phys_grid.pack(fill="x")
         
@@ -976,7 +2250,9 @@ class BL19B2_RobustApp:
 
         norm_row = ttk.Frame(f_phys)
         norm_row.pack(fill="x", pady=(3, 0))
-        ttk.Label(norm_row, text="I0 语义:").pack(side="left")
+        lbl_i0_t1 = ttk.Label(norm_row, text=self.tr("lbl_i0_semantic"))
+        lbl_i0_t1.pack(side="left")
+        self._register_i18n_widget(lbl_i0_t1, "lbl_i0_semantic")
         cb_norm_t1 = ttk.Combobox(
             norm_row,
             textvariable=self.global_vars["monitor_mode"],
@@ -993,50 +2269,53 @@ class BL19B2_RobustApp:
         lbl_norm_hint_t1.pack(side="left")
         cb_solid_t1 = ttk.Checkbutton(
             norm_row,
-            text="SolidAngle修正",
+            text=self.tr("cb_solid_angle"),
             variable=self.global_vars["apply_solid_angle"],
         )
         cb_solid_t1.pack(side="left", padx=(8, 0))
+        self._register_i18n_widget(cb_solid_t1, "cb_solid_angle")
 
-        self.add_tooltip(e_std_exp, "标准样曝光时间（秒）。")
-        self.add_tooltip(e_std_i0, "标准样 I0（监测器读数）。")
-        self.add_tooltip(e_std_t, "标准样透过率，建议在 0~1 之间。")
-        self.add_tooltip(e_std_thk, "标准样厚度（mm），用于体积归一化。")
-        self.add_tooltip(e_bg_exp, "背景图曝光时间（秒）。")
-        self.add_tooltip(e_bg_i0, "背景图 I0（监测器读数）。")
-        self.add_tooltip(e_bg_t, "背景图透过率。")
-        self.add_tooltip(cb_norm_t1, "rate: I0 是每秒计数率；integrated: I0 是曝光积分计数。")
-        self.add_tooltip(lbl_norm_hint_t1, "请按线站实际输出选择。选错会引入曝光时间相关系统误差。")
-        self.add_tooltip(cb_solid_t1, "Tab1标定与Tab2批处理共用此设置。两者必须一致，否则 K 因子无效。")
+        self.add_tooltip(e_std_exp, "tip_t1_std_exp")
+        self.add_tooltip(e_std_i0, "tip_t1_std_i0")
+        self.add_tooltip(e_std_t, "tip_t1_std_t")
+        self.add_tooltip(e_std_thk, "tip_t1_std_thk")
+        self.add_tooltip(e_bg_exp, "tip_t1_bg_exp")
+        self.add_tooltip(e_bg_i0, "tip_t1_bg_i0")
+        self.add_tooltip(e_bg_t, "tip_t1_bg_t")
+        self.add_tooltip(cb_norm_t1, "tip_t1_norm_mode")
+        self.add_tooltip(lbl_norm_hint_t1, "tip_t1_norm_hint")
+        self.add_tooltip(cb_solid_t1, "tip_t1_solid_angle")
 
         # 3. 操作按钮
         btn_row = ttk.Frame(left_panel)
         btn_row.pack(fill="x", pady=10)
-        btn_cal = ttk.Button(btn_row, text=">>> 运行 K 因子标定（稳健模式） <<<", command=self.run_calibration)
+        btn_cal = ttk.Button(btn_row, text=self.tr("t1_run_btn"), command=self.run_calibration, style="Accent.TButton")
+        self._register_i18n_widget(btn_cal, "t1_run_btn")
         btn_cal.pack(side="left", fill="x", expand=True, ipady=5)
-        btn_hist = ttk.Button(btn_row, text="K 历史", command=self.open_k_history)
+        btn_hist = ttk.Button(btn_row, text=self.tr("t1_hist_btn"), command=self.open_k_history)
+        self._register_i18n_widget(btn_hist, "t1_hist_btn")
         btn_hist.pack(side="left", padx=(6, 0))
-        self.add_tooltip(btn_cal, "执行 2D 扣背景 + 1D 积分 + NIST 匹配，自动写入 K 因子。")
-        self.add_tooltip(btn_hist, "查看历史 K 因子趋势，监控仪器漂移。")
+        self.add_tooltip(btn_cal, "tip_t1_calibrate")
+        self.add_tooltip(btn_hist, "tip_t1_history")
 
         # 4. 报告
-        f_rep = ttk.LabelFrame(left_panel, text="分析报告（建议重点看 Std Dev）", style="Group.TLabelframe")
+        f_rep = ttk.LabelFrame(left_panel, text=self.tr("t1_report_title"), style="Group.TLabelframe")
+        self._register_i18n_widget(f_rep, "t1_report_title")
         f_rep.pack(fill="both", expand=True, pady=5)
         self.txt_report = tk.Text(f_rep, font=("Consolas", 9), height=15, width=40)
         self.txt_report.pack(fill="both", expand=True)
-        self.add_tooltip(
-            self.txt_report,
-            "会显示标定关键指标：K、有效点数、Q 重叠区间和离散度。"
-        )
+        self._register_native_widget(self.txt_report)
+        self.add_tooltip(self.txt_report, "tip_t1_report")
 
         # --- 右侧图形 ---
         right_panel = ttk.Frame(p)
         right_panel.pack(side="right", fill="both", expand=True, padx=5, pady=5)
         lbl_plot_tip = ttk.Label(
             right_panel,
-            text="图示说明：黑虚线=净信号；蓝线=K 校正后；红圈=NIST 参考点",
+            text=self.tr("t1_plot_tip"),
             style="Hint.TLabel",
         )
+        self._register_i18n_widget(lbl_plot_tip, "t1_plot_tip")
         lbl_plot_tip.pack(anchor="w", pady=(0, 2))
         self.fig1 = Figure(figsize=(6, 5), dpi=100)
         self.ax1 = self.fig1.add_subplot(111)
@@ -1044,13 +2323,13 @@ class BL19B2_RobustApp:
         self.canvas1.get_tk_widget().pack(fill="both", expand=True)
         self.toolbar1 = NavigationToolbar2Tk(self.canvas1, right_panel)
         self.toolbar1.update()
-        self.add_tooltip(lbl_plot_tip, "若蓝线与红点趋势一致，通常说明 K 标定质量较好。")
+        self.add_tooltip(lbl_plot_tip, "tip_t1_plot")
 
     # =========================================================================
     # TAB 2: Batch Processing
     # =========================================================================
     def init_tab2_batch(self):
-        p = self.tab2
+        p = self._make_scrollable_frame(self.tab2)
         
         self.t2_files = []
         self.t2_mu = tk.DoubleVar(value=20.2)
@@ -1068,10 +2347,13 @@ class BL19B2_RobustApp:
         self.t2_workers = tk.IntVar(value=1)
         self.t2_strict_instrument = tk.BooleanVar(value=True)
         self.t2_instr_tol_pct = tk.DoubleVar(value=0.5)
+        self.t2_alpha = tk.DoubleVar(value=1.0)
+        self.t2_alpha_enabled = tk.BooleanVar(value=False)
+        self.t2_output_format = tk.StringVar(value="tsv")
         self.t2_bg_candidates = []
         self.t2_dark_candidates = []
-        self.t2_bg_lib_info = tk.StringVar(value="BG库: 0")
-        self.t2_dark_lib_info = tk.StringVar(value="Dark库: 0")
+        self.t2_bg_lib_info = tk.StringVar(value=self.tr("var_bg_lib").format(n=0))
+        self.t2_dark_lib_info = tk.StringVar(value=self.tr("var_dark_lib").format(n=0))
         
         self.t2_mode_full = tk.BooleanVar(value=True)
         self.t2_mode_sector = tk.BooleanVar(value=False)
@@ -1085,36 +2367,39 @@ class BL19B2_RobustApp:
         self.t2_rad_qmax = tk.DoubleVar(value=2.5)
 
         # 流程提示
-        f_guide = ttk.LabelFrame(p, text="批处理工作流（推荐顺序）", style="Group.TLabelframe")
+        f_guide = ttk.LabelFrame(p, text=self.tr("t2_guide_title"), style="Group.TLabelframe")
+        self._register_i18n_widget(f_guide, "t2_guide_title")
         f_guide.pack(fill="x", padx=10, pady=(8, 3))
-        guide = (
-            "① 先确认 K 因子和 BG/暗场/poni 已就绪\n"
-            "② 选择厚度逻辑（自动/固定）\n"
-            "③ 选择一个或多个积分模式（可同时勾选）\n"
-            "④ 添加样品文件并点击预检查\n"
-            "⑤ 启动批处理并查看 batch_report.csv"
-        )
+        guide = self.tr("t2_guide_text")
         lbl_guide = ttk.Label(f_guide, text=guide, justify="left", style="Hint.TLabel")
+        self._register_i18n_widget(lbl_guide, "t2_guide_text")
         lbl_guide.pack(fill="x", padx=4, pady=3)
-        self.add_tooltip(lbl_guide, "先预检查再正式跑批，可显著减少中途失败。")
+        self.add_tooltip(lbl_guide, "tip_t2_guide")
 
         # --- Settings ---
         top_frame = ttk.Frame(p)
         top_frame.pack(fill="x", padx=10, pady=5)
         
         # 1. Global
-        c1 = ttk.LabelFrame(top_frame, text="1. 全局配置", style="Group.TLabelframe")
+        c1 = ttk.LabelFrame(top_frame, text=self.tr("lf_t2_global"), style="Group.TLabelframe")
         c1.pack(side="left", fill="y", padx=5)
-        self.add_hint(c1, "K 因子来自 Tab1 标定结果。I0 语义决定归一化公式；BG 路径仅用于快速确认。", wraplength=300)
+        self._register_i18n_widget(c1, "lf_t2_global")
+        self.add_hint(c1, "hint_t2_global", wraplength=300)
         c1_grid = ttk.Frame(c1)
         c1_grid.pack(fill="x")
-        ttk.Label(c1_grid, text="K 因子:").grid(row=0, column=0, sticky="e")
+        lbl_k = ttk.Label(c1_grid, text=self.tr("lbl_t2_k_factor"))
+        lbl_k.grid(row=0, column=0, sticky="e")
+        self._register_i18n_widget(lbl_k, "lbl_t2_k_factor")
         e_k = ttk.Entry(c1_grid, textvariable=self.global_vars["k_factor"], width=10)
         e_k.grid(row=0, column=1, padx=5)
-        ttk.Label(c1_grid, text="背景文件:").grid(row=1, column=0, sticky="e")
+        lbl_bgf = ttk.Label(c1_grid, text=self.tr("lbl_t2_bg_file"))
+        lbl_bgf.grid(row=1, column=0, sticky="e")
+        self._register_i18n_widget(lbl_bgf, "lbl_t2_bg_file")
         lbl_bg = ttk.Label(c1_grid, textvariable=self.global_vars["bg_path"], width=20, foreground="gray")
         lbl_bg.grid(row=1, column=1, padx=5)
-        ttk.Label(c1_grid, text="I0 语义:").grid(row=2, column=0, sticky="e")
+        lbl_i0 = ttk.Label(c1_grid, text=self.tr("lbl_t2_i0_semantic"))
+        lbl_i0.grid(row=2, column=0, sticky="e")
+        self._register_i18n_widget(lbl_i0, "lbl_t2_i0_semantic")
         cb_norm_t2 = ttk.Combobox(
             c1_grid,
             textvariable=self.global_vars["monitor_mode"],
@@ -1125,51 +2410,59 @@ class BL19B2_RobustApp:
         cb_norm_t2.grid(row=2, column=1, padx=5, pady=(2, 0), sticky="w")
         lbl_norm_hint_t2 = ttk.Label(c1_grid, text="rate: exp*I0*T / integrated: I0*T", style="Hint.TLabel")
         lbl_norm_hint_t2.grid(row=3, column=0, columnspan=2, sticky="w", padx=2)
-        self.add_tooltip(e_k, "绝对强度比例因子。必须大于 0。")
-        self.add_tooltip(lbl_bg, "当前启用的背景图路径（由 Tab1 共享）。")
-        self.add_tooltip(cb_norm_t2, "全局生效：rate 表示 I0 为计数率；integrated 表示 I0 为积分计数。")
-        self.add_tooltip(lbl_norm_hint_t2, "该设置会影响标定与批处理的所有归一化因子。")
+        self.add_tooltip(e_k, "tip_t2_k_factor")
+        self.add_tooltip(lbl_bg, "tip_t2_bg_label")
+        self.add_tooltip(cb_norm_t2, "tip_t2_norm_mode")
+        self.add_tooltip(lbl_norm_hint_t2, "tip_t2_norm_hint")
 
         # 2. Thickness
-        c2 = ttk.LabelFrame(top_frame, text="2. 厚度策略", style="Group.TLabelframe")
+        c2 = ttk.LabelFrame(top_frame, text=self.tr("lf_t2_thickness"), style="Group.TLabelframe")
         c2.pack(side="left", fill="y", padx=5)
-        self.add_hint(c2, "自动模式: d=-ln(T)/mu；固定模式: 所有样品使用同一厚度(mm)。", wraplength=320)
+        self._register_i18n_widget(c2, "lf_t2_thickness")
+        self.add_hint(c2, "hint_t2_thickness", wraplength=320)
         
         r1 = ttk.Frame(c2); r1.pack(anchor="w")
-        rb_auto = ttk.Radiobutton(r1, text="自动厚度 (d = -ln(T)/μ)", variable=self.t2_calc_mode, value="auto")
+        rb_auto = ttk.Radiobutton(r1, text=self.tr("rb_t2_auto_thk"), variable=self.t2_calc_mode, value="auto")
         rb_auto.pack(side="left")
-        lbl_mu = ttk.Label(r1, text=" μ(cm⁻¹):")
+        self._register_i18n_widget(rb_auto, "rb_t2_auto_thk")
+        lbl_mu = ttk.Label(r1, text=self.tr("lbl_t2_mu"))
         lbl_mu.pack(side="left")
+        self._register_i18n_widget(lbl_mu, "lbl_t2_mu")
         e_mu = ttk.Entry(r1, textvariable=self.t2_mu, width=6)
         e_mu.pack(side="left")
-        btn_est = ttk.Button(r1, text="μ估算", command=self.open_mu_tool, width=8)
+        btn_est = ttk.Button(r1, text=self.tr("btn_t2_mu_est"), command=self.open_mu_tool, width=8)
         btn_est.pack(side="left", padx=2)
+        self._register_i18n_widget(btn_est, "btn_t2_mu_est")
         
         r2 = ttk.Frame(c2); r2.pack(anchor="w")
-        rb_fix = ttk.Radiobutton(r2, text="固定厚度 (mm):", variable=self.t2_calc_mode, value="fixed")
+        rb_fix = ttk.Radiobutton(r2, text=self.tr("rb_t2_fix_thk"), variable=self.t2_calc_mode, value="fixed")
         rb_fix.pack(side="left")
+        self._register_i18n_widget(rb_fix, "rb_t2_fix_thk")
         e_fix = ttk.Entry(r2, textvariable=self.t2_fixed_thk, width=6)
         e_fix.pack(side="left")
 
-        self.add_tooltip(rb_auto, "适合每个样品都具有可靠透过率 T 的情况。")
-        self.add_tooltip(e_mu, "线性衰减系数 mu，单位 cm^-1，必须大于 0。")
-        self.add_tooltip(btn_est, "按合金成分估算 mu（30 keV 经验）。")
-        self.add_tooltip(rb_fix, "透过率不稳定或缺失时，建议改为固定厚度。")
-        self.add_tooltip(e_fix, "所有样品统一厚度值，单位 mm。")
-        self.add_tooltip(lbl_mu, "mu 越大，按同样 T 算出的厚度越小。")
+        self.add_tooltip(rb_auto, "tip_t2_auto_thk")
+        self.add_tooltip(e_mu, "tip_t2_mu")
+        self.add_tooltip(btn_est, "tip_t2_mu_est")
+        self.add_tooltip(rb_fix, "tip_t2_fix_thk")
+        self.add_tooltip(e_fix, "tip_t2_fix_thk_val")
+        self.add_tooltip(lbl_mu, "tip_t2_mu_label")
         
         # 3. Integration
-        c3 = ttk.LabelFrame(top_frame, text="3. 积分模式（2D 扣背景后）", style="Group.TLabelframe")
+        c3 = ttk.LabelFrame(top_frame, text=self.tr("lf_t2_integration"), style="Group.TLabelframe")
         c3.pack(side="left", fill="y", padx=5)
-        self.add_hint(c3, "可多选并一次性输出到不同文件夹：全环/扇区/织构可同时运行。", wraplength=320)
+        self._register_i18n_widget(c3, "lf_t2_integration")
+        self.add_hint(c3, "hint_t2_integration", wraplength=320)
         c3_grid = ttk.Frame(c3)
         c3_grid.pack(fill="x")
 
-        cb_full = ttk.Checkbutton(c3_grid, text="I-Q 全环", variable=self.t2_mode_full)
+        cb_full = ttk.Checkbutton(c3_grid, text=self.tr("cb_t2_full_ring"), variable=self.t2_mode_full)
         cb_full.grid(row=0, column=0, sticky="w")
+        self._register_i18n_widget(cb_full, "cb_t2_full_ring")
         f_sec = ttk.Frame(c3_grid); f_sec.grid(row=1, column=0, sticky="w")
-        cb_sec = ttk.Checkbutton(f_sec, text="I-Q 扇区", variable=self.t2_mode_sector)
+        cb_sec = ttk.Checkbutton(f_sec, text=self.tr("cb_t2_sector"), variable=self.t2_mode_sector)
         cb_sec.pack(side="left")
+        self._register_i18n_widget(cb_sec, "cb_t2_sector")
         ttk.Label(f_sec, text=" [").pack(side="left")
         e_sec_min = ttk.Entry(f_sec, textvariable=self.t2_sec_min, width=4)
         e_sec_min.pack(side="left")
@@ -1177,22 +2470,30 @@ class BL19B2_RobustApp:
         e_sec_max = ttk.Entry(f_sec, textvariable=self.t2_sec_max, width=4)
         e_sec_max.pack(side="left")
         ttk.Label(f_sec, text="] deg").pack(side="left")
-        btn_sec_preview = ttk.Button(f_sec, text="预览I-Q", width=8, command=self.preview_iq_window_t2)
+        btn_sec_preview = ttk.Button(f_sec, text=self.tr("btn_t2_iq_preview"), width=8, command=self.preview_iq_window_t2)
         btn_sec_preview.pack(side="left", padx=(4, 0))
+        self._register_i18n_widget(btn_sec_preview, "btn_t2_iq_preview")
 
         f_sec_multi = ttk.Frame(c3_grid); f_sec_multi.grid(row=2, column=0, sticky="w")
-        ttk.Label(f_sec_multi, text=" 多扇区:").pack(side="left")
+        lbl_msec = ttk.Label(f_sec_multi, text=self.tr("lbl_t2_multi_sector"))
+        lbl_msec.pack(side="left")
+        self._register_i18n_widget(lbl_msec, "lbl_t2_multi_sector")
         e_sec_multi = ttk.Entry(f_sec_multi, textvariable=self.t2_sector_ranges_text, width=26)
         e_sec_multi.pack(side="left")
-        ttk.Label(f_sec_multi, text=" 例:-25~25;45~65").pack(side="left")
-        cb_sec_each = ttk.Checkbutton(f_sec_multi, text="分扇区分别保存", variable=self.t2_sector_save_each)
+        lbl_sec_ex = ttk.Label(f_sec_multi, text=self.tr("lbl_t2_sector_example"))
+        lbl_sec_ex.pack(side="left")
+        self._register_i18n_widget(lbl_sec_ex, "lbl_t2_sector_example")
+        cb_sec_each = ttk.Checkbutton(f_sec_multi, text=self.tr("cb_t2_sec_save_each"), variable=self.t2_sector_save_each)
         cb_sec_each.pack(side="left", padx=(6, 0))
-        cb_sec_sum = ttk.Checkbutton(f_sec_multi, text="扇区合并保存", variable=self.t2_sector_save_combined)
+        self._register_i18n_widget(cb_sec_each, "cb_t2_sec_save_each")
+        cb_sec_sum = ttk.Checkbutton(f_sec_multi, text=self.tr("cb_t2_sec_save_sum"), variable=self.t2_sector_save_combined)
         cb_sec_sum.pack(side="left", padx=(4, 0))
+        self._register_i18n_widget(cb_sec_sum, "cb_t2_sec_save_sum")
 
         f_tex = ttk.Frame(c3_grid); f_tex.grid(row=3, column=0, sticky="w")
-        cb_tex = ttk.Checkbutton(f_tex, text="I-chi 织构", variable=self.t2_mode_chi)
+        cb_tex = ttk.Checkbutton(f_tex, text=self.tr("cb_t2_texture"), variable=self.t2_mode_chi)
         cb_tex.pack(side="left")
+        self._register_i18n_widget(cb_tex, "cb_t2_texture")
         ttk.Label(f_tex, text=" Q[").pack(side="left")
         e_qmin = ttk.Entry(f_tex, textvariable=self.t2_rad_qmin, width=4)
         e_qmin.pack(side="left")
@@ -1200,34 +2501,39 @@ class BL19B2_RobustApp:
         e_qmax = ttk.Entry(f_tex, textvariable=self.t2_rad_qmax, width=4)
         e_qmax.pack(side="left")
         ttk.Label(f_tex, text="] A⁻¹").pack(side="left")
-        btn_chi_preview = ttk.Button(f_tex, text="预览I-chi", width=10, command=self.preview_ichi_window_t2)
+        btn_chi_preview = ttk.Button(f_tex, text=self.tr("btn_t2_chi_preview"), width=10, command=self.preview_ichi_window_t2)
         btn_chi_preview.pack(side="left", padx=(4, 0))
+        self._register_i18n_widget(btn_chi_preview, "btn_t2_chi_preview")
 
-        self.add_tooltip(cb_full, "对各向同性样品优先推荐。可与其他模式同时勾选。")
-        self.add_tooltip(cb_sec, "仅对指定方位角扇区积分，突出方向性结构。可多选并行输出。")
-        self.add_tooltip(e_sec_min, "扇区起始角（度）。支持跨 ±180°（例如 170 到 -170）。")
-        self.add_tooltip(e_sec_max, "扇区结束角（度）。与起始角相同（模360）无效。")
-        self.add_tooltip(btn_sec_preview, "弹出2D窗口预览 I-Q 积分区域（扇区或全环），用于确认选区。")
-        self.add_tooltip(e_sec_multi, "多扇区列表。支持 `-25~25;45~65`、`-25,25 45,65` 等格式；留空时使用上方单扇区。")
-        self.add_tooltip(cb_sec_each, "每个扇区输出到独立子文件夹（sector_XX_*）。")
-        self.add_tooltip(cb_sec_sum, "将所有扇区按像素权重合并成一条 I-Q，并单独输出。")
-        self.add_tooltip(cb_tex, "在给定 q 范围内输出 I 随方位角 chi 的分布。可与 I-Q 同时输出。")
-        self.add_tooltip(e_qmin, "织构分析 q 最小值（A^-1）。")
-        self.add_tooltip(e_qmax, "织构分析 q 最大值（A^-1），需大于 q_min。")
-        self.add_tooltip(btn_chi_preview, "弹出2D窗口预览 I-chi 使用的 q 环带范围。")
+        self.add_tooltip(cb_full, "tip_t2_full")
+        self.add_tooltip(cb_sec, "tip_t2_sector")
+        self.add_tooltip(e_sec_min, "tip_t2_sec_min")
+        self.add_tooltip(e_sec_max, "tip_t2_sec_max")
+        self.add_tooltip(btn_sec_preview, "tip_t2_sec_preview")
+        self.add_tooltip(e_sec_multi, "tip_t2_sec_multi")
+        self.add_tooltip(cb_sec_each, "tip_t2_sec_each")
+        self.add_tooltip(cb_sec_sum, "tip_t2_sec_sum")
+        self.add_tooltip(cb_tex, "tip_t2_texture")
+        self.add_tooltip(e_qmin, "tip_t2_qmin")
+        self.add_tooltip(e_qmax, "tip_t2_qmax")
+        self.add_tooltip(btn_chi_preview, "tip_t2_chi_preview")
 
         # 4. 修正与执行策略
         adv_frame = ttk.Frame(p)
         adv_frame.pack(fill="x", padx=10, pady=(2, 4))
 
-        c4 = ttk.LabelFrame(adv_frame, text="4. 修正参数", style="Group.TLabelframe")
+        c4 = ttk.LabelFrame(adv_frame, text=self.tr("lf_t2_correction"), style="Group.TLabelframe")
         c4.pack(side="left", fill="x", expand=True, padx=5)
-        self.add_hint(c4, "建议开启 solid angle。可选 mask/flat/polarization 与误差模型。", wraplength=480)
+        self._register_i18n_widget(c4, "lf_t2_correction")
+        self.add_hint(c4, "hint_t2_correction", wraplength=480)
 
         c4_row1 = ttk.Frame(c4); c4_row1.pack(fill="x", pady=2)
-        cb_solid = ttk.Checkbutton(c4_row1, text="应用 Solid Angle 修正", variable=self.t2_apply_solid_angle)
+        cb_solid = ttk.Checkbutton(c4_row1, text=self.tr("cb_t2_solid_angle"), variable=self.t2_apply_solid_angle)
         cb_solid.pack(side="left")
-        ttk.Label(c4_row1, text="误差模型:").pack(side="left", padx=(8, 2))
+        self._register_i18n_widget(cb_solid, "cb_t2_solid_angle")
+        lbl_err = ttk.Label(c4_row1, text=self.tr("lbl_t2_error_model"))
+        lbl_err.pack(side="left", padx=(8, 2))
+        self._register_i18n_widget(lbl_err, "lbl_t2_error_model")
         cb_err = ttk.Combobox(c4_row1, textvariable=self.t2_error_model, width=10, state="readonly")
         cb_err["values"] = ("azimuthal", "poisson", "none")
         cb_err.pack(side="left")
@@ -1235,104 +2541,147 @@ class BL19B2_RobustApp:
         e_pol = ttk.Entry(c4_row1, textvariable=self.t2_polarization, width=6)
         e_pol.pack(side="left")
 
-        row_mask = self.add_file_row(c4, "Mask 文件:", self.t2_mask_path, "*.tif *.tiff *.edf *.npy")
-        row_flat = self.add_file_row(c4, "Flat 文件:", self.t2_flat_path, "*.tif *.tiff *.edf *.npy")
+        row_mask = self.add_file_row(c4, self.tr("lbl_t2_mask"), self.t2_mask_path, "*.tif *.tiff *.edf *.npy")
+        row_flat = self.add_file_row(c4, self.tr("lbl_t2_flat"), self.t2_flat_path, "*.tif *.tiff *.edf *.npy")
 
-        self.add_tooltip(cb_solid, "必须与 Tab1 标定时保持一致。若不一致程序会阻断批处理。")
-        self.add_tooltip(cb_err, "azimuthal: 方位离散；poisson: 计数统计；none: 不计算误差。")
-        self.add_tooltip(e_pol, "偏振因子，通常在 -1 到 1。0 表示不偏振。")
-        self.add_tooltip(row_mask["entry"], "掩膜图：非零像素视为无效区域。")
-        self.add_tooltip(row_flat["entry"], "平场校正图（可选）。")
+        self.add_tooltip(cb_solid, "tip_t2_solid_angle")
+        self.add_tooltip(cb_err, "tip_t2_error_model")
+        self.add_tooltip(e_pol, "tip_t2_polarization")
+        self.add_tooltip(row_mask["entry"], "tip_t2_mask")
+        self.add_tooltip(row_flat["entry"], "tip_t2_flat")
 
-        c5 = ttk.LabelFrame(adv_frame, text="5. 参考匹配与执行", style="Group.TLabelframe")
+        c5 = ttk.LabelFrame(adv_frame, text=self.tr("lf_t2_execution"), style="Group.TLabelframe")
         c5.pack(side="left", fill="x", expand=True, padx=5)
-        self.add_hint(c5, "可固定 BG/Dark，或按元数据自动匹配最接近的 BG/Dark。", wraplength=480)
+        self._register_i18n_widget(c5, "lf_t2_execution")
+        self.add_hint(c5, "hint_t2_execution", wraplength=480)
 
         row_ref = ttk.Frame(c5); row_ref.pack(fill="x")
-        rb_ref_fixed = ttk.Radiobutton(row_ref, text="固定 BG/Dark", variable=self.t2_ref_mode, value="fixed")
+        rb_ref_fixed = ttk.Radiobutton(row_ref, text=self.tr("rb_t2_ref_fixed"), variable=self.t2_ref_mode, value="fixed")
         rb_ref_fixed.pack(side="left")
-        rb_ref_auto = ttk.Radiobutton(row_ref, text="自动匹配 BG/Dark", variable=self.t2_ref_mode, value="auto")
+        self._register_i18n_widget(rb_ref_fixed, "rb_t2_ref_fixed")
+        rb_ref_auto = ttk.Radiobutton(row_ref, text=self.tr("rb_t2_ref_auto"), variable=self.t2_ref_mode, value="auto")
         rb_ref_auto.pack(side="left", padx=(8, 0))
+        self._register_i18n_widget(rb_ref_auto, "rb_t2_ref_auto")
 
         row_lib = ttk.Frame(c5); row_lib.pack(fill="x", pady=2)
-        btn_bg_lib = ttk.Button(row_lib, text="选择 BG 库", command=self.add_bg_library_files)
+        btn_bg_lib = ttk.Button(row_lib, text=self.tr("btn_t2_bg_lib"), command=self.add_bg_library_files)
         btn_bg_lib.pack(side="left")
-        btn_dark_lib = ttk.Button(row_lib, text="选择 Dark 库", command=self.add_dark_library_files)
+        self._register_i18n_widget(btn_bg_lib, "btn_t2_bg_lib")
+        btn_dark_lib = ttk.Button(row_lib, text=self.tr("btn_t2_dark_lib"), command=self.add_dark_library_files)
         btn_dark_lib.pack(side="left", padx=(5, 0))
-        btn_clear_lib = ttk.Button(row_lib, text="清空库", command=self.clear_reference_libraries)
+        self._register_i18n_widget(btn_dark_lib, "btn_t2_dark_lib")
+        btn_clear_lib = ttk.Button(row_lib, text=self.tr("btn_t2_clear_lib"), command=self.clear_reference_libraries)
         btn_clear_lib.pack(side="left", padx=(5, 0))
+        self._register_i18n_widget(btn_clear_lib, "btn_t2_clear_lib")
 
         row_lib_info = ttk.Frame(c5); row_lib_info.pack(fill="x")
         ttk.Label(row_lib_info, textvariable=self.t2_bg_lib_info, style="Hint.TLabel").pack(side="left")
         ttk.Label(row_lib_info, textvariable=self.t2_dark_lib_info, style="Hint.TLabel").pack(side="left", padx=(10, 0))
 
         row_exec = ttk.Frame(c5); row_exec.pack(fill="x", pady=2)
-        ttk.Label(row_exec, text="并行线程:").pack(side="left")
+        lbl_wk = ttk.Label(row_exec, text=self.tr("lbl_t2_workers"))
+        lbl_wk.pack(side="left")
+        self._register_i18n_widget(lbl_wk, "lbl_t2_workers")
         e_workers = ttk.Entry(row_exec, textvariable=self.t2_workers, width=4)
         e_workers.pack(side="left")
-        cb_resume = ttk.Checkbutton(row_exec, text="断点续跑(跳过已存在输出)", variable=self.t2_resume_enabled)
+        cb_resume = ttk.Checkbutton(row_exec, text=self.tr("cb_t2_resume"), variable=self.t2_resume_enabled)
         cb_resume.pack(side="left", padx=(8, 0))
-        cb_overwrite = ttk.Checkbutton(row_exec, text="强制覆盖输出", variable=self.t2_overwrite)
+        self._register_i18n_widget(cb_resume, "cb_t2_resume")
+        cb_overwrite = ttk.Checkbutton(row_exec, text=self.tr("cb_t2_overwrite"), variable=self.t2_overwrite)
         cb_overwrite.pack(side="left", padx=(8, 0))
+        self._register_i18n_widget(cb_overwrite, "cb_t2_overwrite")
 
         row_strict = ttk.Frame(c5); row_strict.pack(fill="x")
-        cb_strict = ttk.Checkbutton(row_strict, text="严格仪器一致性校验", variable=self.t2_strict_instrument)
+        cb_strict = ttk.Checkbutton(row_strict, text=self.tr("cb_t2_strict"), variable=self.t2_strict_instrument)
         cb_strict.pack(side="left")
-        ttk.Label(row_strict, text="阈值(%):").pack(side="left", padx=(8, 2))
+        self._register_i18n_widget(cb_strict, "cb_t2_strict")
+        lbl_tol = ttk.Label(row_strict, text=self.tr("lbl_t2_tolerance"))
+        lbl_tol.pack(side="left", padx=(8, 2))
+        self._register_i18n_widget(lbl_tol, "lbl_t2_tolerance")
         e_tol = ttk.Entry(row_strict, textvariable=self.t2_instr_tol_pct, width=5)
         e_tol.pack(side="left")
 
-        self.add_tooltip(rb_ref_fixed, "全批次统一使用 Tab1 指定的 BG/Dark。")
-        self.add_tooltip(rb_ref_auto, "按曝光/I0/T/时间与样品最接近原则自动选 BG 和 Dark。")
-        self.add_tooltip(btn_bg_lib, "选择可供自动匹配的背景文件集合。")
-        self.add_tooltip(btn_dark_lib, "选择可供自动匹配的暗场文件集合。")
-        self.add_tooltip(btn_clear_lib, "清空 BG/Dark 库。")
-        self.add_tooltip(e_workers, "并行线程数，1 表示串行。建议 1~8。")
-        self.add_tooltip(cb_resume, "已存在输出文件时自动跳过，支持中断后续跑。")
-        self.add_tooltip(cb_overwrite, "忽略已存在输出并重新计算。")
-        self.add_tooltip(cb_strict, "检查能量/波长/距离/像素/尺寸一致性，不一致则停止。")
-        self.add_tooltip(e_tol, "一致性阈值百分比，例如 0.5 表示 0.5%。")
+        self.add_tooltip(rb_ref_fixed, "tip_t2_ref_fixed")
+        self.add_tooltip(rb_ref_auto, "tip_t2_ref_auto")
+        self.add_tooltip(btn_bg_lib, "tip_t2_bg_lib")
+        self.add_tooltip(btn_dark_lib, "tip_t2_dark_lib")
+        self.add_tooltip(btn_clear_lib, "tip_t2_clear_lib")
+        self.add_tooltip(e_workers, "tip_t2_workers")
+        self.add_tooltip(cb_resume, "tip_t2_resume")
+        self.add_tooltip(cb_overwrite, "tip_t2_overwrite")
+        self.add_tooltip(cb_strict, "tip_t2_strict")
+        self.add_tooltip(e_tol, "tip_t2_tolerance")
+
+        # --- α-scaling and output format row ---
+        row_alpha_fmt = ttk.Frame(c5); row_alpha_fmt.pack(fill="x", pady=(4, 0))
+        cb_alpha = ttk.Checkbutton(row_alpha_fmt, text=self.tr("cb_t2_buffer_enable"), variable=self.t2_alpha_enabled)
+        cb_alpha.pack(side="left")
+        self._register_i18n_widget(cb_alpha, "cb_t2_buffer_enable")
+        lbl_a2 = ttk.Label(row_alpha_fmt, text=self.tr("lbl_t2_alpha"))
+        lbl_a2.pack(side="left", padx=(8, 2))
+        self._register_i18n_widget(lbl_a2, "lbl_t2_alpha")
+        ttk.Entry(row_alpha_fmt, textvariable=self.t2_alpha, width=6).pack(side="left")
+
+        row_fmt2 = ttk.Frame(c5); row_fmt2.pack(fill="x", pady=(2, 0))
+        lbl_ofmt2 = ttk.Label(row_fmt2, text=self.tr("lbl_output_format"))
+        lbl_ofmt2.pack(side="left")
+        self._register_i18n_widget(lbl_ofmt2, "lbl_output_format")
+        self.t2_fmt_combo = ttk.Combobox(
+            row_fmt2,
+            textvariable=self.t2_output_format,
+            values=["tsv", "csv", "cansas_xml", "nxcansas_h5"],
+            width=18,
+            state="readonly",
+        )
+        self.t2_fmt_combo.current(0)
+        self.t2_fmt_combo.pack(side="left", padx=5)
 
         # --- List ---
-        mid_frame = ttk.LabelFrame(p, text="样品队列", style="Group.TLabelframe")
+        mid_frame = ttk.LabelFrame(p, text=self.tr("t2_mid_title"), style="Group.TLabelframe")
+        self._register_i18n_widget(mid_frame, "t2_mid_title")
         mid_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        self.add_hint(mid_frame, "可一次添加多个文件。建议先点“预检查”，确认头信息与厚度计算是否正常。")
+        self.add_hint(mid_frame, "hint_t2_queue")
         
         tb = ttk.Frame(mid_frame); tb.pack(fill="x")
-        btn_add = ttk.Button(tb, text="添加文件", command=self.add_batch_files)
+        btn_add = ttk.Button(tb, text=self.tr("t2_add_btn"), command=self.add_batch_files)
+        self._register_i18n_widget(btn_add, "t2_add_btn")
         btn_add.pack(side="left")
-        btn_clear = ttk.Button(tb, text="清空队列", command=self.clear_batch_files)
+        btn_clear = ttk.Button(tb, text=self.tr("t2_clear_btn"), command=self.clear_batch_files)
+        self._register_i18n_widget(btn_clear, "t2_clear_btn")
         btn_clear.pack(side="left")
-        btn_check = ttk.Button(tb, text="预检查", command=self.dry_run, style="Accent.TButton")
+        btn_check = ttk.Button(tb, text=self.tr("t2_check_btn"), command=self.dry_run, style="Accent.TButton")
+        self._register_i18n_widget(btn_check, "t2_check_btn")
         btn_check.pack(side="right", padx=10)
-        self.add_tooltip(btn_add, "支持多选 TIFF 文件。")
-        self.add_tooltip(btn_clear, "清空队列，不会删除磁盘文件。")
-        self.add_tooltip(btn_check, "批量检查每个文件的 exp/mon/T 和厚度可用性。")
+        self.add_tooltip(btn_add, "tip_t2_add")
+        self.add_tooltip(btn_clear, "tip_t2_clear")
+        self.add_tooltip(btn_check, "tip_t2_check")
 
-        self.t2_queue_info = tk.StringVar(value="队列文件: 0")
+        self.t2_queue_info = tk.StringVar(value=self._fmt_queue_info(0, 0))
         lbl_queue = ttk.Label(mid_frame, textvariable=self.t2_queue_info, style="Hint.TLabel")
         lbl_queue.pack(anchor="w", padx=5, pady=(2, 0))
 
         self.lb_batch = tk.Listbox(mid_frame, height=8)
         self.lb_batch.pack(fill="both", expand=True, padx=5, pady=5)
-        self.add_tooltip(self.lb_batch, "显示当前待处理样品列表。")
+        self._register_native_widget(self.lb_batch)
+        self.add_tooltip(self.lb_batch, "tip_t2_listbox")
 
         # --- Action ---
         bot_frame = ttk.Frame(p)
         bot_frame.pack(fill="x", padx=10, pady=10)
-        btn_run = ttk.Button(bot_frame, text=">>> 开始稳健批处理（2D 扣背景 + 误差棒） <<<", command=self.run_batch)
+        btn_run = ttk.Button(bot_frame, text=self.tr("t2_run_btn"), command=self.run_batch, style="Accent.TButton")
+        self._register_i18n_widget(btn_run, "t2_run_btn")
         btn_run.pack(fill="x", ipady=5)
         self.prog_bar = ttk.Progressbar(bot_frame, mode="determinate")
         self.prog_bar.pack(fill="x", pady=5)
-        row_out_dir = self.add_dir_row(bot_frame, "输出根目录:", self.t2_output_root)
-        self.add_tooltip(btn_run, "执行批处理。单文件失败不会中断整批。")
-        self.add_tooltip(self.prog_bar, "显示批处理进度。")
-        self.add_tooltip(row_out_dir["entry"], "可选。不填时默认输出到样品所在目录。")
+        row_out_dir = self.add_dir_row(bot_frame, self.tr("lbl_t2_outdir"), self.t2_output_root)
+        self.add_tooltip(btn_run, "tip_t2_run")
+        self.add_tooltip(self.prog_bar, "tip_t2_progress")
+        self.add_tooltip(row_out_dir["entry"], "tip_t2_outdir")
 
-        self.t2_out_hint_var = tk.StringVar(value="输出目录将自动创建: processed_robust_1d_full")
+        self.t2_out_hint_var = tk.StringVar(value=f"{self.tr('out_auto_prefix')}: processed_robust_1d_full")
         lbl_out = ttk.Label(bot_frame, textvariable=self.t2_out_hint_var, style="Hint.TLabel")
         lbl_out.pack(anchor="w")
-        self.add_tooltip(lbl_out, "输出文件与 batch_report.csv 会写入该目录。")
+        self.add_tooltip(lbl_out, "tip_t2_out_label")
 
         self.t2_mode_full.trace_add("write", lambda *_: self.refresh_queue_status())
         self.t2_mode_sector.trace_add("write", lambda *_: self.refresh_queue_status())
@@ -1347,7 +2696,7 @@ class BL19B2_RobustApp:
     # TAB 3: External 1D -> Absolute Intensity
     # =========================================================================
     def init_tab3_external_1d(self):
-        p = self.tab3
+        p = self._make_scrollable_frame(self.tab3)
 
         self.t3_files = []
         self.t3_pipeline_mode = tk.StringVar(value="scaled")
@@ -1371,138 +2720,156 @@ class BL19B2_RobustApp:
         self.t3_bg_t.set(self.global_vars["bg_t"].get())
         self.t3_resume_enabled = tk.BooleanVar(value=True)
         self.t3_overwrite = tk.BooleanVar(value=False)
-        self.t3_queue_info = tk.StringVar(value="队列文件: 0")
-        self.t3_out_hint = tk.StringVar(value="输出目录将自动创建: processed_external_1d_abs")
+        self.t3_queue_info = tk.StringVar(value=self._fmt_queue_info(0, 0))
+        self.t3_out_hint = tk.StringVar(value=f"{self.tr('out_auto_prefix')}: processed_external_1d_abs")
 
-        f_guide = ttk.LabelFrame(p, text="外部 1D 绝对强度校正流程", style="Group.TLabelframe")
+        f_guide = ttk.LabelFrame(p, text=self.tr("t3_guide_title"), style="Group.TLabelframe")
+        self._register_i18n_widget(f_guide, "t3_guide_title")
         f_guide.pack(fill="x", padx=10, pady=(8, 3))
-        guide = (
-            "① 先在 Tab1 得到可信 K 因子\n"
-            "② 选择流程：仅比例缩放 / 原始1D完整校正\n"
-            "③ 导入外部1D文件（原始模式还需 BG1D/Dark1D 与参数）\n"
-            "④ 选择校正公式（K/d 或 K）与 X 轴类型\n"
-            "⑤ 先预检查，再批量输出绝对强度表格"
-        )
+        guide = self.tr("t3_guide_text")
         lbl_guide = ttk.Label(f_guide, text=guide, justify="left", style="Hint.TLabel")
+        self._register_i18n_widget(lbl_guide, "t3_guide_text")
         lbl_guide.pack(fill="x", padx=4, pady=3)
-        self.add_tooltip(lbl_guide, "适合你在 pyFAI/其他软件完成积分后，仅在本程序做绝对标定。")
+        self.add_tooltip(lbl_guide, "tip_t3_guide")
 
         top = ttk.Frame(p)
         top.pack(fill="x", padx=10, pady=5)
 
-        c1 = ttk.LabelFrame(top, text="1. 全局与公式", style="Group.TLabelframe")
+        c1 = ttk.LabelFrame(top, text=self.tr("lf_t3_global"), style="Group.TLabelframe")
         c1.pack(side="left", fill="y", padx=5)
-        self.add_hint(c1, "K 来自 Tab1。先选流程，再选公式。原始1D流程会用到 exp/I0/T 与 BG1D/Dark1D。", wraplength=380)
+        self._register_i18n_widget(c1, "lf_t3_global")
+        self.add_hint(c1, "hint_t3_global", wraplength=380)
 
         c1_grid = ttk.Frame(c1)
         c1_grid.pack(fill="x")
-        ttk.Label(c1_grid, text="K 因子:").grid(row=0, column=0, sticky="e")
+        lbl_k3 = ttk.Label(c1_grid, text=self.tr("lbl_t3_k_factor"))
+        lbl_k3.grid(row=0, column=0, sticky="e")
+        self._register_i18n_widget(lbl_k3, "lbl_t3_k_factor")
         e_k = ttk.Entry(c1_grid, textvariable=self.global_vars["k_factor"], width=10)
         e_k.grid(row=0, column=1, padx=5, pady=1, sticky="w")
-        ttk.Label(c1_grid, text="流程:").grid(row=1, column=0, sticky="e")
+        lbl_pl = ttk.Label(c1_grid, text=self.tr("lbl_t3_pipeline"))
+        lbl_pl.grid(row=1, column=0, sticky="e")
+        self._register_i18n_widget(lbl_pl, "lbl_t3_pipeline")
         rb_scaled = ttk.Radiobutton(
-            c1_grid, text="仅比例缩放", variable=self.t3_pipeline_mode, value="scaled"
+            c1_grid, text=self.tr("rb_t3_scaled"), variable=self.t3_pipeline_mode, value="scaled"
         )
         rb_scaled.grid(row=1, column=1, sticky="w")
+        self._register_i18n_widget(rb_scaled, "rb_t3_scaled")
         rb_raw = ttk.Radiobutton(
-            c1_grid, text="原始1D完整校正", variable=self.t3_pipeline_mode, value="raw"
+            c1_grid, text=self.tr("rb_t3_raw"), variable=self.t3_pipeline_mode, value="raw"
         )
         rb_raw.grid(row=2, column=1, sticky="w")
+        self._register_i18n_widget(rb_raw, "rb_t3_raw")
 
         rb_kd = ttk.Radiobutton(
             c1_grid,
-            text="外部1D未除厚度: I_abs = I_rel * K / d",
+            text=self.tr("rb_t3_kd_formula"),
             variable=self.t3_corr_mode,
             value="k_over_d",
         )
         rb_kd.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 1))
-        ttk.Label(c1_grid, text="固定厚度(mm):").grid(row=4, column=0, sticky="e")
+        self._register_i18n_widget(rb_kd, "rb_t3_kd_formula")
+        lbl_thk = ttk.Label(c1_grid, text=self.tr("lbl_t3_thk"))
+        lbl_thk.grid(row=4, column=0, sticky="e")
+        self._register_i18n_widget(lbl_thk, "lbl_t3_thk")
         e_thk = ttk.Entry(c1_grid, textvariable=self.t3_fixed_thk, width=8)
         e_thk.grid(row=4, column=1, padx=5, pady=1, sticky="w")
 
         rb_k = ttk.Radiobutton(
             c1_grid,
-            text="外部1D已除厚度: I_abs = I_rel * K",
+            text=self.tr("rb_t3_k_formula"),
             variable=self.t3_corr_mode,
             value="k_only",
         )
         rb_k.grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 1))
+        self._register_i18n_widget(rb_k, "rb_t3_k_formula")
 
-        ttk.Label(c1_grid, text="X轴类型:").grid(row=6, column=0, sticky="e")
+        lbl_xt = ttk.Label(c1_grid, text=self.tr("lbl_t3_x_type"))
+        lbl_xt.grid(row=6, column=0, sticky="e")
+        self._register_i18n_widget(lbl_xt, "lbl_t3_x_type")
         cb_x = ttk.Combobox(c1_grid, textvariable=self.t3_x_mode, width=12, state="readonly")
         cb_x["values"] = ("auto", "q_A^-1", "chi_deg")
         cb_x.grid(row=6, column=1, padx=5, pady=1, sticky="w")
-        ttk.Label(c1_grid, text="I0语义:", style="Hint.TLabel").grid(row=7, column=0, sticky="e")
+        lbl_i0_3 = ttk.Label(c1_grid, text=self.tr("lbl_t3_i0_semantic"), style="Hint.TLabel")
+        lbl_i0_3.grid(row=7, column=0, sticky="e")
+        self._register_i18n_widget(lbl_i0_3, "lbl_t3_i0_semantic")
         ttk.Label(c1_grid, textvariable=self.global_vars["monitor_mode"], style="Hint.TLabel").grid(row=7, column=1, sticky="w")
 
-        self.add_tooltip(e_k, "必须 >0。优先使用 Tab1 最新标定值。")
-        self.add_tooltip(rb_scaled, "适合外部1D已做过本底/归一化，仅需绝对强度映射。")
-        self.add_tooltip(rb_raw, "适合外部1D是原始积分强度，需要在本页完成1D级扣本底和归一化。")
-        self.add_tooltip(rb_kd, "适用于外部积分结果仍是相对强度（尚未除厚度）。")
-        self.add_tooltip(e_thk, "仅在 K/d 模式下使用。单位 mm。")
-        self.add_tooltip(rb_k, "适用于外部积分结果已经做了厚度归一化。")
-        self.add_tooltip(cb_x, "auto 会根据列名/后缀推断 Q_A^-1 或 Chi_deg。")
+        self.add_tooltip(e_k, "tip_t3_k")
+        self.add_tooltip(rb_scaled, "tip_t3_scaled")
+        self.add_tooltip(rb_raw, "tip_t3_raw")
+        self.add_tooltip(rb_kd, "tip_t3_kd")
+        self.add_tooltip(e_thk, "tip_t3_thk")
+        self.add_tooltip(rb_k, "tip_t3_k_only")
+        self.add_tooltip(cb_x, "tip_t3_x_mode")
 
-        c2 = ttk.LabelFrame(top, text="2. 执行策略", style="Group.TLabelframe")
+        c2 = ttk.LabelFrame(top, text=self.tr("lf_t3_execution"), style="Group.TLabelframe")
         c2.pack(side="left", fill="y", padx=5)
-        self.add_hint(c2, "建议先预检查。可断点续跑，避免重复覆盖。", wraplength=320)
+        self._register_i18n_widget(c2, "lf_t3_execution")
+        self.add_hint(c2, "hint_t3_execution", wraplength=320)
         row_exec = ttk.Frame(c2)
         row_exec.pack(fill="x")
-        cb_resume = ttk.Checkbutton(c2, text="断点续跑(跳过已存在输出)", variable=self.t3_resume_enabled)
+        cb_resume = ttk.Checkbutton(c2, text=self.tr("cb_t3_resume"), variable=self.t3_resume_enabled)
         cb_resume.pack(anchor="w")
-        cb_overwrite = ttk.Checkbutton(c2, text="强制覆盖输出", variable=self.t3_overwrite)
+        self._register_i18n_widget(cb_resume, "cb_t3_resume")
+        cb_overwrite = ttk.Checkbutton(c2, text=self.tr("cb_t3_overwrite"), variable=self.t3_overwrite)
         cb_overwrite.pack(anchor="w")
-        ttk.Label(
+        self._register_i18n_widget(cb_overwrite, "cb_t3_overwrite")
+        lbl_fmt = ttk.Label(
             row_exec,
-            text="支持格式: .dat .txt .chi .csv（列至少包含 X 与 I；Error 可选）",
+            text=self.tr("lbl_t3_formats"),
             style="Hint.TLabel",
             wraplength=320,
             justify="left",
-        ).pack(anchor="w")
-        self.add_tooltip(cb_resume, "输出存在时跳过，适合大批量中断后继续。")
-        self.add_tooltip(cb_overwrite, "忽略已存在结果并重算。")
-
-        c3 = ttk.LabelFrame(top, text="3. 原始1D校正参数（raw流程）", style="Group.TLabelframe")
-        c3.pack(side="left", fill="y", padx=5)
-        self.add_hint(
-            c3,
-            "仅当流程=原始1D完整校正时生效。可直接使用 Tab2 的 batch_report.csv 或 metadata.csv。",
-            wraplength=420,
         )
+        lbl_fmt.pack(anchor="w")
+        self._register_i18n_widget(lbl_fmt, "lbl_t3_formats")
+        self.add_tooltip(cb_resume, "tip_t3_resume")
+        self.add_tooltip(cb_overwrite, "tip_t3_overwrite")
+
+        c3 = ttk.LabelFrame(top, text=self.tr("lf_t3_raw_params"), style="Group.TLabelframe")
+        c3.pack(side="left", fill="y", padx=5)
+        self._register_i18n_widget(c3, "lf_t3_raw_params")
+        self.add_hint(c3, "hint_t3_raw", wraplength=420)
 
         row_meta = self.add_file_row(c3, "Metadata CSV:", self.t3_meta_csv_path, "*.csv")
-        row_bg = self.add_file_row(c3, "BG 1D 文件:", self.t3_bg1d_path, "*.dat *.txt *.chi *.csv")
-        row_dark = self.add_file_row(c3, "Dark 1D 文件:", self.t3_dark1d_path, "*.dat *.txt *.chi *.csv")
+        row_bg = self.add_file_row(c3, self.tr("lbl_t3_bg1d_file"), self.t3_bg1d_path, "*.dat *.txt *.chi *.csv")
+        row_dark = self.add_file_row(c3, self.tr("lbl_t3_dark1d_file"), self.t3_dark1d_path, "*.dat *.txt *.chi *.csv")
 
         row_meta_ops = ttk.Frame(c3)
         row_meta_ops.pack(fill="x", pady=(1, 1))
         btn_meta_from_batch = ttk.Button(
             row_meta_ops,
-            text="由 Tab2 报告生成 metadata",
+            text=self.tr("btn_t3_meta_from_batch"),
             command=self.t3_make_meta_from_batch_report,
         )
         btn_meta_from_batch.pack(side="left", padx=(3, 0))
+        self._register_i18n_widget(btn_meta_from_batch, "btn_t3_meta_from_batch")
 
-        self.add_tooltip(row_meta["entry"], "可选。支持 metadata.csv，或直接选择 Tab2 的 batch_report.csv。")
-        self.add_tooltip(row_bg["entry"], "必填（raw流程）。与样品同积分方式得到的 BG 1D。")
-        self.add_tooltip(row_dark["entry"], "可选。未提供则按 0 处理。")
-        self.add_tooltip(btn_meta_from_batch, "从 Tab2 的 batch_report.csv 一键生成 Tab3 可用 metadata.csv，并自动回填路径。")
+        self.add_tooltip(row_meta["entry"], "tip_t3_meta")
+        self.add_tooltip(row_bg["entry"], "tip_t3_bg1d")
+        self.add_tooltip(row_dark["entry"], "tip_t3_dark1d")
+        self.add_tooltip(btn_meta_from_batch, "tip_t3_meta_from_batch")
 
-        cb_meta_thk = ttk.Checkbutton(c3, text="优先使用 metadata 中的 thk_mm", variable=self.t3_use_meta_thk)
+        cb_meta_thk = ttk.Checkbutton(c3, text=self.tr("cb_t3_meta_thk"), variable=self.t3_use_meta_thk)
         cb_meta_thk.pack(anchor="w", padx=3, pady=(2, 1))
-        self.add_tooltip(cb_meta_thk, "开启后，若某样品 metadata 含 thk_mm，则覆盖固定厚度。")
+        self._register_i18n_widget(cb_meta_thk, "cb_t3_meta_thk")
+        self.add_tooltip(cb_meta_thk, "tip_t3_meta_thk")
         cb_sync_bg = ttk.Checkbutton(
             c3,
-            text="BG参数跟随 Tab1 全局(bg_exp/bg_i0/bg_t)",
+            text=self.tr("cb_t3_sync_bg"),
             variable=self.t3_sync_bg_from_global,
             command=self.on_t3_sync_bg_toggle,
         )
         cb_sync_bg.pack(anchor="w", padx=3, pady=(0, 1))
-        self.add_tooltip(cb_sync_bg, "开启后 Tab3 的 BG 参数会随 Tab1/全局变化自动更新，避免陈旧值。")
+        self._register_i18n_widget(cb_sync_bg, "cb_t3_sync_bg")
+        self.add_tooltip(cb_sync_bg, "tip_t3_sync_bg")
 
         f_sample = ttk.Frame(c3)
         f_sample.pack(fill="x", pady=(2, 1))
-        ttk.Label(f_sample, text="样品固定参数 exp/i0/T:", style="Hint.TLabel").grid(row=0, column=0, columnspan=6, sticky="w")
+        lbl_sp = ttk.Label(f_sample, text=self.tr("lbl_t3_sample_params"), style="Hint.TLabel")
+        lbl_sp.grid(row=0, column=0, columnspan=6, sticky="w")
+        self._register_i18n_widget(lbl_sp, "lbl_t3_sample_params")
         ttk.Label(f_sample, text="exp").grid(row=1, column=0, sticky="e")
         ttk.Entry(f_sample, textvariable=self.t3_sample_exp, width=7).grid(row=1, column=1, padx=2)
         ttk.Label(f_sample, text="i0").grid(row=1, column=2, sticky="e")
@@ -1512,7 +2879,9 @@ class BL19B2_RobustApp:
 
         f_bg = ttk.Frame(c3)
         f_bg.pack(fill="x", pady=(2, 1))
-        ttk.Label(f_bg, text="BG固定参数 exp/i0/T:", style="Hint.TLabel").grid(row=0, column=0, columnspan=6, sticky="w")
+        lbl_bp = ttk.Label(f_bg, text=self.tr("lbl_t3_bg_params"), style="Hint.TLabel")
+        lbl_bp.grid(row=0, column=0, columnspan=6, sticky="w")
+        self._register_i18n_widget(lbl_bp, "lbl_t3_bg_params")
         ttk.Label(f_bg, text="exp").grid(row=1, column=0, sticky="e")
         self.t3_bg_entry_exp = ttk.Entry(f_bg, textvariable=self.t3_bg_exp, width=7)
         self.t3_bg_entry_exp.grid(row=1, column=1, padx=2)
@@ -1523,38 +2892,80 @@ class BL19B2_RobustApp:
         self.t3_bg_entry_t = ttk.Entry(f_bg, textvariable=self.t3_bg_t, width=7)
         self.t3_bg_entry_t.grid(row=1, column=5, padx=2)
 
-        mid = ttk.LabelFrame(p, text="外部 1D 文件队列", style="Group.TLabelframe")
+        # ---- Buffer/Solvent subtraction panel ----
+        self.t3_buffer_enabled = tk.BooleanVar(value=False)
+        self.t3_buffer_path = tk.StringVar()
+        self.t3_alpha = tk.DoubleVar(value=1.0)
+        self.t3_buffer_status = tk.StringVar(value=self.tr("lbl_t3_buffer_status"))
+
+        buf_frame = ttk.LabelFrame(top, text=self.tr("lf_t3_buffer"), style="Group.TLabelframe")
+        buf_frame.pack(side="left", fill="y", padx=5)
+        self._register_i18n_widget(buf_frame, "lf_t3_buffer")
+        cb_buf = ttk.Checkbutton(buf_frame, text=self.tr("cb_t3_buffer_enable"), variable=self.t3_buffer_enabled)
+        cb_buf.pack(anchor="w", padx=3, pady=2)
+        self._register_i18n_widget(cb_buf, "cb_t3_buffer_enable")
+        row_buf = self.add_file_row(buf_frame, self.tr("lbl_t3_buffer_file"), self.t3_buffer_path, "*.dat *.txt *.csv *.xml")
+        row_alpha = ttk.Frame(buf_frame); row_alpha.pack(fill="x", pady=1)
+        lbl_alpha = ttk.Label(row_alpha, text=self.tr("lbl_t3_alpha"), width=15, anchor="e")
+        lbl_alpha.pack(side="left")
+        self._register_i18n_widget(lbl_alpha, "lbl_t3_alpha")
+        ttk.Entry(row_alpha, textvariable=self.t3_alpha, width=8).pack(side="left", padx=5)
+        ttk.Label(buf_frame, textvariable=self.t3_buffer_status, style="Hint.TLabel").pack(anchor="w", padx=3)
+
+        # ---- Output format selector ----
+        self.t3_output_format = tk.StringVar(value="tsv")
+        fmt_row = ttk.Frame(buf_frame); fmt_row.pack(fill="x", pady=(4, 2))
+        lbl_ofmt = ttk.Label(fmt_row, text=self.tr("lbl_output_format"), width=15, anchor="e")
+        lbl_ofmt.pack(side="left")
+        self._register_i18n_widget(lbl_ofmt, "lbl_output_format")
+        self.t3_fmt_combo = ttk.Combobox(
+            fmt_row,
+            textvariable=self.t3_output_format,
+            values=["tsv", "csv", "cansas_xml", "nxcansas_h5"],
+            width=18,
+            state="readonly",
+        )
+        self.t3_fmt_combo.current(0)
+        self.t3_fmt_combo.pack(side="left", padx=5)
+
+        mid = ttk.LabelFrame(p, text=self.tr("t3_mid_title"), style="Group.TLabelframe")
+        self._register_i18n_widget(mid, "t3_mid_title")
         mid.pack(fill="both", expand=True, padx=10, pady=5)
-        self.add_hint(mid, "建议先点“预检查”确认每个文件的列解析情况。")
+        self.add_hint(mid, "hint_t3_queue")
 
         tb = ttk.Frame(mid)
         tb.pack(fill="x")
-        btn_add = ttk.Button(tb, text="添加1D文件", command=self.add_external_1d_files)
+        btn_add = ttk.Button(tb, text=self.tr("t3_add_btn"), command=self.add_external_1d_files)
+        self._register_i18n_widget(btn_add, "t3_add_btn")
         btn_add.pack(side="left")
-        btn_clear = ttk.Button(tb, text="清空队列", command=self.clear_external_1d_files)
+        btn_clear = ttk.Button(tb, text=self.tr("t3_clear_btn"), command=self.clear_external_1d_files)
+        self._register_i18n_widget(btn_clear, "t3_clear_btn")
         btn_clear.pack(side="left", padx=(4, 0))
-        btn_check = ttk.Button(tb, text="预检查", command=self.dry_run_external_1d)
+        btn_check = ttk.Button(tb, text=self.tr("t3_check_btn"), command=self.dry_run_external_1d)
+        self._register_i18n_widget(btn_check, "t3_check_btn")
         btn_check.pack(side="right")
-        self.add_tooltip(btn_add, "支持多选外部积分结果文件。")
-        self.add_tooltip(btn_clear, "仅清空队列，不删除磁盘文件。")
-        self.add_tooltip(btn_check, "检查列识别、点数和坐标类型推断。")
+        self.add_tooltip(btn_add, "tip_t3_add")
+        self.add_tooltip(btn_clear, "tip_t3_clear")
+        self.add_tooltip(btn_check, "tip_t3_check")
 
         ttk.Label(mid, textvariable=self.t3_queue_info, style="Hint.TLabel").pack(anchor="w", padx=5, pady=(2, 0))
         self.lb_ext1d = tk.Listbox(mid, height=9)
         self.lb_ext1d.pack(fill="both", expand=True, padx=5, pady=5)
-        self.add_tooltip(self.lb_ext1d, "当前待转换的外部1D文件列表。")
+        self._register_native_widget(self.lb_ext1d)
+        self.add_tooltip(self.lb_ext1d, "tip_t3_listbox")
 
         bot = ttk.Frame(p)
         bot.pack(fill="x", padx=10, pady=10)
-        btn_run = ttk.Button(bot, text=">>> 开始外部1D绝对强度校正 <<<", command=self.run_external_1d_batch)
+        btn_run = ttk.Button(bot, text=self.tr("t3_run_btn"), command=self.run_external_1d_batch, style="Accent.TButton")
+        self._register_i18n_widget(btn_run, "t3_run_btn")
         btn_run.pack(fill="x", ipady=5)
         self.t3_prog_bar = ttk.Progressbar(bot, mode="determinate")
         self.t3_prog_bar.pack(fill="x", pady=5)
-        row_out_dir = self.add_dir_row(bot, "输出根目录:", self.t3_output_root)
+        row_out_dir = self.add_dir_row(bot, self.tr("lbl_t3_outdir"), self.t3_output_root)
         ttk.Label(bot, textvariable=self.t3_out_hint, style="Hint.TLabel").pack(anchor="w")
-        self.add_tooltip(btn_run, "将外部1D相对强度按选定公式批量转换为绝对强度。")
-        self.add_tooltip(self.t3_prog_bar, "显示外部1D批处理进度。")
-        self.add_tooltip(row_out_dir["entry"], "可选。不填时默认输出到首个输入文件所在目录。")
+        self.add_tooltip(btn_run, "tip_t3_run")
+        self.add_tooltip(self.t3_prog_bar, "tip_t3_progress")
+        self.add_tooltip(row_out_dir["entry"], "tip_t3_outdir")
 
         self.global_vars["bg_exp"].trace_add("write", self.on_global_bg_changed_for_t3)
         self.global_vars["bg_i0"].trace_add("write", self.on_global_bg_changed_for_t3)
@@ -1582,20 +2993,17 @@ class BL19B2_RobustApp:
         if hasattr(self, "t3_queue_info"):
             total = len(getattr(self, "t3_files", []))
             uniq = len(dict.fromkeys(getattr(self, "t3_files", [])))
-            if total == uniq:
-                self.t3_queue_info.set(f"队列文件: {uniq}")
-            else:
-                self.t3_queue_info.set(f"队列文件: {total}（去重后 {uniq}）")
+            self.t3_queue_info.set(self._fmt_queue_info(total, uniq))
 
         if hasattr(self, "t3_out_hint"):
             custom_root = self.t3_output_root.get().strip() if hasattr(self, "t3_output_root") else ""
             if custom_root:
                 self.t3_out_hint.set(
-                    f"输出目录将写入: {custom_root}\\processed_external_1d_abs "
+                    f"{self.tr('out_write_prefix')}: {custom_root}\\processed_external_1d_abs "
                     f"(报告: {custom_root}\\processed_external_1d_reports)"
                 )
             else:
-                self.t3_out_hint.set("输出目录将自动创建: processed_external_1d_abs（默认位于首个样品目录）")
+                self.t3_out_hint.set(f"{self.tr('out_auto_prefix')}: processed_external_1d_abs")
 
     def sync_t3_bg_params_from_global(self):
         if not hasattr(self, "global_vars"):
@@ -1960,7 +3368,7 @@ class BL19B2_RobustApp:
                 ),
             )
         except Exception as e:
-            messagebox.showerror("生成 metadata 失败", f"{e}\n{traceback.format_exc()}")
+            self.show_error("msg_input_error_title", f"{e}\n{traceback.format_exc()}")
 
     def load_external_meta_map(self, csv_path):
         if not csv_path:
@@ -2141,7 +3549,7 @@ class BL19B2_RobustApp:
 
     def dry_run_external_1d(self):
         if not self.t3_files:
-            messagebox.showinfo("预检查", "队列为空，请先添加外部1D文件。")
+            self.show_info("msg_preview_title", self.tr("msg_t3_queue_empty"))
             return
 
         rows = []
@@ -2154,9 +3562,9 @@ class BL19B2_RobustApp:
         warnings = []
 
         if k <= 0:
-            warnings.append("K 因子 <= 0。")
+            warnings.append(self.tr("warn_k_le_zero"))
         if mode == "k_over_d" and thk_mm <= 0:
-            warnings.append("K/d 模式下固定厚度必须 > 0 mm。")
+            warnings.append(self.tr("warn_kd_thk_le_zero"))
 
         meta_map = {}
         bg_prof = None
@@ -2168,25 +3576,25 @@ class BL19B2_RobustApp:
                 try:
                     meta_map = self.load_external_meta_map(meta_path)
                 except Exception as e:
-                    warnings.append(f"metadata CSV 读取失败: {e}")
+                    warnings.append(self.tr("warn_meta_read_fail").format(e=e))
             else:
-                warnings.append("raw流程未提供 metadata CSV，将全部使用固定样品参数。")
+                warnings.append(self.tr("warn_raw_no_meta"))
 
             bg_path = self.t3_bg1d_path.get().strip()
             if not bg_path:
-                warnings.append("raw流程缺少 BG 1D 文件。")
+                warnings.append(self.tr("warn_raw_no_bg1d"))
             else:
                 try:
                     bg_prof = self.read_external_1d_profile(bg_path)
                 except Exception as e:
-                    warnings.append(f"BG 1D 读取失败: {e}")
+                    warnings.append(self.tr("warn_bg1d_read_fail").format(e=e))
 
             dark_path = self.t3_dark1d_path.get().strip()
             if dark_path:
                 try:
                     dark_prof = self.read_external_1d_profile(dark_path)
                 except Exception as e:
-                    warnings.append(f"Dark 1D 读取失败: {e}")
+                    warnings.append(self.tr("warn_dark1d_read_fail").format(e=e))
 
             bg_norm = self.compute_norm_factor(
                 self.t3_bg_exp.get(), self.t3_bg_i0.get(), self.t3_bg_t.get(), monitor_mode
@@ -2195,13 +3603,13 @@ class BL19B2_RobustApp:
                 bg_h = self.parse_external_1d_header_meta(bg_path)
                 bg_norm = self.compute_norm_factor(bg_h.get("exp"), bg_h.get("mon"), bg_h.get("trans"), monitor_mode)
             if not np.isfinite(bg_norm) or bg_norm <= 0:
-                warnings.append("BG 归一化因子 <=0，请检查 BG exp/i0/T。")
+                warnings.append(self.tr("warn_bg_norm_invalid"))
 
         for fp in files:
             try:
                 prof = self.read_external_1d_profile(fp)
                 x_label = self.infer_external_x_label(fp, prof)
-                status = "正常"
+                status = self.tr("status_ok")
                 reason = ""
                 norm_s = np.nan
                 thk_used = np.nan
@@ -2214,8 +3622,8 @@ class BL19B2_RobustApp:
                     norm_s = sp["norm"]
                     meta_src = sp["source"]
                     if not np.isfinite(norm_s) or norm_s <= 0:
-                        status = "失败"
-                        reason = "样品归一化因子无效（exp/i0/T）"
+                        status = self.tr("status_fail")
+                        reason = self.tr("reason_norm_invalid")
                     else:
                         if mode == "k_over_d":
                             thk_use_mm = thk_mm
@@ -2223,14 +3631,14 @@ class BL19B2_RobustApp:
                                 thk_use_mm = float(sp["thk_mm_meta"])
                             thk_used = thk_use_mm / 10.0 if np.isfinite(thk_use_mm) else np.nan
                             if not np.isfinite(thk_used) or thk_used <= 0:
-                                status = "失败"
-                                reason = "厚度无效（固定厚度或metadata thk_mm）"
+                                status = self.tr("status_fail")
+                                reason = self.tr("reason_thk_invalid")
                         else:
                             thk_used = np.nan
 
-                        if status == "正常" and bg_prof is not None:
+                        if status == self.tr("status_ok") and bg_prof is not None:
                             _, _, outside_bg = self.align_profile_to_x(prof["x"], bg_prof, "BG")
-                        if status == "正常" and dark_prof is not None:
+                        if status == self.tr("status_ok") and dark_prof is not None:
                             _, _, outside_dark = self.align_profile_to_x(prof["x"], dark_prof, "Dark")
 
                 rows.append({
@@ -2261,30 +3669,31 @@ class BL19B2_RobustApp:
                     "MetaSrc": "-",
                     "BG_OutsidePts": 0,
                     "Dark_OutsidePts": 0,
-                    "Status": "失败",
+                    "Status": self.tr("status_fail"),
                     "Reason": str(e),
                 })
 
         top = tk.Toplevel(self.root)
-        top.title("外部1D预检查结果")
+        top.title(self.tr("title_t3_dryrun"))
         txt = tk.Text(top, font=("Consolas", 9))
         txt.pack(fill="both", expand=True)
-        txt.insert(tk.END, f"K 因子: {k}\n")
-        txt.insert(tk.END, f"流程: {pipeline_mode}\n")
-        txt.insert(tk.END, f"校正模式: {mode}\n")
-        txt.insert(tk.END, f"固定厚度(mm): {thk_mm}\n")
-        txt.insert(tk.END, f"X轴模式: {self.t3_x_mode.get()}\n")
+        self._register_native_widget(txt)
+        txt.insert(tk.END, f"{self.tr('pre_k_factor')} {k}\n")
+        txt.insert(tk.END, f"{self.tr('pre_pipeline')} {pipeline_mode}\n")
+        txt.insert(tk.END, f"{self.tr('pre_corr_mode')} {mode}\n")
+        txt.insert(tk.END, f"{self.tr('pre_fixed_thk')} {thk_mm}\n")
+        txt.insert(tk.END, f"{self.tr('pre_x_mode')} {self.t3_x_mode.get()}\n")
         if pipeline_mode == "raw":
-            txt.insert(tk.END, f"I0语义: {monitor_mode} (norm={self.monitor_norm_formula(monitor_mode)})\n")
+            txt.insert(tk.END, f"{self.tr('pre_i0_semantic')} {monitor_mode} (norm={self.monitor_norm_formula(monitor_mode)})\n")
             txt.insert(tk.END, f"BG_Norm: {bg_norm if np.isfinite(bg_norm) else 'NaN'}\n")
         txt.insert(tk.END, "-" * 80 + "\n")
         if warnings:
-            txt.insert(tk.END, "[预检查警告]\n")
+            txt.insert(tk.END, f"{self.tr('pre_warning_header')}\n")
             for w in warnings:
                 txt.insert(tk.END, f"- {w}\n")
             txt.insert(tk.END, "-" * 80 + "\n")
         else:
-            txt.insert(tk.END, "[预检查通过] 参数未见明显问题。\n")
+            txt.insert(tk.END, f"{self.tr('pre_pass_t3')}\n")
             txt.insert(tk.END, "-" * 80 + "\n")
         txt.insert(tk.END, pd.DataFrame(rows).to_string(index=False))
 
@@ -2453,7 +3862,36 @@ class BL19B2_RobustApp:
                             if issue:
                                 raise ValueError(issue)
 
-                        self.save_profile_table(out_path, prof["x"], i_abs, err_abs, x_label)
+                        # --- Buffer / solvent subtraction (post-calibration) ---
+                        if (hasattr(self, "t3_buffer_enabled") and self.t3_buffer_enabled.get()
+                                and self.t3_buffer_path.get().strip()):
+                            buf_path = self.t3_buffer_path.get().strip()
+                            buf_prof = self.read_external_1d_profile(buf_path)
+                            buf_alpha = float(self.t3_alpha.get()) if hasattr(self, "t3_alpha") else 1.0
+                            if subtract_buffer is not None:
+                                from scipy.interpolate import interp1d as _interp1d
+                                buf_x = np.asarray(buf_prof["x"], dtype=np.float64)
+                                buf_i = np.asarray(buf_prof["i_rel"], dtype=np.float64)
+                                buf_e = np.asarray(buf_prof["err_rel"], dtype=np.float64)
+                                result_buf = subtract_buffer(
+                                    np.asarray(prof["x"], dtype=np.float64),
+                                    i_abs, err_abs,
+                                    buf_x, buf_i, buf_e,
+                                    alpha=buf_alpha,
+                                )
+                                i_abs = result_buf.i_subtracted
+                                err_abs = result_buf.err_subtracted
+                            else:
+                                # Fallback without library: simple subtraction
+                                buf_i_interp = np.interp(
+                                    np.asarray(prof["x"], dtype=np.float64),
+                                    np.asarray(buf_prof["x"], dtype=np.float64),
+                                    np.asarray(buf_prof["i_rel"], dtype=np.float64),
+                                )
+                                i_abs = i_abs - buf_alpha * buf_i_interp
+
+                        _ofmt = self.t3_output_format.get() if hasattr(self, "t3_output_format") else "tsv"
+                        self.save_profile_table(out_path, prof["x"], i_abs, err_abs, x_label, output_format=_ofmt)
                         status = "成功"
                         outputs = out_path.name
                         ok += 1
@@ -2522,40 +3960,37 @@ class BL19B2_RobustApp:
             with open(meta_path, "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=2, ensure_ascii=False)
 
-            messagebox.showinfo(
-                "外部1D校正完成",
-                (
-                    "外部1D绝对强度校正完成。\n"
-                    f"成功: {ok}\n"
-                    f"跳过: {skip}\n"
-                    f"失败: {fail}\n"
-                    f"输出目录: {out_dir}\n"
-                    f"报告: {report_path.name}\n"
-                    f"元数据: {meta_path.name}"
+            self.show_info(
+                "msg_ext_done_title",
+                self.tr("msg_ext_done_body").format(
+                    ok=ok, skip=skip, fail=fail,
+                    out_dir=out_dir, report=report_path.name, meta=meta_path.name,
                 ),
             )
 
         except Exception as e:
-            messagebox.showerror("外部1D校正错误", f"{e}\n{traceback.format_exc()}")
+            self.show_error("msg_ext_error_title", f"{e}\n{traceback.format_exc()}")
 
     def init_tab_help(self):
         p = self.tab_help
 
-        head = ttk.LabelFrame(p, text="程序帮助（新手版）", style="Group.TLabelframe")
+        head = ttk.LabelFrame(p, text=self.tr("help_panel_title"), style="Group.TLabelframe")
+        self._register_i18n_widget(head, "help_panel_title")
         head.pack(fill="x", padx=10, pady=(8, 4))
-        ttk.Label(
+        lbl_intro = ttk.Label(
             head,
-            text=(
-                "目标：先在 Tab1 得到可靠 K 因子，再在 Tab2 做稳健批处理。\n"
-                "建议：第一次使用先完整看一遍“快速上手”和“常见错误”。"
-            ),
+            text=self.tr("help_panel_intro"),
             justify="left",
             style="Hint.TLabel",
-        ).pack(fill="x", padx=5, pady=4)
+        )
+        self._register_i18n_widget(lbl_intro, "help_panel_intro")
+        lbl_intro.pack(fill="x", padx=5, pady=4)
 
         bar = ttk.Frame(p)
         bar.pack(fill="x", padx=10, pady=(0, 4))
-        ttk.Label(bar, text="帮助文本（可滚动）：", style="Bold.TLabel").pack(side="left")
+        lbl_scroll = ttk.Label(bar, text=self.tr("help_scroll_label"), style="Bold.TLabel")
+        self._register_i18n_widget(lbl_scroll, "help_scroll_label")
+        lbl_scroll.pack(side="left")
 
         text_wrap = ttk.Frame(p)
         text_wrap.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -2563,12 +3998,13 @@ class BL19B2_RobustApp:
         y_scroll.pack(side="right", fill="y")
         txt = tk.Text(
             text_wrap,
-            font=("Consolas", 10),
+            font=("Consolas", 9),
             wrap="word",
             yscrollcommand=y_scroll.set,
             padx=8,
             pady=8,
         )
+        self._register_native_widget(txt)
         txt.pack(side="left", fill="both", expand=True)
         y_scroll.config(command=txt.yview)
 
@@ -2764,18 +4200,101 @@ A7：
 （帮助页版本：v2，适配 Tab2->Tab3 直连 metadata 流程）
 """
 
-        txt.insert(tk.END, help_text.strip() + "\n")
+        help_text_zh = help_text.strip() + "\n"
+
+        if self.language == "en":
+            help_text = """
+==============================
+SAXSAbs Workbench User Guide
+==============================
+
+[1] What this program does
+1. Tab1: estimate K factor using a standard sample (GC recommended).
+2. Tab2: batch-process 2D images into absolute-intensity 1D outputs with error columns.
+3. Tab3: convert external 1D relative intensities into absolute intensities.
+4. Export reports for reproducibility and audit.
+
+[2] Minimal first-use workflow
+1) Run Tab1 calibration with Std/BG/Dark/poni.
+2) Verify Time/I0/T and monitor mode (rate or integrated).
+3) Run robust K calibration and check Points Used, Std Dev, and Q overlap.
+4) Go to Tab2 for batch processing; run dry-check before full run.
+5) Use Tab3 only when external 1D conversion is needed.
+
+[3] Critical checks before batch runs
+- K factor is valid and recent.
+- BG/Dark/poni are from compatible conditions.
+- Dry-check reports no critical warnings.
+- Monitor mode matches beamline data semantics.
+
+[4] Outputs
+- Tab1: calibration_check.csv, k_factor_history.csv
+- Tab2: processed_robust_* and batch_report/metadata/run_meta
+- Tab3: processed_external_1d_abs and external1d_report/meta
+
+For advanced details, keep the Chinese help mode or refer to repository docs.
+"""
+
+        self.help_text_widget = txt
+        self.help_text_content_zh = help_text_zh
+        self.help_text_content = help_text.strip() + "\n"
+        txt.insert(tk.END, self.help_text_content)
         txt.config(state="disabled")
 
         def copy_help():
             self.root.clipboard_clear()
-            self.root.clipboard_append(help_text.strip() + "\n")
+            self.root.clipboard_append(self.help_text_content)
             self.root.update()
-            messagebox.showinfo("Help", "帮助文本已复制到剪贴板。")
+            self.show_info("msg_help_title", self.tr("msg_help_copied"))
 
-        btn_copy = ttk.Button(bar, text="复制帮助文本", command=copy_help)
+        btn_copy = ttk.Button(bar, text=self.tr("help_copy_btn"), command=copy_help)
+        self._register_i18n_widget(btn_copy, "help_copy_btn")
         btn_copy.pack(side="right")
-        self.add_tooltip(btn_copy, "复制完整帮助内容，方便发给同事或存档。")
+        self.add_tooltip(btn_copy, self.tr("help_copy_tooltip"))
+
+    def refresh_help_text(self):
+        txt = getattr(self, "help_text_widget", None)
+        if txt is None:
+            return
+        if self.language == "en":
+            content = """
+==============================
+SAXSAbs Workbench User Guide
+==============================
+
+[1] What this program does
+1. Tab1: estimate K factor using a standard sample (GC recommended).
+2. Tab2: batch-process 2D images into absolute-intensity 1D outputs with error columns.
+3. Tab3: convert external 1D relative intensities into absolute intensities.
+4. Export reports for reproducibility and audit.
+
+[2] Minimal first-use workflow
+1) Run Tab1 calibration with Std/BG/Dark/poni.
+2) Verify Time/I0/T and monitor mode (rate or integrated).
+3) Run robust K calibration and check Points Used, Std Dev, and Q overlap.
+4) Go to Tab2 for batch processing; run dry-check before full run.
+5) Use Tab3 only when external 1D conversion is needed.
+
+[3] Critical checks before batch runs
+- K factor is valid and recent.
+- BG/Dark/poni are from compatible conditions.
+- Dry-check reports no critical warnings.
+- Monitor mode matches beamline data semantics.
+
+[4] Outputs
+- Tab1: calibration_check.csv, k_factor_history.csv
+- Tab2: processed_robust_* and batch_report/metadata/run_meta
+- Tab3: processed_external_1d_abs and external1d_report/meta
+
+For advanced details, keep the Chinese help mode or refer to repository docs.
+""".strip() + "\n"
+        else:
+            content = getattr(self, "help_text_content_zh", "")
+        txt.config(state="normal")
+        txt.delete("1.0", tk.END)
+        txt.insert(tk.END, content)
+        txt.config(state="disabled")
+        self.help_text_content = content
 
     # =========================================================================
     # Logic: K-Calibration (ROBUST + Error)
@@ -2789,24 +4308,31 @@ A7：
             monitor_mode = self.get_monitor_mode()
             apply_solid_angle = bool(self.global_vars["apply_solid_angle"].get())
 
-            self.report("开始标定（稳健模式）...")
-            self.report(f"I0 归一化模式: {monitor_mode} (norm={self.monitor_norm_formula(monitor_mode)})")
-            self.report(f"SolidAngle 修正: {'ON' if apply_solid_angle else 'OFF'}")
+            self.report(self.tr("rpt_start_calib"))
+            self.report(self.tr("rpt_i0_norm_mode").format(mode=monitor_mode, formula=self.monitor_norm_formula(monitor_mode)))
+            self.report(self.tr("rpt_solid_angle").format(state='ON' if apply_solid_angle else 'OFF'))
             
             ai = pyFAI.load(files["poni"])
             d_std = fabio.open(files["std"]).data.astype(np.float64)
-            d_bg = fabio.open(files["bg"]).data.astype(np.float64)
             d_dark = fabio.open(files["dark"]).data.astype(np.float64)
-            self._assert_same_shape(d_std, d_bg, "std", "bg")
             self._assert_same_shape(d_std, d_dark, "std", "dark")
+
+            bg_paths = self.split_path_list(files["bg"])
+            if not bg_paths:
+                raise ValueError("未提供背景图像。")
 
             # --- 2D Subtraction (Physics Correct) ---
             norm_std = self.compute_norm_factor(
                 p["std_exp"], p["std_i0"], p["std_t"], monitor_mode
             )
-            norm_bg = self.compute_norm_factor(
-                p["bg_exp"], p["bg_i0"], p["bg_t"], monitor_mode
+            bg_net, bg_norms, bg_used_paths = self.build_composite_bg_net(
+                bg_paths=bg_paths,
+                d_dark=d_dark,
+                monitor_mode=monitor_mode,
+                fallback_triplet=(p["bg_exp"], p["bg_i0"], p["bg_t"]),
+                ref_shape=d_std.shape,
             )
+            norm_bg = float(np.nanmedian(np.asarray(bg_norms, dtype=np.float64)))
             
             if norm_std <= 0 or norm_bg <= 0: raise ValueError("归一化因子 <= 0，请检查 Time/I0/T。")
             norm_ratio = norm_bg / max(norm_std, 1e-12)
@@ -2817,7 +4343,7 @@ A7：
                 )
             
             # Net Signal 2D (Intensity/sec/unit_flux)
-            img_net = (d_std - d_dark)/norm_std - (d_bg - d_dark)/norm_bg
+            img_net = (d_std - d_dark)/norm_std - bg_net
             
             # Integrate (Enable Error Propagation via Azimuthal Variance)
             # error_model="azimuthal" computes the sigma (std dev) of pixels in bin
@@ -2843,61 +4369,73 @@ A7：
             else:
                 sigma_net_vol = np.asarray(res.sigma, dtype=np.float64) / thk_cm
             
-            q_nist, i_nist = NIST_SRM3600_DATA[:,0], NIST_SRM3600_DATA[:,1]
-            mask = (q_nist >= 0.01) & (q_nist <= 0.2)
-            q_ref_all = q_nist[mask]
-            i_ref_all = i_nist[mask]
-            q_min = max(np.nanmin(q), np.nanmin(q_ref_all))
-            q_max = min(np.nanmax(q), np.nanmax(q_ref_all))
-            q_mask = (q_ref_all >= q_min) & (q_ref_all <= q_max)
-            q_ref = q_ref_all[q_mask]
-            i_ref = i_ref_all[q_mask]
-            if q_ref.size < 3:
-                raise ValueError("与 NIST 参考曲线的 q 重叠区间不足，无法可靠标定。")
+            q_ref, i_ref = self._get_std_reference_data()
+            std_key = self.t1_std_type.get()
+            is_water = (std_key == "Water_20C")
 
-            if estimate_k_factor_robust is not None:
-                k_res = estimate_k_factor_robust(
-                    q_meas=q,
-                    i_meas_per_cm=i_net_vol,
-                    q_ref=q_ref,
-                    i_ref=i_ref,
-                    q_window=(0.01, 0.2),
-                    positive_floor=1e-9,
-                    min_points=3,
-                )
-                k_val = float(k_res.k_factor)
-                k_std = float(k_res.k_std)
-                q_min = float(k_res.q_min_overlap)
-                q_max = float(k_res.q_max_overlap)
-                ratios_used = np.asarray(k_res.ratios_used, dtype=np.float64)
-                points_total = int(k_res.points_total)
+            if is_water:
+                # Water: flat signal — use median in q_window
+                q_lo_w, q_hi_w = 0.01, 0.2
+                win_mask = (q >= q_lo_w) & (q <= q_hi_w) & np.isfinite(i_net_vol) & (i_net_vol > 1e-9)
+                if win_mask.sum() < 3:
+                    raise ValueError("q 窗口内测量信号不足，无法用水标准标定。")
+                i_meas_median = float(np.nanmedian(i_net_vol[win_mask]))
+                water_dsdw_val = float(i_ref[0])  # flat value
+                k_val = water_dsdw_val / i_meas_median
+                k_std = 0.0
+                q_min = float(q[win_mask][0])
+                q_max = float(q[win_mask][-1])
+                ratios_used = np.array([k_val])
+                points_total = int(win_mask.sum())
             else:
-                # Interpolate
-                i_meas_interp = np.interp(q_ref, q, i_net_vol)
+                # Normal q-I curve standard (SRM3600, Lupolen, Custom)
+                mask_w = (q_ref >= 0.01) & (q_ref <= 0.2)
+                q_ref_w = q_ref[mask_w] if mask_w.any() else q_ref
+                i_ref_w = i_ref[mask_w] if mask_w.any() else i_ref
+                q_min = max(np.nanmin(q), np.nanmin(q_ref_w))
+                q_max = min(np.nanmax(q), np.nanmax(q_ref_w))
+                q_mask = (q_ref_w >= q_min) & (q_ref_w <= q_max)
+                q_ref_used = q_ref_w[q_mask]
+                i_ref_used = i_ref_w[q_mask]
+                if q_ref_used.size < 3:
+                    raise ValueError("与参考曲线的 q 重叠区间不足，无法可靠标定。")
 
-                # --- 正值+有限值筛选 ---
-                valid_idx = np.isfinite(i_meas_interp) & (i_meas_interp > 1e-9)
-                if np.sum(valid_idx) < 3:
-                    raise ValueError("扣背景后信号过弱或为负，无法标定。")
-
-                ratios = i_ref[valid_idx] / i_meas_interp[valid_idx]
-                ratios = ratios[np.isfinite(ratios) & (ratios > 0)]
-                if ratios.size < 3:
-                    raise ValueError("有效比值点数不足，无法稳健估计 K。")
-
-                # 基于 MAD 的稳健离群点过滤
-                r_med = np.nanmedian(ratios)
-                r_mad = np.nanmedian(np.abs(ratios - r_med))
-                ratios_used = ratios
-                if np.isfinite(r_mad) and r_mad > 0:
-                    robust_sigma = 1.4826 * r_mad
-                    inlier = np.abs(ratios - r_med) <= 3.0 * robust_sigma
-                    if np.sum(inlier) >= 3:
-                        ratios_used = ratios[inlier]
-
-                k_val = np.nanmedian(ratios_used)
-                k_std = np.nanstd(ratios_used)
-                points_total = len(q_ref)
+                if estimate_k_factor_robust is not None:
+                    k_res = estimate_k_factor_robust(
+                        q_meas=q,
+                        i_meas_per_cm=i_net_vol,
+                        q_ref=q_ref_used,
+                        i_ref=i_ref_used,
+                        q_window=(float(np.nanmin(q_ref_used)), float(np.nanmax(q_ref_used))),
+                        positive_floor=1e-9,
+                        min_points=3,
+                    )
+                    k_val = float(k_res.k_factor)
+                    k_std = float(k_res.k_std)
+                    q_min = float(k_res.q_min_overlap)
+                    q_max = float(k_res.q_max_overlap)
+                    ratios_used = np.asarray(k_res.ratios_used, dtype=np.float64)
+                    points_total = int(k_res.points_total)
+                else:
+                    i_meas_interp = np.interp(q_ref_used, q, i_net_vol)
+                    valid_idx = np.isfinite(i_meas_interp) & (i_meas_interp > 1e-9)
+                    if np.sum(valid_idx) < 3:
+                        raise ValueError("扣背景后信号过弱或为负，无法标定。")
+                    ratios = i_ref_used[valid_idx] / i_meas_interp[valid_idx]
+                    ratios = ratios[np.isfinite(ratios) & (ratios > 0)]
+                    if ratios.size < 3:
+                        raise ValueError("有效比值点数不足，无法稳健估计 K。")
+                    r_med = np.nanmedian(ratios)
+                    r_mad = np.nanmedian(np.abs(ratios - r_med))
+                    ratios_used = ratios
+                    if np.isfinite(r_mad) and r_mad > 0:
+                        robust_sigma = 1.4826 * r_mad
+                        inlier = np.abs(ratios - r_med) <= 3.0 * robust_sigma
+                        if np.sum(inlier) >= 3:
+                            ratios_used = ratios[inlier]
+                    k_val = np.nanmedian(ratios_used)
+                    k_std = np.nanstd(ratios_used)
+                    points_total = len(q_ref_used)
 
             if k_val <= 0: raise ValueError(f"计算得到的 K <= 0 ({k_val})，请检查本底缩放和参数。")
 
@@ -2906,10 +4444,11 @@ A7：
             
             # Report
             self.report("-" * 30)
-            self.report("标定成功（稳健估计）")
+            self.report(self.tr("rpt_calib_ok"))
             self.report(f"K-Factor: {k_val:.4f}")
             self.report(f"Q overlap : {q_min:.4f} to {q_max:.4f} A^-1")
             self.report(f"Points Used: {len(ratios_used)}/{points_total}")
+            self.report(f"BG files used: {len(bg_used_paths)}")
             rel_std = (k_std / k_val * 100) if k_val != 0 else np.nan
             self.report(f"Std Dev : {k_std:.4f} ({rel_std:.1f}%)")
             self.report("-" * 30)
@@ -2918,7 +4457,11 @@ A7：
             self.ax1.clear()
             self.ax1.loglog(q, i_net_vol, 'k--', alpha=0.4, label="Measured Net")
             self.ax1.loglog(q, i_net_vol * k_val, 'b-', label="Corrected")
-            self.ax1.loglog(q_ref, i_ref, 'ro', mfc='none', label="NIST SRM3600")
+            std_label = STANDARD_REGISTRY[std_key].name if (STANDARD_REGISTRY and std_key in STANDARD_REGISTRY) else std_key
+            if not is_water:
+                self.ax1.loglog(q_ref, i_ref, 'ro', mfc='none', label=std_label)
+            else:
+                self.ax1.axhline(float(i_ref[0]), color='r', ls='--', alpha=0.6, label=std_label)
             self.ax1.set_xlabel("q ($A^{-1}$)")
             self.ax1.set_ylabel("Absolute Intensity ($cm^{-1}$)")
             self.ax1.set_title(f"K={k_val:.2f}")
@@ -2950,7 +4493,7 @@ A7：
             self.report("K history updated.")
             
         except Exception as e:
-            messagebox.showerror("标定错误", str(e))
+            self.show_error("msg_calib_error_title", str(e))
             self.report(f"[ERROR] {str(e)}")
 
     def append_k_history(self, files, params, monitor_mode, apply_solid_angle, k_val, k_std, points_used, q_min, q_max):
@@ -3000,20 +4543,20 @@ A7：
     def open_k_history(self):
         hist_path = Path(__file__).resolve().parent / "k_factor_history.csv"
         if not hist_path.exists():
-            messagebox.showinfo("K 历史", "尚无 K 历史记录，请先运行一次标定。")
+            self.show_info("msg_k_history_title", self.tr("msg_k_history_empty"))
             return
 
         try:
             df = pd.read_csv(hist_path)
             if df.empty:
-                messagebox.showinfo("K 历史", "历史文件为空。")
+                self.show_info("msg_k_history_title", self.tr("msg_k_history_file_empty"))
                 return
         except Exception as e:
-            messagebox.showerror("K 历史", f"读取历史失败: {e}")
+            self.show_error("msg_k_history_title", self.tr("msg_k_history_read_error").format(e=e))
             return
 
         top = tk.Toplevel(self.root)
-        top.title("K 因子历史趋势")
+        top.title(self.tr("title_k_history"))
         top.geometry("980x640")
 
         upper = ttk.Frame(top)
@@ -3043,13 +4586,19 @@ A7：
 
         txt = tk.Text(lower, font=("Consolas", 9))
         txt.pack(fill="both", expand=True)
+        self._register_native_widget(txt)
         show_cols = [c for c in ["Timestamp", "Norm_Mode", "SolidAngle_On", "K_Factor", "K_Std", "RelStd_pct", "PointsUsed", "Q_Min", "Q_Max"] if c in df.columns]
         txt.insert(tk.END, df[show_cols].to_string(index=False))
 
     def report(self, msg):
         if hasattr(self, "txt_report"):
-            self.txt_report.insert(tk.END, msg + "\n")
+            line = self._localize_runtime_text(msg)
+            self.txt_report.insert(tk.END, line + "\n")
             self.txt_report.see(tk.END)
+        # Mirror last message to status bar
+        if hasattr(self, "_status_var"):
+            short = msg.strip()[:120]
+            self._status_var.set(short)
 
     def log(self, msg):
         print(msg)
@@ -3070,20 +4619,20 @@ A7：
         for f in fs:
             if f not in self.t2_bg_candidates:
                 self.t2_bg_candidates.append(f)
-        self.t2_bg_lib_info.set(f"BG库: {len(self.t2_bg_candidates)}")
+        self.t2_bg_lib_info.set(self.tr("var_bg_lib").format(n=len(self.t2_bg_candidates)))
 
     def add_dark_library_files(self):
         fs = filedialog.askopenfilenames(filetypes=[("Image", "*.tif *.tiff *.edf *.cbf")])
         for f in fs:
             if f not in self.t2_dark_candidates:
                 self.t2_dark_candidates.append(f)
-        self.t2_dark_lib_info.set(f"Dark库: {len(self.t2_dark_candidates)}")
+        self.t2_dark_lib_info.set(self.tr("var_dark_lib").format(n=len(self.t2_dark_candidates)))
 
     def clear_reference_libraries(self):
         self.t2_bg_candidates = []
         self.t2_dark_candidates = []
-        self.t2_bg_lib_info.set("BG库: 0")
-        self.t2_dark_lib_info.set("Dark库: 0")
+        self.t2_bg_lib_info.set(self.tr("var_bg_lib").format(n=0))
+        self.t2_dark_lib_info.set(self.tr("var_dark_lib").format(n=0))
 
     def process_sample_task(self, idx, fpath, out_stem, context):
         logs = []
@@ -3189,9 +4738,9 @@ A7：
             }
 
             if context["ref_mode"] == "fixed":
-                d_bg = context["fixed_bg_data"]
                 d_dark = context["fixed_dark_data"]
                 bg_norm = context["fixed_bg_norm"]
+                img_bg_net = context["fixed_bg_net"]
                 bg_path_used = context["fixed_bg_path"]
                 dark_path_used = context["fixed_dark_path"]
             else:
@@ -3213,9 +4762,10 @@ A7：
                 if not np.isfinite(bg_norm) or bg_norm <= 0:
                     bg_norm = context["fixed_bg_norm"]
                     log_line(f"[警告] {fname}: 匹配到的 BG 头参数不完整，回退全局 BG 归一化因子")
+                img_bg_net = (d_bg - d_dark) / bg_norm
 
-            self._assert_same_shape(d_s, d_bg, "sample", "bg")
             self._assert_same_shape(d_s, d_dark, "sample", "dark")
+            self._assert_same_shape(d_s, img_bg_net, "sample", "bg_net")
             bg_norm_used = bg_norm
 
             mask_arr = context["mask_arr"]
@@ -3239,8 +4789,7 @@ A7：
             if not np.isfinite(norm_s) or norm_s <= 0:
                 raise ValueError(f"样品归一化因子非法: {norm_s}")
 
-            img_bg_net = (d_bg - d_dark) / bg_norm
-            img_net = (d_s - d_dark) / norm_s - img_bg_net
+            img_net = (d_s - d_dark) / norm_s - context.get("bg_alpha", 1.0) * img_bg_net
 
             integ_kwargs_common = {
                 "correctSolidAngle": context["apply_solid_angle"],
@@ -3285,7 +4834,7 @@ A7：
                         issue = self.profile_health_issue(i_abs)
                         if issue:
                             raise ValueError(issue)
-                        self.save_profile_table(out_path, res.radial, i_abs, i_err, "Q_A^-1")
+                        self.save_profile_table(out_path, res.radial, i_abs, i_err, "Q_A^-1", output_format=context.get("output_format", "tsv"))
                         outputs.append(f"{mode}:{out_path.name}")
                         mode_stats[mode]["ok"] += 1
                         mode_success += 1
@@ -3354,7 +4903,7 @@ A7：
                                     issue = self.profile_health_issue(i_abs)
                                     if issue:
                                         raise ValueError(issue)
-                                    self.save_profile_table(each_out_path, res.radial, i_abs, i_err, "Q_A^-1")
+                                    self.save_profile_table(each_out_path, res.radial, i_abs, i_err, "Q_A^-1", output_format=context.get("output_format", "tsv"))
                                     outputs.append(f"{spec_tag}:{each_disp}")
                                     mode_stats[mode]["ok"] += 1
                                     mode_success += 1
@@ -3388,7 +4937,7 @@ A7：
                                     issue = self.profile_health_issue(i_abs)
                                     if issue:
                                         raise ValueError(issue)
-                                    self.save_profile_table(sum_out_path, merge.radial, i_abs, i_err, "Q_A^-1")
+                                    self.save_profile_table(sum_out_path, merge.radial, i_abs, i_err, "Q_A^-1", output_format=context.get("output_format", "tsv"))
                                     outputs.append(f"1d_sector_sum:{sum_out_path.name}")
                                     mode_stats[mode]["ok"] += 1
                                     mode_success += 1
@@ -3428,7 +4977,7 @@ A7：
                         issue = self.profile_health_issue(i_abs)
                         if issue:
                             raise ValueError(issue)
-                        self.save_profile_table(out_path, res.radial, i_abs, i_err, "Chi_deg")
+                        self.save_profile_table(out_path, res.radial, i_abs, i_err, "Chi_deg", output_format=context.get("output_format", "tsv"))
                         outputs.append(f"{mode}:{out_path.name}")
                         mode_stats[mode]["ok"] += 1
                         mode_success += 1
@@ -3544,14 +5093,21 @@ A7：
                 raise ValueError("织构 q 范围无效：qmin 必须 < qmax。")
 
             fixed_dark_data = fabio.open(dk_p).data.astype(np.float64)
-            fixed_bg_data = fabio.open(bg_p).data.astype(np.float64)
-            self._assert_same_shape(fixed_bg_data, fixed_dark_data, "bg", "dark")
-            fixed_bg_norm = self.compute_norm_factor(
-                self.global_vars["bg_exp"].get(),
-                self.global_vars["bg_i0"].get(),
-                self.global_vars["bg_t"].get(),
-                monitor_mode,
+            bg_paths = self.split_path_list(bg_p)
+            if not bg_paths:
+                raise ValueError("缺少背景文件。")
+            fixed_bg_net, bg_norm_list, bg_used_paths = self.build_composite_bg_net(
+                bg_paths=bg_paths,
+                d_dark=fixed_dark_data,
+                monitor_mode=monitor_mode,
+                fallback_triplet=(
+                    self.global_vars["bg_exp"].get(),
+                    self.global_vars["bg_i0"].get(),
+                    self.global_vars["bg_t"].get(),
+                ),
+                ref_shape=fixed_dark_data.shape,
             )
+            fixed_bg_norm = float(np.nanmedian(np.asarray(bg_norm_list, dtype=np.float64)))
             if not np.isfinite(fixed_bg_norm) or fixed_bg_norm <= 0:
                 raise ValueError("背景归一化因子 <= 0，请检查 BG 的 Time/I0/T。")
 
@@ -3675,10 +5231,10 @@ A7：
                 "calc_mode": self.t2_calc_mode.get(),
                 "mu": mu,
                 "fixed_thk_cm": fixed_thk_cm,
-                "fixed_bg_data": fixed_bg_data,
+                "fixed_bg_net": fixed_bg_net,
                 "fixed_dark_data": fixed_dark_data,
                 "fixed_bg_norm": fixed_bg_norm,
-                "fixed_bg_path": bg_p,
+                "fixed_bg_path": ";".join(bg_used_paths),
                 "fixed_dark_path": dk_p,
                 "ref_mode": ref_mode,
                 "bg_library": bg_library,
@@ -3697,6 +5253,8 @@ A7：
                 "qmax": float(self.t2_rad_qmax.get()),
                 "overwrite": overwrite,
                 "resume": resume,
+                "bg_alpha": float(self.t2_alpha.get()) if self.t2_alpha_enabled.get() else 1.0,
+                "output_format": self.t2_output_format.get() if hasattr(self, "t2_output_format") else "tsv",
             }
 
             rows = []
@@ -3891,22 +5449,19 @@ A7：
             )
 
         except Exception as e:
-            messagebox.showerror("批处理错误", f"{e}\n{traceback.format_exc()}")
+            self.show_error("msg_batch_error_title", f"{e}\n{traceback.format_exc()}")
 
     # --- Helpers ---
     def refresh_queue_status(self):
         if hasattr(self, "t2_queue_info"):
             total = len(getattr(self, "t2_files", []))
             uniq = len(dict.fromkeys(getattr(self, "t2_files", [])))
-            if uniq == total:
-                self.t2_queue_info.set(f"队列文件: {uniq}")
-            else:
-                self.t2_queue_info.set(f"队列文件: {total}（去重后 {uniq}）")
+            self.t2_queue_info.set(self._fmt_queue_info(total, uniq))
 
         if hasattr(self, "t2_out_hint_var"):
             modes = self.get_selected_modes()
             if not modes:
-                self.t2_out_hint_var.set("输出目录: 未选择积分模式")
+                self.t2_out_hint_var.set(self.tr("out_none_mode"))
             else:
                 dirs = []
                 for m in modes:
@@ -3926,10 +5481,10 @@ A7：
                 custom_root = self.t2_output_root.get().strip() if hasattr(self, "t2_output_root") else ""
                 if custom_root:
                     self.t2_out_hint_var.set(
-                        f"输出目录将写入 {custom_root}: {', '.join(dirs)}{sec_note}"
+                        f"{self.tr('out_write_prefix')} {custom_root}: {', '.join(dirs)}{sec_note}"
                     )
                 else:
-                    self.t2_out_hint_var.set(f"输出目录将自动创建: {', '.join(dirs)}{sec_note}")
+                    self.t2_out_hint_var.set(f"{self.tr('out_auto_prefix')}: {', '.join(dirs)}{sec_note}")
 
     def dry_run(self):
         if not self.t2_files: return
@@ -3950,26 +5505,26 @@ A7：
         )
 
         if not selected_modes:
-            warnings.append("未选择积分模式（至少勾选一种）。")
+            warnings.append(self.tr("warn_no_integ_mode"))
         sector_specs = []
         if "1d_sector" in selected_modes:
             try:
                 sector_specs = self.get_t2_sector_specs()
                 if not self.t2_sector_save_each.get() and not self.t2_sector_save_combined.get():
-                    warnings.append("扇区模式未勾选任何输出（分别保存/合并保存）。")
+                    warnings.append(self.tr("warn_sector_no_output"))
             except Exception as e:
-                warnings.append(f"扇区角度范围无效：{e}")
+                warnings.append(self.tr("warn_sector_angle_invalid").format(e=e))
         if "radial_chi" in selected_modes and self.t2_rad_qmin.get() >= self.t2_rad_qmax.get():
-            warnings.append("织构 q 范围无效：qmin 必须 < qmax。")
+            warnings.append(self.tr("warn_texture_q_invalid"))
         if mode == "auto" and mu <= 0:
-            warnings.append("自动厚度模式下 mu 必须 > 0。")
+            warnings.append(self.tr("warn_auto_thk_mu"))
         if self.t2_calc_mode.get() == "fixed" and self.t2_fixed_thk.get() <= 0:
-            warnings.append("固定厚度必须 > 0 mm。")
+            warnings.append(self.tr("warn_fix_thk_le_zero"))
         if self.t2_ref_mode.get() == "auto":
             if not self.t2_bg_candidates:
-                warnings.append("自动匹配模式下 BG 库为空。")
+                warnings.append(self.tr("warn_auto_bg_empty"))
             if not self.t2_dark_candidates:
-                warnings.append("自动匹配模式下 Dark 库为空。")
+                warnings.append(self.tr("warn_auto_dark_empty"))
         if self.t2_strict_instrument.get():
             inst_issues = self.check_instrument_consistency(
                 files,
@@ -3977,14 +5532,14 @@ A7：
                 tol_pct=self.t2_instr_tol_pct.get(),
             )
             if inst_issues:
-                warnings.append(f"仪器一致性发现 {len(inst_issues)} 项问题（见下方详情）。")
+                warnings.append(self.tr("warn_inst_issues").format(n=len(inst_issues)))
 
         bg_library = self.build_reference_library(self.t2_bg_candidates) if self.t2_ref_mode.get() == "auto" else []
         dark_library = self.build_reference_library(self.t2_dark_candidates) if self.t2_ref_mode.get() == "auto" else []
 
         for fp in files:
             e, m, t = self.parse_header(fp)
-            stat = "正常"
+            stat = self.tr("status_ok")
             d_mm = np.nan
             bg_match = "-"
             dark_match = "-"
@@ -3998,7 +5553,7 @@ A7：
                 missing.append("EXP")
 
             if missing:
-                stat = f"缺少文件头字段: {','.join(missing)}"
+                stat = f"Missing header fields: {','.join(missing)}" if self.language == "en" else f"缺少文件头字段: {','.join(missing)}"
             else:
                 if e is not None:
                     e = float(e)
@@ -4008,16 +5563,16 @@ A7：
                 if np.isfinite(n) and n > 0:
                     sample_norms.append(float(n))
                 if monitor_mode == "rate" and e <= 0:
-                    stat = "错误: EXP <= 0"
+                    stat = "Error: EXP <= 0" if self.language == "en" else "错误: EXP <= 0"
                 elif m <= 0:
-                    stat = "错误: MON <= 0"
+                    stat = "Error: MON <= 0" if self.language == "en" else "错误: MON <= 0"
                 elif not (0 < t <= 1):
-                    stat = "错误: T 超出 (0,1]"
+                    stat = "Error: T outside (0,1]" if self.language == "en" else "错误: T 超出 (0,1]"
                 elif mode == "auto":
                     if mu <= 0:
-                        stat = "错误: MU <= 0"
+                        stat = "Error: MU <= 0" if self.language == "en" else "错误: MU <= 0"
                     elif t >= 0.999 or t <= 0.001:
-                        stat = "错误: T 不适合自动厚度"
+                        stat = "Error: T unsuitable for auto-thickness" if self.language == "en" else "错误: T 不适合自动厚度"
                     else:
                         d_mm = (-math.log(t) / mu) * 10.0
                 else:
@@ -4035,11 +5590,11 @@ A7：
                     }
                     bg_ref, _ = self.select_best_reference(smeta, bg_library, kind="bg")
                     dk_ref, _ = self.select_best_reference(smeta, dark_library, kind="dark")
-                    bg_match = Path(bg_ref["path"]).name if bg_ref else "无匹配"
-                    dark_match = Path(dk_ref["path"]).name if dk_ref else "无匹配"
+                    bg_match = Path(bg_ref["path"]).name if bg_ref else self.tr("status_no_match")
+                    dark_match = Path(dk_ref["path"]).name if dk_ref else self.tr("status_no_match")
                 except Exception:
-                    bg_match = "匹配失败"
-                    dark_match = "匹配失败"
+                    bg_match = self.tr("status_match_fail")
+                    dark_match = self.tr("status_match_fail")
 
             rows.append({
                 "File": Path(fp).name,
@@ -4047,8 +5602,8 @@ A7：
                 "Mon": m if m is not None else np.nan,
                 "Trans": t if t is not None else np.nan,
                 "CalcThk_mm": round(d_mm, 4) if np.isfinite(d_mm) else np.nan,
-                "BG匹配": bg_match,
-                "Dark匹配": dark_match,
+                "BG_Match": bg_match,
+                "Dark_Match": dark_match,
                 "Status": stat,
             })
 
@@ -4058,32 +5613,34 @@ A7：
                 ratio = bg_norm / med_sample_norm
                 if ratio < 0.01 or ratio > 100.0:
                     warnings.append(
-                        "BG_Norm 与样品 Norm_s 量级差异过大 "
-                        f"(BG/样品中位={ratio:.3g}, BG_Norm={bg_norm:.6g}, SampleMed={med_sample_norm:.6g})。"
+                        self.tr("warn_bg_norm_mismatch").format(
+                            ratio=ratio, bg_norm=bg_norm, med=med_sample_norm,
+                        )
                     )
         
         top = tk.Toplevel(self.root)
-        top.title("批处理预检查结果")
+        top.title(self.tr("title_t2_dryrun"))
         txt = tk.Text(top, font=("Consolas",9)); txt.pack(fill="both", expand=True)
-        txt.insert(tk.END, f"I0 归一化模式: {monitor_mode} (norm={self.monitor_norm_formula(monitor_mode)})\n")
-        txt.insert(tk.END, f"积分模式: {','.join(selected_modes) if selected_modes else '无'}\n")
+        self._register_native_widget(txt)
+        txt.insert(tk.END, f"{self.tr('pre_i0_norm')} {monitor_mode} (norm={self.monitor_norm_formula(monitor_mode)})\n")
+        txt.insert(tk.END, f"{self.tr('pre_integ_mode')} {','.join(selected_modes) if selected_modes else self.tr('pre_integ_none')}\n")
         if "1d_sector" in selected_modes:
             txt.insert(
                 tk.END,
-                f"扇区输出: each={'ON' if self.t2_sector_save_each.get() else 'OFF'}, "
+                f"{self.tr('pre_sector_output')} each={'ON' if self.t2_sector_save_each.get() else 'OFF'}, "
                 f"sum={'ON' if self.t2_sector_save_combined.get() else 'OFF'}\n",
             )
             if sector_specs:
                 sec_short = "; ".join([f"{s['index']}:{s['label']}" for s in sector_specs[:8]])
                 if len(sector_specs) > 8:
                     sec_short += "; ..."
-                txt.insert(tk.END, f"扇区列表: {sec_short}\n")
-        txt.insert(tk.END, f"参考模式: {self.t2_ref_mode.get()}\n")
-        txt.insert(tk.END, f"误差模型: {self.t2_error_model.get()}\n")
-        txt.insert(tk.END, f"并行线程: {self.t2_workers.get()}\n")
+                txt.insert(tk.END, f"{self.tr('pre_sector_list')} {sec_short}\n")
+        txt.insert(tk.END, f"{self.tr('pre_ref_mode')} {self.t2_ref_mode.get()}\n")
+        txt.insert(tk.END, f"{self.tr('pre_error_model')} {self.t2_error_model.get()}\n")
+        txt.insert(tk.END, f"{self.tr('pre_workers')} {self.t2_workers.get()}\n")
         txt.insert(tk.END, "-"*80 + "\n")
         if warnings:
-            txt.insert(tk.END, "[预检查警告]\n")
+            txt.insert(tk.END, f"{self.tr('pre_warning_header')}\n")
             for w in warnings:
                 txt.insert(tk.END, f"- {w}\n")
             if inst_issues:
@@ -4092,7 +5649,7 @@ A7：
                 if len(inst_issues) > 20:
                     txt.insert(tk.END, "  * ...\n")
         else:
-            txt.insert(tk.END, "[预检查通过] 未发现明显配置问题。\n")
+            txt.insert(tk.END, f"{self.tr('pre_pass_t2')}\n")
         txt.insert(tk.END, "-"*80 + "\n")
         txt.insert(tk.END, pd.DataFrame(rows).to_string(index=False))
 
@@ -4211,21 +5768,21 @@ A7：
                 sec_desc = "; ".join([f"S{s['index']}{s['label']}" for s in sector_specs[:6]])
                 if len(sector_specs) > 6:
                     sec_desc += "; ..."
-                mode_desc = f"扇区模式({len(sector_specs)}): {sec_desc}"
+                mode_desc = self.tr("info_iq_sector").format(n=len(sector_specs), desc=sec_desc)
             else:
                 iq_mask = np.asarray(ctx["valid_mask"], dtype=bool)
-                mode_desc = "全环 (有效像素)"
+                mode_desc = self.tr("info_iq_full")
 
             if not np.any(iq_mask):
                 raise ValueError("I-Q 预览区域为空，请检查扇区范围或 mask。")
 
             top = tk.Toplevel(self.root)
-            top.title(f"I-Q 2D预览 - {Path(ctx['sample_path']).name}")
+            top.title(self.tr("title_iq_preview").format(name=Path(ctx['sample_path']).name))
             info = ttk.Label(
                 top,
                 text=(
-                    f"样品: {Path(ctx['sample_path']).name} | 模式: {mode_desc} | 覆盖像素: {np.mean(iq_mask)*100:.2f}%\n"
-                    "角度定义（pyFAI chi）：0°向右，+90°向下，-90°向上，±180°向左。"
+                    self.tr("info_iq_line1").format(name=Path(ctx['sample_path']).name, mode=mode_desc, pct=np.mean(iq_mask)*100) + "\n"
+                    + self.tr("info_iq_line2")
                 ),
                 justify="left",
                 style="Hint.TLabel",
@@ -4263,7 +5820,7 @@ A7：
                             label=lbl,
                         )
 
-            ax.set_title("Tab2 I-Q 积分区域预览")
+            ax.set_title(self.tr("info_iq_title"))
             ax.set_xlabel("Pixel X")
             ax.set_ylabel("Pixel Y")
             ax.legend(loc="upper right", fontsize=8)
@@ -4278,7 +5835,7 @@ A7：
             toolbar.update()
 
         except Exception as e:
-            messagebox.showerror("I-Q 预览错误", f"{e}\n{traceback.format_exc()}")
+            self.show_error("msg_iq_preview_error_title", f"{e}\n{traceback.format_exc()}")
 
     def preview_ichi_window_t2(self):
         try:
@@ -4297,13 +5854,12 @@ A7：
                 raise ValueError("I-chi q 环带为空，请检查 q 范围、poni 或 mask。")
 
             top = tk.Toplevel(self.root)
-            top.title(f"I-chi 2D预览 - {Path(ctx['sample_path']).name}")
+            top.title(self.tr("title_ichi_preview").format(name=Path(ctx['sample_path']).name))
             info = ttk.Label(
                 top,
                 text=(
-                    f"样品: {Path(ctx['sample_path']).name} | q区间: [{qmin:.4g}, {qmax:.4g}] A^-1 | "
-                    f"覆盖像素: {np.mean(q_mask)*100:.2f}%\n"
-                    f"q 映射单位: {q_src}（用于对应 Tab2 radial_chi 的 q 选区）。"
+                    self.tr("info_ichi_line1").format(name=Path(ctx['sample_path']).name, qmin=qmin, qmax=qmax, pct=np.mean(q_mask)*100) + "\n"
+                    + self.tr("info_ichi_line2").format(src=q_src)
                 ),
                 justify="left",
                 style="Hint.TLabel",
@@ -4329,7 +5885,7 @@ A7：
             except Exception:
                 pass
 
-            ax.set_title("Tab2 I-chi (q环带) 预览")
+            ax.set_title(self.tr("info_ichi_title"))
             ax.set_xlabel("Pixel X")
             ax.set_ylabel("Pixel Y")
             ax.legend(loc="upper right", fontsize=8)
@@ -4344,44 +5900,148 @@ A7：
             toolbar.update()
 
         except Exception as e:
-            messagebox.showerror("I-chi 预览错误", f"{e}\n{traceback.format_exc()}")
+            self.show_error("msg_ichi_preview_error_title", f"{e}\n{traceback.format_exc()}")
 
     def preview_sector_window_t2(self):
         # 兼容旧按钮/旧调用入口：转到 I-Q 预览
         self.preview_iq_window_t2()
 
     def open_mu_tool(self):
-        top = tk.Toplevel(self.root); top.title("合金 μ 估算器 (30 keV)")
-        entries = {}
-        defaults = {"Ti":64, "Nb":24, "Zr":4, "Sn":8}
-        
-        ttk.Label(top, text="质量分数 (wt%)", font=("Arial", 9, "bold")).grid(row=0, columnspan=2, pady=5)
-        
-        for i, (k,v) in enumerate(defaults.items()):
-            ttk.Label(top, text=k).grid(row=i+1, column=0, padx=5)
-            e = ttk.Entry(top, width=5); e.insert(0, v); e.grid(row=i+1, column=1, padx=5)
-            entries[k] = e
-            
-        ttk.Label(top, text="密度 rho (g/cm3):").grid(row=6, column=0)
-        e_rho = ttk.Entry(top, width=5); e_rho.insert(0, "5.4"); e_rho.grid(row=6, column=1)
-        
-        def c():
+        top = tk.Toplevel(self.root)
+        top.title(self.tr("title_mu_tool"))
+        top.geometry("520x480")
+
+        # --- Energy / wavelength ---
+        frm_energy = ttk.LabelFrame(top, text=self.tr("lbl_mu_energy"))
+        frm_energy.pack(fill="x", padx=8, pady=4)
+
+        energy_var = tk.DoubleVar(value=30.0)
+        wl_var = tk.DoubleVar(value=round(HC_KEV_A / 30.0, 4))
+
+        def _sync_wl(*_a):
             try:
-                w_tot = sum([float(e.get()) for e in entries.values()])
-                if abs(w_tot-100) > 1: messagebox.showwarning("警告", f"总 wt% = {w_tot}")
-                mu_m = sum([float(e.get())/100 * XCOM_30KEV.get(k,0) for k,e in entries.items()])
-                res = mu_m * float(e_rho.get())
-                self.t2_mu.set(round(res, 2)); top.destroy()
-            except Exception as e:
-                messagebox.showerror("输入错误", f"μ 估算失败: {e}")
-        ttk.Button(top, text="应用到批处理", command=c).grid(row=7, columnspan=2, pady=10)
+                e = energy_var.get()
+                if e > 0:
+                    wl_var.set(round(HC_KEV_A / e, 4))
+            except Exception:
+                pass
+
+        def _sync_energy(*_a):
+            try:
+                w = wl_var.get()
+                if w > 0:
+                    energy_var.set(round(HC_KEV_A / w, 4))
+            except Exception:
+                pass
+
+        row_e = ttk.Frame(frm_energy); row_e.pack(fill="x", pady=2)
+        ttk.Label(row_e, text="E (keV):").pack(side="left", padx=4)
+        e_energy = ttk.Entry(row_e, textvariable=energy_var, width=10)
+        e_energy.pack(side="left")
+        e_energy.bind("<FocusOut>", _sync_wl)
+        ttk.Label(row_e, text=self.tr("lbl_mu_energy_or_wl")).pack(side="left", padx=(12, 4))
+        e_wl = ttk.Entry(row_e, textvariable=wl_var, width=10)
+        e_wl.pack(side="left")
+        e_wl.bind("<FocusOut>", _sync_energy)
+
+        # Try to auto-fill from PONI wavelength
+        try:
+            poni_path = self.global_vars["poni_path"].get()
+            if poni_path:
+                ai = pyFAI.load(poni_path)
+                wl_m = ai.wavelength  # metres
+                wl_A = wl_m * 1e10
+                e_keV = HC_KEV_A / wl_A
+                energy_var.set(round(e_keV, 4))
+                wl_var.set(round(wl_A, 4))
+        except Exception:
+            pass
+
+        # --- Material preset ---
+        frm_mat = ttk.LabelFrame(top, text=self.tr("lbl_mu_preset"))
+        frm_mat.pack(fill="x", padx=8, pady=4)
+
+        preset_keys = list(MATERIAL_PRESETS.keys()) if MATERIAL_PRESETS else []
+        preset_names = [MATERIAL_PRESETS[k][0] for k in preset_keys] if MATERIAL_PRESETS else []
+        preset_var = tk.StringVar(value=preset_names[0] if preset_names else "")
+        cb_preset = ttk.Combobox(frm_mat, values=preset_names, textvariable=preset_var, width=30, state="readonly")
+        cb_preset.pack(side="left", padx=4, pady=4)
+        if preset_names:
+            cb_preset.current(0)
+
+        # --- Density ---
+        rho_var = tk.DoubleVar(value=4.43)
+        row_rho = ttk.Frame(frm_mat); row_rho.pack(fill="x", pady=2)
+        ttk.Label(row_rho, text=self.tr("lbl_mu_density")).pack(side="left", padx=4)
+        e_rho = ttk.Entry(row_rho, textvariable=rho_var, width=8)
+        e_rho.pack(side="left")
+
+        # --- Custom composition ---
+        frm_comp = ttk.LabelFrame(top, text=self.tr("lbl_mu_custom_comp"))
+        frm_comp.pack(fill="x", padx=8, pady=4)
+
+        comp_var = tk.StringVar(value="")
+        ttk.Label(frm_comp, text="e.g. Fe:0.69, Cr:0.19, Ni:0.10").pack(anchor="w", padx=4)
+        e_comp = ttk.Entry(frm_comp, textvariable=comp_var, width=50)
+        e_comp.pack(fill="x", padx=4, pady=2)
+
+        def _fill_from_preset(*_a):
+            sel = preset_var.get()
+            for k in preset_keys:
+                if MATERIAL_PRESETS[k][0] == sel:
+                    comp_dict = MATERIAL_PRESETS[k][1]
+                    rho_var.set(MATERIAL_PRESETS[k][2])
+                    comp_var.set(", ".join(f"{el}:{w}" for el, w in comp_dict.items()))
+                    break
+        cb_preset.bind("<<ComboboxSelected>>", _fill_from_preset)
+        _fill_from_preset()  # initialize
+
+        # --- Result display ---
+        frm_res = ttk.LabelFrame(top, text=self.tr("lbl_mu_contrib"))
+        frm_res.pack(fill="both", expand=True, padx=8, pady=4)
+
+        result_text = tk.Text(frm_res, height=8, width=55, state="disabled", font=("Consolas", 9))
+        result_text.pack(fill="both", expand=True, padx=4, pady=4)
+        self._register_native_widget(result_text)
+
+        def do_calc():
+            try:
+                e_keV = energy_var.get()
+                rho = rho_var.get()
+                comp_str = comp_var.get().strip()
+                if not comp_str:
+                    raise ValueError("请输入成分或选择预设材料。")
+                if calculate_mu is None:
+                    raise ImportError("xraydb 未安装，无法计算。")
+
+                comp = parse_composition_string(comp_str)
+                res = calculate_mu(comp, rho, e_keV)
+
+                result_text.config(state="normal")
+                result_text.delete("1.0", "end")
+                result_text.insert("end", f"Energy: {e_keV:.2f} keV  |  ρ = {rho:.3f} g/cm³\n")
+                result_text.insert("end", f"μ/ρ(mix) = {res.mu_rho_cm2_g:.4f} cm²/g\n")
+                result_text.insert("end", f"μ_linear = {res.mu_linear_cm_inv:.4f} cm⁻¹\n")
+                result_text.insert("end", "-" * 40 + "\n")
+                result_text.insert("end", f"{'Element':<8} {'wt-frac':<10} {'μ/ρ':<12} {'Contrib.':<12}\n")
+                for el, contrib in res.element_contributions.items():
+                    wf = res.composition.get(el, 0)
+                    murho_i = contrib / wf if wf > 0 else 0
+                    result_text.insert("end", f"{el:<8} {wf:<10.4f} {murho_i:<12.4f} {contrib:<12.4f}\n")
+                result_text.config(state="disabled")
+
+                self.t2_mu.set(round(res.mu_linear_cm_inv, 2))
+            except Exception as exc:
+                self.show_error("msg_input_error_title", self.tr("msg_mu_fail").format(e=exc))
+
+        ttk.Button(top, text=self.tr("btn_mu_apply"), command=do_calc).pack(pady=8)
 
     def add_file_row(self, p, l, v, pat, cmd=None):
-        f = ttk.Frame(p); f.pack(fill="x", pady=1)
-        lbl = ttk.Label(f, text=l, width=15, anchor="e")
-        lbl.pack(side="left")
+        f = ttk.Frame(p); f.pack(fill="x", pady=3)
+        lbl = ttk.Label(f, text=l, width=16, anchor="e")
+        lbl.pack(side="left", padx=(0, 6))
         ent = ttk.Entry(f, textvariable=v)
-        ent.pack(side="left", fill="x", expand=True)
+        ent.pack(side="left", fill="x", expand=True, padx=(0, 4))
         def b():
             fp = filedialog.askopenfilename(filetypes=[("File", pat)])
             if fp: v.set(fp); cmd(fp) if cmd else None
@@ -4390,11 +6050,11 @@ A7：
         return {"frame": f, "label": lbl, "entry": ent, "button": btn}
 
     def add_dir_row(self, p, l, v):
-        f = ttk.Frame(p); f.pack(fill="x", pady=1)
-        lbl = ttk.Label(f, text=l, width=15, anchor="e")
-        lbl.pack(side="left")
+        f = ttk.Frame(p); f.pack(fill="x", pady=3)
+        lbl = ttk.Label(f, text=l, width=16, anchor="e")
+        lbl.pack(side="left", padx=(0, 6))
         ent = ttk.Entry(f, textvariable=v)
-        ent.pack(side="left", fill="x", expand=True)
+        ent.pack(side="left", fill="x", expand=True, padx=(0, 4))
         def b():
             dp = filedialog.askdirectory()
             if dp:
@@ -4405,8 +6065,53 @@ A7：
 
     def add_grid_entry(self, p, v, r, c):
         e = ttk.Entry(p, textvariable=v, width=8, justify="center")
-        e.grid(row=r, column=c, padx=2, pady=2)
+        e.grid(row=r, column=c, padx=3, pady=3)
         return e
+
+    def _on_std_type_changed(self, event=None):
+        """Show/hide water temp and ref-curve rows based on standard selection."""
+        sel_text = self.t1_std_combo.get()
+        key = self._t1_std_option_map.get(sel_text, "SRM3600")
+        self.t1_std_type.set(key)
+
+        # Hide both conditional rows first
+        self.t1_water_row.pack_forget()
+        self.t1_ref_row["frame"].pack_forget()
+
+        if key == "Water_20C":
+            # Show water temperature entry, hide standard file row
+            self.t1_water_row.pack(fill="x", pady=1, before=self.t1_ref_row["frame"])
+        elif key in ("Lupolen", "Custom"):
+            # Show reference curve file row
+            self.t1_ref_row["frame"].pack(fill="x", pady=1)
+
+    def _get_std_reference_data(self):
+        """Return (q_ref, i_ref) based on the current standard selection.
+
+        For SRM3600: built-in 15-point curve.
+        For Water: flat curve at user-specified temperature.
+        For Lupolen/Custom: load from user-supplied file.
+        """
+        key = self.t1_std_type.get()
+
+        if get_reference_data is not None:
+            if key in ("Lupolen", "Custom"):
+                ref_path = self.t1_std_ref_path.get()
+                if not ref_path:
+                    raise ValueError("请选择标准参考曲线文件。")
+                from saxsabs.io.parsers import read_external_1d_profile
+                prof = read_external_1d_profile(ref_path)
+                q_user = prof["x"]
+                i_user = prof["i_rel"]
+                return get_reference_data(key, q_user=q_user, i_user=i_user)
+            elif key == "Water_20C":
+                temp_c = self.t1_water_temp.get()
+                return get_reference_data(key, temperature_C=temp_c)
+            else:
+                return get_reference_data(key)
+        else:
+            # Fallback: only SRM3600 available
+            return NIST_SRM3600_DATA[:, 0], NIST_SRM3600_DATA[:, 1]
 
     def on_load_std_t1(self, fp):
         e, m, t = self.parse_header(fp)
@@ -4418,6 +6123,13 @@ A7：
         if e is not None: self.t1_params["bg_exp"].set(e)
         if m is not None: self.t1_params["bg_i0"].set(m)
         if t is not None: self.t1_params["bg_t"].set(t)
+
+    def select_multi_bg_t1(self):
+        fs = filedialog.askopenfilenames(filetypes=[("Image", "*.tif *.tiff *.edf *.cbf")])
+        if not fs:
+            return
+        self.global_vars["bg_path"].set(";".join(fs))
+        self.on_load_bg_t1(fs[0])
 
     def add_batch_files(self):
         fs = filedialog.askopenfilenames(filetypes=[("TIFF", "*.tif *.tiff")])
@@ -4434,7 +6146,7 @@ A7：
         try:
             sess = load_session(session_path)
         except Exception as e:
-            messagebox.showerror("Session Error", f"Failed to read session:\n{e}")
+            self.show_error("session_error_title", self.tr("session_error_body").format(err=e))
             return
 
         notes = []
@@ -4488,19 +6200,21 @@ A7：
 
         if not notes:
             notes.append("Session loaded.")
-        messagebox.showinfo("Session Loaded", "\n".join(notes))
+        self.show_info("session_loaded_title", "\n".join(notes))
 
 
-SAXSAbsWorkbenchApp = BL19B2_RobustApp
+BL19B2_RobustApp = SAXSAbsWorkbenchApp
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="SAXSAbs Workbench")
+    parser = argparse.ArgumentParser(description=APP_NAME)
     parser.add_argument("--session", type=str, default="", help="Path to session json")
+    parser.add_argument("--lang", choices=SUPPORTED_LANGUAGES, default="en", help="UI language")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {APP_VERSION}")
     args = parser.parse_args(argv)
 
     root = tk.Tk()
-    app = SAXSAbsWorkbenchApp(root)
+    app = SAXSAbsWorkbenchApp(root, language=args.lang)
     if args.session:
         root.after(80, lambda: app.apply_session(args.session))
     root.mainloop()

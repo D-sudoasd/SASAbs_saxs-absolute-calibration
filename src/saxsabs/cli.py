@@ -1,3 +1,13 @@
+"""Command-line interface for headless SAXS calibration operations.
+
+Provides four sub-commands:
+
+* ``norm-factor``      – compute a normalization factor
+* ``parse-header``     – extract exp / monitor / transmission from JSON header
+* ``parse-external1d`` – parse an external 1-D profile file
+* ``estimate-k``       – robust K-factor estimation against a reference curve
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -6,6 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import __version__
 from .core.normalization import compute_norm_factor
 from .core.calibration import estimate_k_factor_robust
 from .io.parsers import parse_header_values, read_external_1d_profile
@@ -13,6 +24,7 @@ from .io.parsers import parse_header_values, read_external_1d_profile
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="saxsabs", description="SAXS absolute intensity utilities")
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
     p_norm = sub.add_parser("norm-factor", help="Compute normalization factor")
