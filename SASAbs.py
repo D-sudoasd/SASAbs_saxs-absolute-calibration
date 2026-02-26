@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import argparse
 import sys
+import logging
 import numpy as np
 import fabio
 import pyFAI
@@ -28,6 +29,8 @@ from types import SimpleNamespace
 
 APP_NAME = "SAXSAbs Workbench"
 APP_VERSION = "1.0.0"
+
+logger = logging.getLogger(__name__)
 SUPPORTED_LANGUAGES = ("en", "zh")
 
 I18N = {
@@ -37,15 +40,15 @@ I18N = {
         "theme_toggle": "🌓 Theme",
         "lang_toggle_to_zh": "中文",
         "lang_toggle_to_en": "English",
-        "tab1": "1. K-Factor Calibration",
-        "tab2": "2. Batch Processing",
-        "tab3": "3. External 1D -> Abs",
-        "tab4": "4. Help",
+        "tab1": "\U0001f4d0  1. K-Factor Calibration",
+        "tab2": "\U0001f4e6  2. Batch Processing",
+        "tab3": "\U0001f4c8  3. External 1D \u2192 Abs",
+        "tab4": "\u2753  4. Help",
         "t1_guide_title": "Quick Start",
         "t1_guide_text": "① Select standard/background/dark/geometry files\n② Verify auto-loaded Time, I0, T\n③ Set standard thickness (mm)\n④ Run calibration to obtain K\n⑤ Check Std Dev and valid points",
         "t1_files_title": "1. Calibration Files (Required)",
         "t1_phys_title": "2. Physical Parameters",
-        "t1_run_btn": ">>> Run Robust K Calibration <<<",
+        "t1_run_btn": "\u25b6  Run K Calibration",
         "t1_hist_btn": "K History",
         "t1_report_title": "Analysis Report",
         "t1_plot_tip": "Plot: black dashed=net signal; blue=K-corrected; red circles=NIST",
@@ -55,14 +58,14 @@ I18N = {
         "t2_add_btn": "Add Files",
         "t2_clear_btn": "Clear Queue",
         "t2_check_btn": "Dry Check",
-        "t2_run_btn": ">>> Start Robust Batch Processing <<<",
+        "t2_run_btn": "\u25b6  Start Batch Processing",
         "t3_guide_title": "External 1D Workflow",
         "t3_guide_text": "① Obtain K in Tab1\n② Select pipeline mode (scaled/raw)\n③ Import external 1D files\n④ Select correction formula and X-axis type\n⑤ Dry-check then batch-export absolute intensity",
         "t3_mid_title": "External 1D Queue",
         "t3_add_btn": "Add 1D Files",
         "t3_clear_btn": "Clear Queue",
         "t3_check_btn": "Dry Check",
-        "t3_run_btn": ">>> Start External 1D Absolute Calibration <<<",
+        "t3_run_btn": "\u25b6  Start External 1D Calibration",
         "queue_files": "Queue files",
         "queue_dedup": "deduplicated",
         "out_auto_prefix": "Output directories will be created",
@@ -397,15 +400,15 @@ I18N = {
         "theme_toggle": "🌓 切换深色/浅色模式",
         "lang_toggle_to_zh": "中文",
         "lang_toggle_to_en": "English",
-        "tab1": "1. K 因子标定",
-        "tab2": "2. 批处理",
-        "tab3": "3. 外部 1D -> 绝对强度",
-        "tab4": "4. 帮助",
+        "tab1": "\U0001f4d0  1. K 因子标定",
+        "tab2": "\U0001f4e6  2. 批处理",
+        "tab3": "\U0001f4c8  3. 外部 1D \u2192 绝对强度",
+        "tab4": "\u2753  4. 帮助",
         "t1_guide_title": "快速流程（新手）",
         "t1_guide_text": "① 选择标准样/本底/暗场/几何文件\n② 核对自动读取的 Time、I0、T\n③ 填写标准样厚度(mm)\n④ 点击运行标定，得到 K 因子\n⑤ 查看报告中的 Std Dev 与点数",
         "t1_files_title": "1. 标定文件（必须）",
         "t1_phys_title": "2. 物理参数（核心输入）",
-        "t1_run_btn": ">>> 运行 K 因子标定（稳健模式） <<<",
+        "t1_run_btn": "\u25b6  运行 K 因子标定",
         "t1_hist_btn": "K 历史",
         "t1_report_title": "分析报告（建议重点看 Std Dev）",
         "t1_plot_tip": "图示说明：黑虚线=净信号；蓝线=K 校正后；红圈=NIST 参考点",
@@ -415,14 +418,14 @@ I18N = {
         "t2_add_btn": "添加文件",
         "t2_clear_btn": "清空队列",
         "t2_check_btn": "预检查",
-        "t2_run_btn": ">>> 开始稳健批处理（2D 扣背景 + 误差棒） <<<",
+        "t2_run_btn": "\u25b6  开始批处理",
         "t3_guide_title": "外部 1D 绝对强度校正流程",
         "t3_guide_text": "① 先在 Tab1 得到可信 K 因子\n② 选择流程：仅比例缩放 / 原始1D完整校正\n③ 导入外部1D文件（原始模式还需 BG1D/Dark1D 与参数）\n④ 选择校正公式（K/d 或 K）与 X 轴类型\n⑤ 先预检查，再批量输出绝对强度表格",
         "t3_mid_title": "外部 1D 文件队列",
         "t3_add_btn": "添加1D文件",
         "t3_clear_btn": "清空队列",
         "t3_check_btn": "预检查",
-        "t3_run_btn": ">>> 开始外部1D绝对强度校正 <<<",
+        "t3_run_btn": "\u25b6  开始外部 1D 绝对强度校正",
         "queue_files": "队列文件",
         "queue_dedup": "去重后",
         "out_auto_prefix": "输出目录将自动创建",
@@ -891,6 +894,27 @@ try:
     from saxsabs.core.buffer_subtraction import subtract_buffer
 except Exception:
     subtract_buffer = None
+
+try:
+    from saxsabs.core.execution_policy import parse_run_policy, should_skip_all_existing
+except Exception:
+    parse_run_policy = None
+
+    def should_skip_all_existing(existing_flags, policy):
+        if not existing_flags:
+            return False
+        resume_enabled = bool(getattr(policy, "resume_enabled", False))
+        overwrite_existing = bool(getattr(policy, "overwrite_existing", False))
+        if overwrite_existing:
+            return False
+        if not resume_enabled:
+            return False
+        return all(bool(x) for x in existing_flags)
+
+try:
+    from saxsabs.core.preflight import evaluate_preflight_gate
+except Exception:
+    evaluate_preflight_gate = None
 
 try:
     from saxsabs.io.writers import write_cansas1d_xml, write_nxcansas_h5
@@ -1472,6 +1496,13 @@ class SAXSAbsWorkbenchApp:
             return np.nan
         if mon_v <= 0 or trans_v <= 0:
             return np.nan
+        if trans_v > 1.0:
+            logger.warning(
+                "Transmission T=%.4f > 1.0 (physically impossible); "
+                "normalization factor set to NaN. Check header parsing.",
+                trans_v,
+            )
+            return np.nan
 
         if mode == "rate":
             if exp is None:
@@ -2023,6 +2054,11 @@ class SAXSAbsWorkbenchApp:
         i_arr = np.asarray(i_abs, dtype=np.float64)
         e_arr = np.asarray(i_err, dtype=np.float64)
 
+        if output_format in ("cansas_xml", "nxcansas_h5") and str(x_label) != "Q_A^-1":
+            raise ValueError(
+                f"输出格式 {output_format} 仅支持 Q_A^-1 轴数据，当前为 {x_label}。"
+            )
+
         if output_format == "cansas_xml" and write_cansas1d_xml is not None:
             xml_path = out_path.with_suffix(".xml")
             write_cansas1d_xml(xml_path, x_arr, i_arr, e_arr)
@@ -2234,7 +2270,7 @@ class SAXSAbsWorkbenchApp:
         
         headers = ["Time(s)", "I0(Mon)", "Trans(T)", "Thk(mm)"]
         for i, h in enumerate(headers):
-            ttk.Label(f_phys_grid, text=h, font=("Arial", 8)).grid(row=0, column=i+1)
+            ttk.Label(f_phys_grid, text=h, style="Hint.TLabel").grid(row=0, column=i+1)
         
         ttk.Label(f_phys_grid, text="Std:", style="Bold.TLabel").grid(row=1, column=0, pady=2)
         e_std_exp = self.add_grid_entry(f_phys_grid, self.t1_params["std_exp"], 1, 1)
@@ -2304,6 +2340,10 @@ class SAXSAbsWorkbenchApp:
         f_rep.pack(fill="both", expand=True, pady=5)
         self.txt_report = tk.Text(f_rep, font=("Consolas", 9), height=15, width=40)
         self.txt_report.pack(fill="both", expand=True)
+        # Configure semantic highlight tags for report text
+        self.txt_report.tag_configure("error", foreground="#dc2626")
+        self.txt_report.tag_configure("success", foreground="#16a34a", font=("Consolas", 9, "bold"))
+        self.txt_report.tag_configure("warning", foreground="#d97706")
         self._register_native_widget(self.txt_report)
         self.add_tooltip(self.txt_report, "tip_t1_report")
 
@@ -2395,7 +2435,7 @@ class SAXSAbsWorkbenchApp:
         lbl_bgf = ttk.Label(c1_grid, text=self.tr("lbl_t2_bg_file"))
         lbl_bgf.grid(row=1, column=0, sticky="e")
         self._register_i18n_widget(lbl_bgf, "lbl_t2_bg_file")
-        lbl_bg = ttk.Label(c1_grid, textvariable=self.global_vars["bg_path"], width=20, foreground="gray")
+        lbl_bg = ttk.Label(c1_grid, textvariable=self.global_vars["bg_path"], width=20, style="Hint.TLabel")
         lbl_bg.grid(row=1, column=1, padx=5)
         lbl_i0 = ttk.Label(c1_grid, text=self.tr("lbl_t2_i0_semantic"))
         lbl_i0.grid(row=2, column=0, sticky="e")
@@ -3157,16 +3197,22 @@ class SAXSAbsWorkbenchApp:
         if ux.size != x.size:
             y_sum = np.zeros_like(ux, dtype=np.float64)
             cnt = np.zeros_like(ux, dtype=np.float64)
-            e_sum = np.zeros_like(ux, dtype=np.float64)
+            e_sq_sum = np.zeros_like(ux, dtype=np.float64)
             e_cnt = np.zeros_like(ux, dtype=np.float64)
             for i, g in enumerate(inv):
                 y_sum[g] += y[i]
                 cnt[g] += 1.0
                 if np.isfinite(e[i]):
-                    e_sum[g] += e[i]
+                    e_sq_sum[g] += e[i] ** 2
                     e_cnt[g] += 1.0
             y = y_sum / np.clip(cnt, 1.0, None)
-            e = np.where(e_cnt > 0, e_sum / np.clip(e_cnt, 1.0, None), np.nan)
+            # Proper error propagation for averaged duplicates:
+            # sigma_avg = sqrt(sum(sigma_i^2)) / N
+            e = np.where(
+                e_cnt > 0,
+                np.sqrt(e_sq_sum) / np.clip(e_cnt, 1.0, None),
+                np.nan,
+            )
             x = ux
 
         if x.size < min_points:
@@ -3554,6 +3600,8 @@ class SAXSAbsWorkbenchApp:
 
         rows = []
         files = list(dict.fromkeys(self.t3_files))
+        failed_files = 0
+        risky_files = 0
         pipeline_mode = self.t3_pipeline_mode.get().strip().lower()
         mode = self.t3_corr_mode.get()
         k = float(self.global_vars["k_factor"].get())
@@ -3638,8 +3686,15 @@ class SAXSAbsWorkbenchApp:
 
                         if status == self.tr("status_ok") and bg_prof is not None:
                             _, _, outside_bg = self.align_profile_to_x(prof["x"], bg_prof, "BG")
+                            if outside_bg > 0:
+                                risky_files += 1
                         if status == self.tr("status_ok") and dark_prof is not None:
                             _, _, outside_dark = self.align_profile_to_x(prof["x"], dark_prof, "Dark")
+                            if outside_dark > 0:
+                                risky_files += 1
+
+                if status != self.tr("status_ok"):
+                    failed_files += 1
 
                 rows.append({
                     "File": Path(fp).name,
@@ -3657,6 +3712,7 @@ class SAXSAbsWorkbenchApp:
                     "Reason": reason,
                 })
             except Exception as e:
+                failed_files += 1
                 rows.append({
                     "File": Path(fp).name,
                     "Points": 0,
@@ -3673,11 +3729,19 @@ class SAXSAbsWorkbenchApp:
                     "Reason": str(e),
                 })
 
+        gate = self._evaluate_preflight_gate(
+            total_files=len(files),
+            failed_files=failed_files,
+            warnings_count=len(warnings),
+            risky_files=risky_files,
+        )
+
         top = tk.Toplevel(self.root)
         top.title(self.tr("title_t3_dryrun"))
         txt = tk.Text(top, font=("Consolas", 9))
         txt.pack(fill="both", expand=True)
         self._register_native_widget(txt)
+        txt.insert(tk.END, f"{self._preflight_label_text(gate)}\n")
         txt.insert(tk.END, f"{self.tr('pre_k_factor')} {k}\n")
         txt.insert(tk.END, f"{self.tr('pre_pipeline')} {pipeline_mode}\n")
         txt.insert(tk.END, f"{self.tr('pre_corr_mode')} {mode}\n")
@@ -3770,6 +3834,16 @@ class SAXSAbsWorkbenchApp:
 
             resume = bool(self.t3_resume_enabled.get())
             overwrite = bool(self.t3_overwrite.get())
+            if parse_run_policy is not None:
+                run_policy = parse_run_policy(resume_enabled=resume, overwrite_existing=overwrite)
+            else:
+                run_policy = SimpleNamespace(
+                    resume_enabled=resume,
+                    overwrite_existing=overwrite,
+                    mode=("overwrite" if overwrite else ("resume-skip" if resume else "always-run")),
+                    should_skip_existing=lambda exists: bool(exists) and resume and (not overwrite),
+                )
+            self.log(f"[配置] Tab3 Existing-output 策略: {run_policy.mode} (resume={resume}, overwrite={overwrite})")
             stem_map = self.build_output_stem_map(files)
 
             self.t3_prog_bar["maximum"] = len(files)
@@ -3800,7 +3874,7 @@ class SAXSAbsWorkbenchApp:
                     ext = ".chi" if x_label == "Chi_deg" else ".dat"
                     out_path = out_dir / f"{stem_map[fp]}{ext}"
 
-                    if resume and (not overwrite) and out_path.exists():
+                    if run_policy.should_skip_existing(out_path.exists()):
                         status = "已跳过"
                         reason = "输出已存在"
                         outputs = out_path.name
@@ -3849,7 +3923,7 @@ class SAXSAbsWorkbenchApp:
                             if np.any(np.isfinite(s_e)) or np.any(np.isfinite(bg_e)) or np.any(np.isfinite(d_e)):
                                 s_term = (np.nan_to_num(s_e, nan=0.0) / norm_s) ** 2
                                 bg_term = (np.nan_to_num(bg_e, nan=0.0) / bg_norm) ** 2
-                                d_term = (np.nan_to_num(d_e, nan=0.0) * (1.0 / norm_s + 1.0 / bg_norm)) ** 2
+                                d_term = (np.nan_to_num(d_e, nan=0.0) * (1.0 / bg_norm - 1.0 / norm_s)) ** 2
                                 net_err = np.sqrt(s_term + bg_term + d_term)
                                 net_err[~np.isfinite(net)] = np.nan
                             else:
@@ -3865,11 +3939,15 @@ class SAXSAbsWorkbenchApp:
                         # --- Buffer / solvent subtraction (post-calibration) ---
                         if (hasattr(self, "t3_buffer_enabled") and self.t3_buffer_enabled.get()
                                 and self.t3_buffer_path.get().strip()):
+                            if pipeline_mode == "raw":
+                                raise ValueError(
+                                    "raw 流程下启用 buffer 扣除要求 buffer 曲线已在与样品一致的绝对标度；"
+                                    "当前版本为防止量纲误用已禁止该组合。"
+                                )
                             buf_path = self.t3_buffer_path.get().strip()
                             buf_prof = self.read_external_1d_profile(buf_path)
                             buf_alpha = float(self.t3_alpha.get()) if hasattr(self, "t3_alpha") else 1.0
                             if subtract_buffer is not None:
-                                from scipy.interpolate import interp1d as _interp1d
                                 buf_x = np.asarray(buf_prof["x"], dtype=np.float64)
                                 buf_i = np.asarray(buf_prof["i_rel"], dtype=np.float64)
                                 buf_e = np.asarray(buf_prof["err_rel"], dtype=np.float64)
@@ -3882,13 +3960,19 @@ class SAXSAbsWorkbenchApp:
                                 i_abs = result_buf.i_subtracted
                                 err_abs = result_buf.err_subtracted
                             else:
-                                # Fallback without library: simple subtraction
+                                # Fallback without library: subtraction + error propagation
+                                _x_s = np.asarray(prof["x"], dtype=np.float64)
+                                _x_b = np.asarray(buf_prof["x"], dtype=np.float64)
                                 buf_i_interp = np.interp(
-                                    np.asarray(prof["x"], dtype=np.float64),
-                                    np.asarray(buf_prof["x"], dtype=np.float64),
+                                    _x_s, _x_b,
                                     np.asarray(buf_prof["i_rel"], dtype=np.float64),
                                 )
+                                buf_e_interp = np.interp(
+                                    _x_s, _x_b,
+                                    np.asarray(buf_prof["err_rel"], dtype=np.float64),
+                                )
                                 i_abs = i_abs - buf_alpha * buf_i_interp
+                                err_abs = np.sqrt(err_abs**2 + (buf_alpha * buf_e_interp)**2)
 
                         _ofmt = self.t3_output_format.get() if hasattr(self, "t3_output_format") else "tsv"
                         self.save_profile_table(out_path, prof["x"], i_abs, err_abs, x_label, output_format=_ofmt)
@@ -3950,6 +4034,7 @@ class SAXSAbsWorkbenchApp:
                 "bg_norm": float(bg_norm) if np.isfinite(bg_norm) else None,
                 "resume_enabled": resume,
                 "overwrite": overwrite,
+                "existing_output_policy": run_policy.mode,
                 "output_root": str(out_root),
                 "output_root_custom": bool(custom_out_root),
                 "output_dir": str(out_dir),
@@ -4379,13 +4464,23 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 win_mask = (q >= q_lo_w) & (q <= q_hi_w) & np.isfinite(i_net_vol) & (i_net_vol > 1e-9)
                 if win_mask.sum() < 3:
                     raise ValueError("q 窗口内测量信号不足，无法用水标准标定。")
-                i_meas_median = float(np.nanmedian(i_net_vol[win_mask]))
                 water_dsdw_val = float(i_ref[0])  # flat value
-                k_val = water_dsdw_val / i_meas_median
-                k_std = 0.0
+                ratios = water_dsdw_val / np.asarray(i_net_vol[win_mask], dtype=np.float64)
+                ratios = ratios[np.isfinite(ratios) & (ratios > 0)]
+                if ratios.size < 3:
+                    raise ValueError("水标准有效比值点数不足，无法稳健估计 K。")
+                r_med = float(np.nanmedian(ratios))
+                r_mad = float(np.nanmedian(np.abs(ratios - r_med)))
+                ratios_used = ratios
+                if np.isfinite(r_mad) and r_mad > 0:
+                    robust_sigma = 1.4826 * r_mad
+                    inlier = np.abs(ratios - r_med) <= 3.0 * robust_sigma
+                    if int(np.sum(inlier)) >= 3:
+                        ratios_used = ratios[inlier]
+                k_val = float(np.nanmedian(ratios_used))
+                k_std = float(np.nanstd(ratios_used))
                 q_min = float(q[win_mask][0])
                 q_max = float(q[win_mask][-1])
-                ratios_used = np.array([k_val])
                 points_total = int(win_mask.sum())
             else:
                 # Normal q-I curve standard (SRM3600, Lupolen, Custom)
@@ -4593,12 +4688,39 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
     def report(self, msg):
         if hasattr(self, "txt_report"):
             line = self._localize_runtime_text(msg)
+            # Semantic tag highlighting in report text widget
+            tag = None
+            msg_lower = msg.lower()
+            if any(kw in msg_lower for kw in ("error", "fail", "失败", "错误", "blocked")):
+                tag = "error"
+            elif any(kw in msg_lower for kw in ("success", "done", "完成", "成功", "ready")):
+                tag = "success"
+            elif any(kw in msg_lower for kw in ("warning", "caution", "注意", "警告")):
+                tag = "warning"
+            start_idx = self.txt_report.index(tk.END)
             self.txt_report.insert(tk.END, line + "\n")
+            if tag:
+                end_idx = self.txt_report.index(tk.END)
+                self.txt_report.tag_add(tag, start_idx, end_idx)
             self.txt_report.see(tk.END)
-        # Mirror last message to status bar
-        if hasattr(self, "_status_var"):
+        # Mirror last message to status bar with semantic colour
+        if hasattr(self, "_status_bar"):
             short = msg.strip()[:120]
             self._status_var.set(short)
+            msg_lower = msg.lower()
+            if any(kw in msg_lower for kw in ("error", "fail", "失败", "错误", "blocked")):
+                self._status_bar.configure(foreground="#dc2626")
+            elif any(kw in msg_lower for kw in ("success", "done", "完成", "成功", "ready")):
+                self._status_bar.configure(foreground="#16a34a")
+            elif any(kw in msg_lower for kw in ("warning", "caution", "注意", "警告")):
+                self._status_bar.configure(foreground="#d97706")
+            else:
+                try:
+                    import sv_ttk as _sv
+                    _hint_fg = "#9ca3af" if _sv.get_theme() == "dark" else "#6b7280"
+                except Exception:
+                    _hint_fg = "#6b7280"
+                self._status_bar.configure(foreground=_hint_fg)
 
     def log(self, msg):
         print(msg)
@@ -4669,9 +4791,26 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         reason = ""
 
         try:
-            if context["resume"] and (not context["overwrite"]):
-                expected_targets = self.build_sample_output_targets(context, out_stem)
-                if expected_targets and all(p.exists() for _, p in expected_targets):
+            run_policy = context.get("run_policy")
+            if run_policy is None:
+                run_policy = SimpleNamespace(
+                    resume_enabled=bool(context.get("resume", False)),
+                    overwrite_existing=bool(context.get("overwrite", False)),
+                    mode=(
+                        "overwrite"
+                        if bool(context.get("overwrite", False))
+                        else ("resume-skip" if bool(context.get("resume", False)) else "always-run")
+                    ),
+                    should_skip_existing=lambda exists: bool(exists)
+                    and bool(context.get("resume", False))
+                    and (not bool(context.get("overwrite", False))),
+                )
+
+            expected_targets = self.build_sample_output_targets(context, out_stem)
+            if expected_targets and should_skip_all_existing(
+                [p.exists() for _, p in expected_targets],
+                run_policy,
+            ):
                     for mode_tag, p in expected_targets:
                         mode_key = "1d_sector" if mode_tag.startswith("1d_sector") else mode_tag
                         mode_stats[mode_key]["skip"] += 1
@@ -4813,7 +4952,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             for mode in context["selected_modes"]:
                 out_path = self.mode_output_path(context["save_dirs"], mode, out_stem)
                 try:
-                    if mode != "1d_sector" and context["resume"] and (not context["overwrite"]) and out_path.exists():
+                    if mode != "1d_sector" and run_policy.should_skip_existing(out_path.exists()):
                         outputs.append(f"{mode}:{out_path.name}(existing)")
                         mode_stats[mode]["skip"] += 1
                         mode_skip += 1
@@ -4850,7 +4989,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         sum_need_write = False
                         if save_sum:
                             sum_out_path = context["sector_combined_dir"] / f"{out_stem}.dat"
-                            if context["resume"] and (not context["overwrite"]) and sum_out_path.exists():
+                            if run_policy.should_skip_existing(sum_out_path.exists()):
                                 outputs.append(f"1d_sector_sum:{sum_out_path.name}(existing)")
                                 mode_stats[mode]["skip"] += 1
                                 mode_skip += 1
@@ -4872,7 +5011,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                                     f"{each_out_path.parent.name}/{each_out_path.name}"
                                     if multi_sector else each_out_path.name
                                 )
-                                if context["resume"] and (not context["overwrite"]) and each_out_path.exists():
+                                if run_policy.should_skip_existing(each_out_path.exists()):
                                     outputs.append(f"{spec_tag}:{each_disp}(existing)")
                                     mode_stats[mode]["skip"] += 1
                                     mode_skip += 1
@@ -5217,6 +5356,16 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 raise ValueError("并行线程数必须为正整数。")
             overwrite = bool(self.t2_overwrite.get())
             resume = bool(self.t2_resume_enabled.get())
+            if parse_run_policy is not None:
+                run_policy = parse_run_policy(resume_enabled=resume, overwrite_existing=overwrite)
+            else:
+                run_policy = SimpleNamespace(
+                    resume_enabled=resume,
+                    overwrite_existing=overwrite,
+                    mode=("overwrite" if overwrite else ("resume-skip" if resume else "always-run")),
+                    should_skip_existing=lambda exists: bool(exists) and resume and (not overwrite),
+                )
+            self.log(f"[配置] Existing-output 策略: {run_policy.mode} (resume={resume}, overwrite={overwrite})")
 
             context = {
                 "selected_modes": selected_modes,
@@ -5253,6 +5402,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 "qmax": float(self.t2_rad_qmax.get()),
                 "overwrite": overwrite,
                 "resume": resume,
+                "run_policy": run_policy,
                 "bg_alpha": float(self.t2_alpha.get()) if self.t2_alpha_enabled.get() else 1.0,
                 "output_format": self.t2_output_format.get() if hasattr(self, "t2_output_format") else "tsv",
             }
@@ -5383,6 +5533,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 "flat_path": self.t2_flat_path.get().strip(),
                 "resume_enabled": resume,
                 "overwrite": overwrite,
+                "existing_output_policy": run_policy.mode,
                 "strict_instrument": bool(self.t2_strict_instrument.get()),
                 "instrument_tol_pct": float(self.t2_instr_tol_pct.get()),
                 "sector_specs": sector_specs,
@@ -5486,10 +5637,50 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 else:
                     self.t2_out_hint_var.set(f"{self.tr('out_auto_prefix')}: {', '.join(dirs)}{sec_note}")
 
+    def _evaluate_preflight_gate(self, total_files, failed_files, warnings_count, risky_files=0):
+        if evaluate_preflight_gate is not None:
+            return evaluate_preflight_gate(
+                total_files=total_files,
+                failed_files=failed_files,
+                warning_count=warnings_count,
+                risky_files=risky_files,
+            )
+
+        score = int(failed_files) * 5 + int(risky_files) * 2 + int(warnings_count)
+        if int(total_files) <= 0 or int(failed_files) > 0:
+            level = "BLOCKED"
+        elif score > 0:
+            level = "CAUTION"
+        else:
+            level = "READY"
+        return SimpleNamespace(
+            level=level,
+            score=score,
+            total_files=int(total_files),
+            failed_files=int(failed_files),
+            warning_count=int(warnings_count),
+            risky_files=int(risky_files),
+        )
+
+    def _preflight_label_text(self, gate):
+        if self.language == "en":
+            return (
+                f"Preflight Gate: {gate.level} | score={gate.score} | "
+                f"files={gate.total_files}, failed={gate.failed_files}, "
+                f"warnings={gate.warning_count}, risky={gate.risky_files}"
+            )
+        return (
+            f"预检关卡: {gate.level} | score={gate.score} | "
+            f"文件={gate.total_files}, 失败={gate.failed_files}, "
+            f"警告={gate.warning_count}, 风险={gate.risky_files}"
+        )
+
     def dry_run(self):
         if not self.t2_files: return
         files = list(dict.fromkeys(self.t2_files))
         rows = []
+        failed_files = 0
+        risky_files = 0
         mu = self.t2_mu.get()
         monitor_mode = self.get_monitor_mode()
         mode = self.t2_calc_mode.get()
@@ -5592,9 +5783,15 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     dk_ref, _ = self.select_best_reference(smeta, dark_library, kind="dark")
                     bg_match = Path(bg_ref["path"]).name if bg_ref else self.tr("status_no_match")
                     dark_match = Path(dk_ref["path"]).name if dk_ref else self.tr("status_no_match")
+                    if bg_ref is None or dk_ref is None:
+                        risky_files += 1
                 except Exception:
                     bg_match = self.tr("status_match_fail")
                     dark_match = self.tr("status_match_fail")
+                    risky_files += 1
+
+            if stat != self.tr("status_ok"):
+                failed_files += 1
 
             rows.append({
                 "File": Path(fp).name,
@@ -5617,11 +5814,19 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                             ratio=ratio, bg_norm=bg_norm, med=med_sample_norm,
                         )
                     )
+
+        gate = self._evaluate_preflight_gate(
+            total_files=len(files),
+            failed_files=failed_files,
+            warnings_count=len(warnings),
+            risky_files=risky_files,
+        )
         
         top = tk.Toplevel(self.root)
         top.title(self.tr("title_t2_dryrun"))
         txt = tk.Text(top, font=("Consolas",9)); txt.pack(fill="both", expand=True)
         self._register_native_widget(txt)
+        txt.insert(tk.END, f"{self._preflight_label_text(gate)}\n")
         txt.insert(tk.END, f"{self.tr('pre_i0_norm')} {monitor_mode} (norm={self.monitor_norm_formula(monitor_mode)})\n")
         txt.insert(tk.END, f"{self.tr('pre_integ_mode')} {','.join(selected_modes) if selected_modes else self.tr('pre_integ_none')}\n")
         if "1d_sector" in selected_modes:

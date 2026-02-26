@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.1.0] - 2026-02-26
+
+### Added
+- **Preflight gate** (`evaluate_preflight_gate`): automated pre-batch risk scoring (READY / CAUTION / BLOCKED) to catch missing headers, invalid parameters, or unreliable thickness before processing starts.
+- **Execution policy** (`RunPolicy`, `parse_run_policy`, `should_skip_all_existing`): unified resume / overwrite / skip semantics for Tab 2 and Tab 3 batch processing.
+- **Semantic status bar**: error (red), success (green), warning (amber) colour indicators with automatic keyword detection.
+- **Report text highlighting**: error / success / warning lines in the analysis report pane are now colour-coded via `tk.Text` tags.
+- Tab labels with icon prefixes (📐 📦 📈 ❓) for quick visual navigation.
+- `logging` module integrated in the main GUI for diagnostic messages (e.g. T > 1 warnings).
+- 9 new tests (`test_preflight.py`, `test_execution_policy.py`, updated `test_normalization.py`); total now 59.
+
+### Fixed
+- **Dark-current error propagation sign** (HIGH): corrected the partial derivative coefficient from `(1/Ns + 1/Nb)²` to `(1/Nb − 1/Ns)²` in the Tab 3 raw workflow.
+- **Transmission T > 1 rejection** (MEDIUM): `compute_norm_factor` now explicitly rejects T > 1.0 with a `logger.warning` instead of silently returning NaN.
+- **Water standard K uncertainty** (MEDIUM): point-wise ratio dispersion is now computed using the same MAD-based robust estimator as the glassy carbon path; previously hardcoded to `k_std = 0`.
+- **canSAS / NXcanSAS export guard** (HIGH): export is blocked when the x-axis is χ (azimuthal angle), preventing silent unit mismatch.
+- **Raw + buffer combination block** (HIGH): raw pipeline mode + buffer subtraction now raises an explicit error to prevent unit-scale mismatch.
+- **Buffer subtraction fallback error propagation** (MEDIUM): the no-library fallback path now correctly propagates buffer uncertainty (σ² = σ_s² + α² σ_b²).
+- **Duplicate x-point error merging** (MEDIUM): fixed from arithmetic averaging (Σσᵢ / N) to proper quadrature (√Σσᵢ² / N) in `_regularize_xy_triplet`.
+
+### Changed
+- Primary action buttons simplified from `>>> Run ... <<<` to clean `▶  Run ...` labels.
+- Hardcoded `font=("Arial", 8)` replaced with global `Hint.TLabel` style.
+- Hardcoded `foreground="gray"` replaced with theme-aware `Hint.TLabel` style for dark-mode compatibility.
+- Removed unused `scipy` import.
+
 ## [1.0.0] - 2026-02-26
 
 ### Added

@@ -1,0 +1,5 @@
+- Reproducible SAXS absolute-intensity calibration software with tested workflows
+- Multi-standard calibration: SRM 3600, water, and user-defined references
+- Robust K-factor estimation using MAD-based outlier rejection
+- Interoperable export to canSAS XML and NXcanSAS HDF5 formats
+- Deterministic minimal anonymized 2D package for reviewer reproducibility

@@ -64,7 +64,7 @@ def compute_norm_factor(exp: float | None, mon: float | None, trans: float | Non
 
     if not (math.isfinite(mon_v) and math.isfinite(trans_v)):
         return math.nan
-    if mon_v <= 0 or trans_v <= 0:
+    if mon_v <= 0 or trans_v <= 0 or trans_v > 1.0:
         return math.nan
 
     mode_n = str(mode).strip().lower()
