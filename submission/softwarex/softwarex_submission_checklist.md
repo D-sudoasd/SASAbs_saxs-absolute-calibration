@@ -26,5 +26,5 @@
 
 - [ ] Convert manuscript to journal-preferred editable format (Word or LaTeX source if needed by system)
 - [ ] Verify current SoftwareX portal requirements for graphical abstract dimensions and optional assets
-- [ ] (Optional but recommended) Archive v1.1.1 to Zenodo and replace release URL with DOI in manuscript code metadata table
+- [x] Zenodo archive created for v1.1.1 and DOI recorded in manuscript code metadata table
 - [ ] Fill submission portal fields from prepared files

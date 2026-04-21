@@ -52,6 +52,7 @@ Homepage = "https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration"
 Repository = "https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration"
 Issues = "https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration/issues"
 Changelog = "https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration/blob/main/CHANGELOG.md"
+DOI = "https://doi.org/10.5281/zenodo.19687104"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

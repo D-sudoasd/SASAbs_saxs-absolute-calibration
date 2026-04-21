@@ -3,6 +3,8 @@
   "@type": "SoftwareSourceCode",
   "name": "saxsabs",
   "description": "SAXS absolute intensity calibration and robust 1D profile utilities",
+  "identifier": "https://doi.org/10.5281/zenodo.19687104",
+  "url": "https://doi.org/10.5281/zenodo.19687104",
   "version": "1.1.1",
   "license": "https://spdx.org/licenses/BSD-3-Clause",
   "codeRepository": "https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration",

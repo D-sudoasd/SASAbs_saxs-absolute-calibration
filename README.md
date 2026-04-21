@@ -1,12 +1,15 @@
 # saxsabs
 
 [![CI](https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration/actions/workflows/ci.yml/badge.svg)](https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration/actions/workflows/ci.yml)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19687104.svg)](https://doi.org/10.5281/zenodo.19687104)
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 
 SAXS absolute intensity calibration and robust external 1D profile parsing utilities.
 
 Standalone desktop app name: **SAXSAbs Workbench**.
+
+Archived release DOI: https://doi.org/10.5281/zenodo.19687104
 
 ## Overview
 
@@ -208,6 +211,12 @@ Minimal anonymized 2D end-to-end reproducibility package:
 - `CODE_OF_CONDUCT.md` — Contributor Covenant v2.1
 - `CITATION.cff` — citation metadata
 - `CHANGELOG.md` — version history
+
+## Citation
+
+If you cite the archived software release, use the Zenodo DOI:
+
+- https://doi.org/10.5281/zenodo.19687104
 
 ## JOSS paper
 
