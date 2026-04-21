@@ -41,7 +41,7 @@ jobs:
             -e JOURNAL=joss \
             -v "$PWD:/data" \
             -u "$(id -u):$(id -g)" \
-            openjournals/inara:v1.3.0 \
+            openjournals/inara:latest \
             -o pdf \
             paper/paper.md
       - uses: actions/upload-artifact@v7
