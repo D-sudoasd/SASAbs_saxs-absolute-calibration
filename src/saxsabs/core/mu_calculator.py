@@ -11,6 +11,7 @@ Elam, W.T., Ravel, B.D. & Sieber, J.R. (2002).
 
 from __future__ import annotations
 
+import math
 import logging
 import re
 from dataclasses import dataclass, field
@@ -24,6 +25,34 @@ except ImportError as _exc:  # pragma: no cover
     ) from _exc
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_positive_finite_scalar(name: str, value: float) -> float:
+    try:
+        out = float(value)
+    except Exception as exc:
+        raise ValueError(f"{name} must be a real number, got {value!r}") from exc
+    if not math.isfinite(out) or out <= 0:
+        raise ValueError(f"{name} must be finite and > 0, got {value!r}")
+    return out
+
+
+def _validate_composition_fractions(composition: dict[str, float]) -> dict[str, float]:
+    validated: dict[str, float] = {}
+    for elem, fraction in composition.items():
+        try:
+            frac = float(fraction)
+        except Exception as exc:
+            raise ValueError(f"Weight fraction for {elem!r} must be a real number") from exc
+        if not math.isfinite(frac):
+            raise ValueError(f"Weight fraction for {elem!r} must be finite")
+        if frac < 0:
+            raise ValueError(f"Weight fraction for {elem!r} cannot be negative")
+        validated[elem] = frac
+
+    if sum(validated.values()) <= 0:
+        raise ValueError("Composition weight fractions must sum to > 0")
+    return validated
 
 
 # ---------------------------------------------------------------------------
@@ -146,12 +175,12 @@ def calculate_mu(
     ValueError
         On invalid energy, density, or empty composition.
     """
-    if energy_keV <= 0:
-        raise ValueError(f"Energy must be > 0 keV, got {energy_keV}")
-    if density_g_cm3 <= 0:
-        raise ValueError(f"Density must be > 0 g/cm³, got {density_g_cm3}")
     if not composition:
         raise ValueError("Composition dict is empty")
+
+    energy_keV = _coerce_positive_finite_scalar("Energy", energy_keV)
+    density_g_cm3 = _coerce_positive_finite_scalar("Density", density_g_cm3)
+    composition = _validate_composition_fractions(composition)
 
     wt_sum = sum(composition.values())
     if abs(wt_sum - 1.0) > 0.02:
@@ -185,7 +214,9 @@ def calculate_mu(
 # ---------------------------------------------------------------------------
 # Composition parsing
 # ---------------------------------------------------------------------------
-_COMP_RE = re.compile(r"([A-Z][a-z]?)\s*:\s*([\d.]+)")
+_COMP_RE = re.compile(
+    r"([A-Z][a-z]?)\s*:\s*([+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
+)
 
 
 def parse_composition_string(text: str) -> dict[str, float]:
@@ -203,7 +234,16 @@ def parse_composition_string(text: str) -> dict[str, float]:
     if not pairs:
         raise ValueError(f"Cannot parse composition string: {text!r}")
 
-    comp = {elem: float(val) for elem, val in pairs}
+    comp: dict[str, float] = {}
+    for elem, val in pairs:
+        if elem in comp:
+            raise ValueError(f"Duplicate element in composition string: {elem}")
+        value = float(val)
+        if not math.isfinite(value):
+            raise ValueError(f"Non-finite value for element {elem}: {val}")
+        if value < 0:
+            raise ValueError(f"Negative value for element {elem}: {val}")
+        comp[elem] = value
 
     # Auto-detect percent vs fraction
     vals = list(comp.values())

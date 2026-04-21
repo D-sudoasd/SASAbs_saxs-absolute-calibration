@@ -101,3 +101,29 @@ class TestGetReferenceData:
         q_ref, i_ref = get_reference_data("Custom", q_user=q_user, i_user=i_user)
         np.testing.assert_array_equal(q_ref, q_user)
         np.testing.assert_array_equal(i_ref, i_user)
+
+    def test_custom_user_data_shape_mismatch_raises(self):
+        q_user = np.linspace(0.01, 0.2, 10)
+        i_user = np.ones(9) * 42.0
+        with pytest.raises(ValueError, match="same shape"):
+            get_reference_data("Custom", q_user=q_user, i_user=i_user)
+
+    def test_custom_user_data_non_finite_raises(self):
+        q_user = np.array([0.01, 0.02, np.nan], dtype=float)
+        i_user = np.array([1.0, 2.0, 3.0], dtype=float)
+        with pytest.raises(ValueError, match="non-finite"):
+            get_reference_data("Custom", q_user=q_user, i_user=i_user)
+
+    def test_custom_user_data_too_short_raises(self):
+        q_user = np.array([0.01, 0.02], dtype=float)
+        i_user = np.array([1.0, 2.0], dtype=float)
+        with pytest.raises(ValueError, match="at least 3 points"):
+            get_reference_data("Custom", q_user=q_user, i_user=i_user)
+
+    def test_water_invalid_q_range_raises(self):
+        with pytest.raises(ValueError, match="q_range"):
+            get_reference_data("Water_20C", q_range=(0.30, 0.01), n_points=50)
+
+    def test_water_invalid_n_points_raises(self):
+        with pytest.raises(ValueError, match="n_points"):
+            get_reference_data("Water_20C", q_range=(0.01, 0.30), n_points=1)

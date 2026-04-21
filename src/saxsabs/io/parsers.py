@@ -18,6 +18,7 @@ This module addresses two common reproducibility pain points:
 
 from __future__ import annotations
 
+from io import StringIO
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -73,6 +74,54 @@ def _pick_named_column(
             best = col
             best_score = score
     return best, best_score > 0
+
+
+def _read_comment_header_dataframe(path: str | Path) -> pd.DataFrame | None:
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        return None
+
+    header_tokens: list[str] | None = None
+    data_lines: list[str] = []
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            candidate = stripped.lstrip("#").strip()
+            if not candidate:
+                continue
+            tokens = [token for token in re.split(r"[,\s;]+", candidate) if token]
+            if len(tokens) >= 2 and any(FLOAT_PATTERN.fullmatch(token) is None for token in tokens):
+                header_tokens = tokens
+                data_lines = lines[idx + 1 :]
+                break
+            continue
+        break
+
+    if header_tokens is None or not data_lines:
+        return None
+
+    text = "\n".join(data_lines).strip()
+    if not text:
+        return None
+
+    try:
+        df = pd.read_csv(
+            StringIO(text),
+            sep=r"[,\s;]+",
+            engine="python",
+            comment="#",
+            header=None,
+            names=header_tokens,
+        )
+    except Exception:
+        return None
+
+    if df.empty or df.shape[1] < 2:
+        return None
+    return df
 
 
 def norm_key(key: Any) -> str:
@@ -212,6 +261,10 @@ def read_external_1d_profile(path: str | Path) -> dict[str, Any]:
     dfs: list[pd.DataFrame] = []
     errs: list[str] = []
 
+    comment_header_df = _read_comment_header_dataframe(p)
+    if comment_header_df is not None:
+        dfs.append(comment_header_df)
+
     read_trials: list[dict[str, Any]] = [
         {"sep": None, "engine": "python", "comment": "#"},
         {"sep": r"[,\s;]+", "engine": "python", "comment": "#"},
@@ -275,8 +328,6 @@ def read_external_1d_profile(path: str | Path) -> dict[str, Any]:
             prefixes=("err", "error", "sigma", "std", "unc", "idev"),
             suffixes=("error", "sigma", "uncertainty"),
         )
-        if err_col is None and len(cols) >= 3:
-            err_col = next((c for c in cols if c not in {x_col, i_col}), None)
 
         x = pd.to_numeric(df[x_col], errors="coerce").to_numpy(dtype=np.float64, na_value=np.nan)
         i_rel = pd.to_numeric(df[i_col], errors="coerce").to_numpy(dtype=np.float64, na_value=np.nan)
@@ -287,7 +338,7 @@ def read_external_1d_profile(path: str | Path) -> dict[str, Any]:
         x = x[mask]
         i_rel = i_rel[mask]
 
-        if err_col is not None:
+        if err_named and err_col is not None:
             err = pd.to_numeric(df[err_col], errors="coerce").to_numpy(dtype=np.float64, na_value=np.nan)[mask]
             err = np.where(np.isfinite(err), err, np.nan)
         else:
@@ -309,7 +360,7 @@ def read_external_1d_profile(path: str | Path) -> dict[str, Any]:
                 "err_rel": err,
                 "x_col": str(x_col),
                 "i_col": str(i_col),
-                "err_col": str(err_col) if err_col is not None else "",
+                "err_col": str(err_col) if err_named and err_col is not None else "",
             }
 
     if best is None:

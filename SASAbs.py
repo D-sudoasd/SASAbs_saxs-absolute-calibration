@@ -21,6 +21,7 @@ import traceback
 import math
 import pandas as pd
 import datetime
+from io import StringIO
 import re
 import json
 import concurrent.futures
@@ -3105,6 +3106,43 @@ class SAXSAbsWorkbenchApp:
     def read_external_1d_profile(self, path):
         dfs = []
         errs = []
+        try:
+            lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            lines = []
+
+        header_tokens = None
+        data_lines = []
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("#"):
+                candidate = stripped.lstrip("#").strip()
+                if not candidate:
+                    continue
+                tokens = [token for token in re.split(r"[,\s;]+", candidate) if token]
+                if len(tokens) >= 2 and any(FLOAT_PATTERN.fullmatch(token) is None for token in tokens):
+                    header_tokens = tokens
+                    data_lines = lines[idx + 1 :]
+                    break
+                continue
+            break
+        if header_tokens is not None and data_lines:
+            try:
+                df = pd.read_csv(
+                    StringIO("\n".join(data_lines).strip()),
+                    sep=r"[,\s;]+",
+                    engine="python",
+                    comment="#",
+                    header=None,
+                    names=header_tokens,
+                )
+                if df is not None and not df.empty and df.shape[1] >= 2:
+                    dfs.append(df)
+            except Exception:
+                pass
+
         read_trials = [
             {"sep": None, "engine": "python", "comment": "#"},
             {"sep": r"[,\s;]+", "engine": "python", "comment": "#"},
@@ -3189,8 +3227,6 @@ class SAXSAbsWorkbenchApp:
                 prefixes=("err", "error", "sigma", "std", "unc", "idev"),
                 suffixes=("error", "sigma", "uncertainty"),
             )
-            if err_col is None and len(cols) >= 3:
-                err_col = next((c for c in cols if c not in {x_col, i_col}), None)
 
             x = pd.to_numeric(df[x_col], errors="coerce").to_numpy(dtype=np.float64, na_value=np.nan)
             i_rel = pd.to_numeric(df[i_col], errors="coerce").to_numpy(dtype=np.float64, na_value=np.nan)
@@ -3200,7 +3236,7 @@ class SAXSAbsWorkbenchApp:
 
             x = x[mask]
             i_rel = i_rel[mask]
-            if err_col is not None:
+            if err_named and err_col is not None:
                 err = pd.to_numeric(df[err_col], errors="coerce").to_numpy(dtype=np.float64, na_value=np.nan)[mask]
                 err = np.where(np.isfinite(err), err, np.nan)
             else:
@@ -3221,7 +3257,7 @@ class SAXSAbsWorkbenchApp:
                     "err_rel": err,
                     "x_col": str(x_col),
                     "i_col": str(i_col),
-                    "err_col": str(err_col) if err_col is not None else "",
+                    "err_col": str(err_col) if err_named and err_col is not None else "",
                     "_semantic_score": semantic_score,
                 }
 

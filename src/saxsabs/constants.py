@@ -25,6 +25,15 @@ from dataclasses import dataclass, field
 import numpy as np
 
 
+def _coerce_reference_array(name: str, values: np.ndarray) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.ndim != 1:
+        raise ValueError(f"{name} must be a 1-D array")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} contains non-finite values")
+    return arr
+
+
 # ---------------------------------------------------------------------------
 # Physical constants
 # ---------------------------------------------------------------------------
@@ -239,18 +248,27 @@ def get_reference_data(
 
     # --- flat / q-independent (e.g. water) ----------------------------------
     if std.is_q_independent:
+        q_min, q_max = float(q_range[0]), float(q_range[1])
+        if not (np.isfinite(q_min) and np.isfinite(q_max) and q_min < q_max):
+            raise ValueError("q_range must contain finite values with q_min < q_max")
+        n_points = int(n_points)
+        if n_points < 2:
+            raise ValueError("n_points must be >= 2")
         T = temperature_C if temperature_C is not None else _WATER_REF_TEMP_C
         dsdw = water_dsdw(T)
-        q_arr = np.linspace(q_range[0], q_range[1], n_points)
+        q_arr = np.linspace(q_min, q_max, n_points)
         i_arr = np.full_like(q_arr, dsdw)
         return q_arr, i_arr
 
     # --- user-provided (Lupolen / Custom) -----------------------------------
     if q_user is not None and i_user is not None:
-        return (
-            np.asarray(q_user, dtype=np.float64),
-            np.asarray(i_user, dtype=np.float64),
-        )
+        q_arr = _coerce_reference_array("q_user", q_user)
+        i_arr = _coerce_reference_array("i_user", i_user)
+        if q_arr.shape != i_arr.shape:
+            raise ValueError("q_user and i_user must have the same shape")
+        if q_arr.size < 3:
+            raise ValueError("user-supplied reference curve must contain at least 3 points")
+        return q_arr, i_arr
 
     raise ValueError(
         f"Standard '{std.name}' requires a user-supplied reference curve "

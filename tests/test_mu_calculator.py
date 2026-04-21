@@ -29,6 +29,12 @@ class TestParseCompositionString:
         assert np.isclose(total, 1.0, atol=0.02)
         assert np.isclose(comp["Fe"], 0.69, atol=0.01)
 
+    def test_scientific_notation_format(self):
+        comp = parse_composition_string("Fe:6.9e-1, Cr:1.9e-1, Ni:1.2e-1")
+        assert np.isclose(comp["Fe"], 0.69)
+        assert np.isclose(comp["Cr"], 0.19)
+        assert np.isclose(comp["Ni"], 0.12)
+
     def test_empty_string_raises(self):
         with pytest.raises(ValueError):
             parse_composition_string("")
@@ -36,6 +42,10 @@ class TestParseCompositionString:
     def test_bad_format_raises(self):
         with pytest.raises(ValueError):
             parse_composition_string("Fe-0.5-Cr-0.5")
+
+    def test_duplicate_element_raises(self):
+        with pytest.raises(ValueError, match="Duplicate element"):
+            parse_composition_string("Fe:50, Fe:50")
 
 
 # ---------------------------------------------------------------------------
@@ -97,3 +107,20 @@ class TestCalculateMu:
     def test_zero_density_raises(self):
         with pytest.raises(ValueError, match="(?i)density"):
             calculate_mu({"Fe": 1.0}, density_g_cm3=0.0, energy_keV=30.0)
+
+    def test_negative_weight_fraction_raises(self):
+        with pytest.raises(ValueError, match="negative"):
+            calculate_mu({"Fe": 1.1, "Cr": -0.1}, density_g_cm3=7.874, energy_keV=30.0)
+
+    @pytest.mark.parametrize("bad_fraction", [float("nan"), float("inf")])
+    def test_non_finite_weight_fraction_raises(self, bad_fraction):
+        with pytest.raises(ValueError, match="finite"):
+            calculate_mu({"Fe": bad_fraction}, density_g_cm3=7.874, energy_keV=30.0)
+
+    def test_weight_sum_deviation_warns_without_normalising(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            result = calculate_mu({"Fe": 0.8}, density_g_cm3=7.874, energy_keV=30.0)
+        assert "Weight fractions sum to" in caplog.text
+        assert result.mu_rho_cm2_g > 0

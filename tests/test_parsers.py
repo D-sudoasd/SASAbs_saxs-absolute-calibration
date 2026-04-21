@@ -74,6 +74,7 @@ def test_read_external_1d_profile_space_delimited(tmp_path: Path):
     out = read_external_1d_profile(f)
     assert out["x"].size == 3
     assert np.isfinite(out["err_rel"]).all()
+    assert out["err_col"].lower() == "sigma"
 
 
 def test_read_external_1d_profile_prefers_q_over_index_column(tmp_path: Path):
@@ -106,3 +107,18 @@ def test_read_external_1d_profile_prefers_intensity_over_id_column(tmp_path: Pat
     assert out["x_col"].lower() == "q"
     assert out["i_col"].lower() == "intensity"
     np.testing.assert_allclose(out["i_rel"], [100.0, 90.0, 80.0])
+
+
+def test_read_external_1d_profile_unnamed_third_column_not_treated_as_error(tmp_path: Path):
+    f = tmp_path / "profile_three_cols.dat"
+    f.write_text(
+        "0.10 10 100\n"
+        "0.20 20 200\n"
+        "0.30 30 300\n",
+        encoding="utf-8",
+    )
+
+    out = read_external_1d_profile(f)
+    assert out["x"].size == 3
+    assert out["err_col"] == ""
+    assert np.all(np.isnan(out["err_rel"]))
