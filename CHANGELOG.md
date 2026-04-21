@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.1] - 2026-04-22
+
+### Fixed
+- **1D profile column inference** (HIGH): the parser no longer misidentifies metadata columns such as `index` or `id` as the scattering axis or intensity column when `q` / `intensity` are present.
+- **Buffer subtraction validity checks** (HIGH): non-positive `alpha` now raises an explicit error, and interpolation now rejects sample grids that extend outside the buffer q-range instead of silently extrapolating endpoint values.
+- **Export shape validation** (HIGH): canSAS / NXcanSAS writers now reject mismatched q/intensity/error array lengths before writing malformed files; the NXcanSAS reader also reports dataset-length mismatches explicitly.
+- **Transmission parsing consistency** (MEDIUM): header parsing now rejects non-physical transmission values (`T <= 0` or `T > 1`) so parsing and normalization follow the same acceptance rules.
+- **Release metadata sync** (MEDIUM): package version, launcher version, citation metadata, and submission metadata are now aligned for the new patch release.
+
+### Added
+- 7 regression tests covering parser column selection, invalid transmission handling, negative buffer scaling, q-range overreach during interpolation, and malformed export inputs; total automated tests now 66.
+- GitHub Release automation: pushing a `v*` tag now builds wheel / sdist artifacts and publishes them to the corresponding GitHub Release.
+
 ## [1.1.0] - 2026-02-26
 
 ### Added

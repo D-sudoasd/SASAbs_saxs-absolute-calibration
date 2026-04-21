@@ -3,7 +3,7 @@
   "@type": "SoftwareSourceCode",
   "name": "saxsabs",
   "description": "SAXS absolute intensity calibration and robust 1D profile utilities",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "license": "https://spdx.org/licenses/BSD-3-Clause",
   "codeRepository": "https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration",
   "issueTracker": "https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration/issues",
@@ -38,7 +38,7 @@
     "SRM 3600"
   ],
   "dateCreated": "2026-02-25",
-  "dateModified": "2026-02-26",
+  "dateModified": "2026-04-22",
   "developmentStatus": "active",
   "softwareRequirements": [
     "numpy >= 1.24",

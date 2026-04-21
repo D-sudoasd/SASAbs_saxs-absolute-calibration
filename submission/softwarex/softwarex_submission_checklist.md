@@ -10,7 +10,7 @@
 
 ## Code and reproducibility package
 
-- [x] Public repository with versioned release: v1.0.0
+- [x] Public repository with versioned release: v1.1.1
 - [x] License file present (BSD-3-Clause)
 - [x] Installation guide present (`README.md`)
 - [x] Automated tests and CI present
@@ -18,7 +18,7 @@
 
 ## Metadata alignment
 
-- [x] Version consistency: 1.0.0 across package and citation files
+- [x] Version consistency: 1.1.1 across package and citation files
 - [x] ORCID included in metadata
 - [x] Contact email included
 
@@ -26,5 +26,5 @@
 
 - [ ] Convert manuscript to journal-preferred editable format (Word or LaTeX source if needed by system)
 - [ ] Verify current SoftwareX portal requirements for graphical abstract dimensions and optional assets
-- [ ] (Optional but recommended) Archive v1.0.0 to Zenodo and replace release URL with DOI in manuscript code metadata table
+- [ ] (Optional but recommended) Archive v1.1.1 to Zenodo and replace release URL with DOI in manuscript code metadata table
 - [ ] Fill submission portal fields from prepared files

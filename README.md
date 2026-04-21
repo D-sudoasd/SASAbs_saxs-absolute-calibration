@@ -189,7 +189,7 @@ saxsabs estimate-k --meas examples/k_measured.csv --ref examples/k_reference.csv
 pytest -q
 ```
 
-59 automated tests across 3 OS × 4 Python versions (3.10–3.13).
+66 automated tests across 3 OS × 4 Python versions (3.10–3.13).
 
 Manual workflow verification checklist is in `examples/manual-verification.md`.
 

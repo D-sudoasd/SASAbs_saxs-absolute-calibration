@@ -28,7 +28,20 @@ import threading
 from types import SimpleNamespace
 
 APP_NAME = "SAXSAbs Workbench"
-APP_VERSION = "1.0.0"
+
+
+def _read_package_version() -> str:
+    """Keep the legacy GUI version aligned with the packaged library version."""
+    version_file = Path(__file__).resolve().parent / "src" / "saxsabs" / "__init__.py"
+    try:
+        text = version_file.read_text(encoding="utf-8")
+    except OSError:
+        return "1.1.1"
+    match = re.search(r'^__version__\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    return match.group(1) if match else "1.1.1"
+
+
+APP_VERSION = _read_package_version()
 
 logger = logging.getLogger(__name__)
 SUPPORTED_LANGUAGES = ("en", "zh")
@@ -1442,7 +1455,12 @@ class SAXSAbsWorkbenchApp:
     def _normalize_transmission(self, trans, raw=None, key=None):
         if trans is None:
             return None
-        t = float(trans)
+        try:
+            t = float(trans)
+        except Exception:
+            return None
+        if not np.isfinite(t):
+            return None
         raw_s = str(raw).strip().lower() if raw is not None else ""
         key_s = self._norm_key(key) if key is not None else ""
 
@@ -1464,6 +1482,15 @@ class SAXSAbsWorkbenchApp:
             pass
         elif 2.0 < t <= 100.0:
             t /= 100.0
+        if not np.isfinite(t) or t <= 0:
+            return None
+        if t > 1.0:
+            logger.warning(
+                "Transmission T=%.4f > 1.0 (physically impossible); "
+                "header value will be ignored.",
+                t,
+            )
+            return None
         return t
 
     def _assert_same_shape(self, a, b, a_name, b_name):
@@ -3112,23 +3139,56 @@ class SAXSAbsWorkbenchApp:
 
             cols = list(numeric_cols.keys())
 
-            def pick(tokens, used):
+            def clean_name(value):
+                return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
+
+            def match_score(name, exact, prefixes=(), suffixes=()):
+                if name in exact:
+                    return 300
+                if any(name.startswith(prefix) and len(name) > len(prefix) for prefix in prefixes):
+                    return 200
+                if any(name.endswith(suffix) and len(name) > len(suffix) for suffix in suffixes):
+                    return 150
+                return 0
+
+            def pick_named(used, *, exact, prefixes=(), suffixes=()):
+                best = None
+                best_score = 0
                 for c in cols:
                     if c in used:
                         continue
-                    name = str(c).strip().lower().replace("_", "").replace(" ", "")
-                    if any(t in name for t in tokens):
-                        return c
-                return None
+                    score = match_score(clean_name(c), exact, prefixes, suffixes)
+                    if score > best_score:
+                        best = c
+                        best_score = score
+                return best, best_score > 0
 
-            x_col = pick(["q", "chi", "radial", "2theta", "x"], set()) or cols[0]
-            i_col = pick(["intensity", "irel", "iabs", "signal", "count", "i"], {x_col})
+            x_col, x_named = pick_named(
+                set(),
+                exact={"q", "chi", "radial", "2theta", "twotheta", "s", "x"},
+                prefixes=("q", "chi", "radial", "twotheta"),
+                suffixes=("q",),
+            )
+            if x_col is None:
+                x_col = cols[0]
+
+            i_col, i_named = pick_named(
+                {x_col},
+                exact={"i", "intensity", "irel", "iabs", "signal", "count", "counts", "y"},
+                prefixes=("intensity", "signal", "count", "irel", "iabs"),
+                suffixes=("intensity",),
+            )
             if i_col is None:
                 i_col = next((c for c in cols if c != x_col), None)
             if i_col is None:
                 continue
 
-            err_col = pick(["error", "sigma", "std", "unc"], {x_col, i_col})
+            err_col, err_named = pick_named(
+                {x_col, i_col},
+                exact={"err", "error", "errors", "sigma", "std", "stdev", "unc", "uncertainty", "idev"},
+                prefixes=("err", "error", "sigma", "std", "unc", "idev"),
+                suffixes=("error", "sigma", "uncertainty"),
+            )
             if err_col is None and len(cols) >= 3:
                 err_col = next((c for c in cols if c not in {x_col, i_col}), None)
 
@@ -3152,7 +3212,8 @@ class SAXSAbsWorkbenchApp:
             err = err[order]
 
             pts = int(x.size)
-            if pts > best_pts:
+            semantic_score = int(x_named) * 2 + int(i_named) * 3 + int(err_named)
+            if (pts, semantic_score) > (best_pts, best.get("_semantic_score", -1) if best else -1):
                 best_pts = pts
                 best = {
                     "x": x,
@@ -3161,10 +3222,12 @@ class SAXSAbsWorkbenchApp:
                     "x_col": str(x_col),
                     "i_col": str(i_col),
                     "err_col": str(err_col) if err_col is not None else "",
+                    "_semantic_score": semantic_score,
                 }
 
         if best is None:
             raise ValueError(f"无法从 {Path(path).name} 识别有效数值列（至少需要 X 和 I 两列）")
+        best.pop("_semantic_score", None)
         return best
 
     def _regularize_xy_triplet(self, x, y, e=None, min_points=3, name="profile"):
@@ -3963,13 +4026,26 @@ class SAXSAbsWorkbenchApp:
                                 # Fallback without library: subtraction + error propagation
                                 _x_s = np.asarray(prof["x"], dtype=np.float64)
                                 _x_b = np.asarray(buf_prof["x"], dtype=np.float64)
+                                if not np.isfinite(buf_alpha) or buf_alpha <= 0:
+                                    raise ValueError("Buffer scaling factor alpha must be finite and > 0")
+                                order_b = np.argsort(_x_b)
+                                _x_b = _x_b[order_b]
+                                _buf_i = np.asarray(buf_prof["i_rel"], dtype=np.float64)[order_b]
+                                _buf_e = np.asarray(buf_prof["err_rel"], dtype=np.float64)[order_b]
+                                tol = max(
+                                    1e-12,
+                                    1e-9 * max(abs(_x_b[0]), abs(_x_b[-1]), abs(_x_s).max(initial=0.0))
+                                )
+                                if np.min(_x_s) < _x_b[0] - tol or np.max(_x_s) > _x_b[-1] + tol:
+                                    raise ValueError(
+                                        "sample q grid extends outside buffer q range "
+                                        f"({_x_b[0]:.6g} to {_x_b[-1]:.6g})"
+                                    )
                                 buf_i_interp = np.interp(
-                                    _x_s, _x_b,
-                                    np.asarray(buf_prof["i_rel"], dtype=np.float64),
+                                    _x_s, _x_b, _buf_i,
                                 )
                                 buf_e_interp = np.interp(
-                                    _x_s, _x_b,
-                                    np.asarray(buf_prof["err_rel"], dtype=np.float64),
+                                    _x_s, _x_b, _buf_e,
                                 )
                                 i_abs = i_abs - buf_alpha * buf_i_interp
                                 err_abs = np.sqrt(err_abs**2 + (buf_alpha * buf_e_interp)**2)

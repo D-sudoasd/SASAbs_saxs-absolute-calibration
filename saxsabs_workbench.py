@@ -11,7 +11,7 @@ from tkinter import messagebox
 
 
 APP_NAME = "SAXSAbs Workbench"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.1"
 SUPPORTED_LANGUAGES = ("en", "zh")
 BASE_DIR = Path(__file__).resolve().parent
 LOG_PATH = BASE_DIR / "logs" / "saxsabs_workbench.log"

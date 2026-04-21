@@ -17,8 +17,8 @@ Keywords: SAXS; absolute intensity calibration; synchrotron; canSAS; NXcanSAS; P
 
 | Item | Description |
 |---|---|
-| Current code version | v1.0.0 |
-| Permanent link to code/repository used for this version | https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration/releases/tag/v1.0.0 |
+| Current code version | v1.1.1 |
+| Permanent link to code/repository used for this version | https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration/releases/tag/v1.1.1 |
 | Legal Code License | BSD-3-Clause |
 | Code versioning system used | Git |
 | Software code languages, tools, and services used | Python; NumPy; pandas; pyFAI; fabio; xraydb; h5py |

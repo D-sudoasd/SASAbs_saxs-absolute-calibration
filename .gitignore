@@ -22,5 +22,7 @@ launch_error.log
 test_output*.txt
 test_results*.txt
 *.docx
+build/
+dist/
 logs/
 examples/minimal_2d/outputs/

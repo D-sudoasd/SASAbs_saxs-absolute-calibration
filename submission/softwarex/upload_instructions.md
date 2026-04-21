@@ -21,8 +21,8 @@ pandoc submission/softwarex/softwarex_manuscript.md -o submission/softwarex/soft
 ## 3) Code availability information to paste in system
 
 - Repository: https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration
-- Version: v1.0.0
-- Release URL: https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration/releases/tag/v1.0.0
+- Version: v1.1.1
+- Release URL: https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration/releases/tag/v1.1.1
 - License: BSD-3-Clause
 - Contact: dlgong@imr.ac.cn
 

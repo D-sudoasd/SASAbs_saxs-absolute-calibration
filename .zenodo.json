@@ -3,7 +3,7 @@
   "description": "SAXS absolute intensity calibration and robust 1D profile utilities",
   "upload_type": "software",
   "license": "BSD-3-Clause",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "creators": [
     {
       "name": "Gong, Delun",

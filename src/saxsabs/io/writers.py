@@ -26,6 +26,25 @@ _CANSAS_SCHEMA = (
 )
 
 
+def _prepare_profile_arrays(
+    q: np.ndarray,
+    i_abs: np.ndarray,
+    err: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    q_arr = np.asarray(q, dtype=np.float64).ravel()
+    i_arr = np.asarray(i_abs, dtype=np.float64).ravel()
+    if q_arr.shape != i_arr.shape:
+        raise ValueError("q and intensity must have the same shape")
+
+    e_arr = None
+    if err is not None:
+        e_arr = np.asarray(err, dtype=np.float64).ravel()
+        if e_arr.shape != q_arr.shape:
+            raise ValueError("q and uncertainty must have the same shape")
+
+    return q_arr, i_arr, e_arr
+
+
 def write_cansas1d_xml(
     path: str | Path,
     q: np.ndarray,
@@ -70,9 +89,7 @@ def write_cansas1d_xml(
 
     # --- SASdata ---
     sasdata = ET.SubElement(entry, "SASdata")
-    q_arr = np.asarray(q, dtype=np.float64)
-    i_arr = np.asarray(i_abs, dtype=np.float64)
-    e_arr = np.asarray(err, dtype=np.float64) if err is not None else None
+    q_arr, i_arr, e_arr = _prepare_profile_arrays(q, i_abs, err)
 
     for idx in range(q_arr.size):
         idata = ET.SubElement(sasdata, "Idata")
@@ -152,8 +169,7 @@ def write_nxcansas_h5(
     meta = metadata or {}
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    q_arr = np.asarray(q, dtype=np.float64)
-    i_arr = np.asarray(i_abs, dtype=np.float64)
+    q_arr, i_arr, e_arr = _prepare_profile_arrays(q, i_abs, err)
 
     with h5py.File(str(out), "w") as f:
         entry = f.create_group("sasentry01")
@@ -178,8 +194,7 @@ def write_nxcansas_h5(
         ds_i = data.create_dataset("I", data=i_arr)
         ds_i.attrs["units"] = "1/cm"
 
-        if err is not None:
-            e_arr = np.asarray(err, dtype=np.float64)
+        if e_arr is not None:
             ds_e = data.create_dataset("Idev", data=e_arr)
             ds_e.attrs["units"] = "1/cm"
 

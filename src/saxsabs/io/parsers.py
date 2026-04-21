@@ -30,6 +30,51 @@ import pandas as pd
 FLOAT_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 
 
+def _clean_column_name(name: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(name).strip().lower())
+
+
+def _match_column_score(
+    name: str,
+    *,
+    exact: set[str],
+    prefixes: tuple[str, ...] = (),
+    suffixes: tuple[str, ...] = (),
+) -> int:
+    if name in exact:
+        return 300
+    if any(name.startswith(prefix) and len(name) > len(prefix) for prefix in prefixes):
+        return 200
+    if any(name.endswith(suffix) and len(name) > len(suffix) for suffix in suffixes):
+        return 150
+    return 0
+
+
+def _pick_named_column(
+    cols: list[Any],
+    used: set[Any],
+    *,
+    exact: set[str],
+    prefixes: tuple[str, ...] = (),
+    suffixes: tuple[str, ...] = (),
+) -> tuple[Any, bool]:
+    best = None
+    best_score = 0
+    for col in cols:
+        if col in used:
+            continue
+        score = _match_column_score(
+            _clean_column_name(col),
+            exact=exact,
+            prefixes=prefixes,
+            suffixes=suffixes,
+        )
+        if score > best_score:
+            best = col
+            best_score = score
+    return best, best_score > 0
+
+
 def norm_key(key: Any) -> str:
     if key is None:
         return ""
@@ -62,7 +107,12 @@ def extract_float(raw: Any) -> float | None:
 def normalize_transmission(trans: float | None, raw: Any = None, key: Any = None) -> float | None:
     if trans is None:
         return None
-    t = float(trans)
+    try:
+        t = float(trans)
+    except Exception:
+        return None
+    if not np.isfinite(t):
+        return None
     raw_s = str(raw).strip().lower() if raw is not None else ""
     key_s = norm_key(key) if key is not None else ""
 
@@ -78,6 +128,9 @@ def normalize_transmission(trans: float | None, raw: Any = None, key: Any = None
         t /= 100.0
     elif 2.0 < t <= 100.0:
         t /= 100.0
+
+    if not np.isfinite(t) or t <= 0 or t > 1.0:
+        return None
     return t
 
 
@@ -151,8 +204,8 @@ def read_external_1d_profile(path: str | Path) -> dict[str, Any]:
     if ext == ".xml":
         try:
             return read_cansas1d_xml(p)
-        except Exception:
-            pass  # fall through to generic text parser
+        except Exception as exc:
+            raise ValueError(f"Cannot parse canSAS XML file: {p.name}") from exc
     elif ext in (".h5", ".hdf5", ".hdf", ".nxs"):
         return read_nxcansas_h5(p)
 
@@ -177,7 +230,7 @@ def read_external_1d_profile(path: str | Path) -> dict[str, Any]:
         raise ValueError(f"Cannot parse file: {Path(path).name} ({'; '.join(errs[:2])})")
 
     best: dict[str, Any] | None = None
-    best_pts = -1
+    best_rank: tuple[int, int] = (-1, -1)
 
     for df in dfs:
         numeric_cols: dict[Any, pd.Series] = {}
@@ -193,23 +246,35 @@ def read_external_1d_profile(path: str | Path) -> dict[str, Any]:
 
         cols = list(numeric_cols.keys())
 
-        def pick(tokens: list[str], used: set[Any]) -> Any:
-            for c in cols:
-                if c in used:
-                    continue
-                name = str(c).strip().lower().replace("_", "").replace(" ", "")
-                if any(t in name for t in tokens):
-                    return c
-            return None
+        x_col, x_named = _pick_named_column(
+            cols,
+            set(),
+            exact={"q", "chi", "radial", "2theta", "twotheta", "s", "x"},
+            prefixes=("q", "chi", "radial", "twotheta"),
+            suffixes=("q",),
+        )
+        if x_col is None:
+            x_col = cols[0]
 
-        x_col = pick(["q", "chi", "radial", "2theta", "x"], set()) or cols[0]
-        i_col = pick(["intensity", "irel", "iabs", "signal", "count", "i"], {x_col})
+        i_col, i_named = _pick_named_column(
+            cols,
+            {x_col},
+            exact={"i", "intensity", "irel", "iabs", "signal", "count", "counts", "y"},
+            prefixes=("intensity", "signal", "count", "irel", "iabs"),
+            suffixes=("intensity",),
+        )
         if i_col is None:
             i_col = next((c for c in cols if c != x_col), None)
         if i_col is None:
             continue
 
-        err_col = pick(["error", "sigma", "std", "unc"], {x_col, i_col})
+        err_col, err_named = _pick_named_column(
+            cols,
+            {x_col, i_col},
+            exact={"err", "error", "errors", "sigma", "std", "stdev", "unc", "uncertainty", "idev"},
+            prefixes=("err", "error", "sigma", "std", "unc", "idev"),
+            suffixes=("error", "sigma", "uncertainty"),
+        )
         if err_col is None and len(cols) >= 3:
             err_col = next((c for c in cols if c not in {x_col, i_col}), None)
 
@@ -234,8 +299,10 @@ def read_external_1d_profile(path: str | Path) -> dict[str, Any]:
         err = err[order]
 
         pts = int(x.size)
-        if pts > best_pts:
-            best_pts = pts
+        semantic_score = int(x_named) * 2 + int(i_named) * 3 + int(err_named)
+        rank = (pts, semantic_score)
+        if rank > best_rank:
+            best_rank = rank
             best = {
                 "x": x,
                 "i_rel": i_rel,
@@ -369,6 +436,17 @@ def read_nxcansas_h5(path: str | Path) -> dict[str, Any]:
         if e_ds is not None
         else np.full_like(x, np.nan)
     )
+
+    if x.shape != i_rel.shape:
+        raise ValueError(
+            f"NXcanSAS dataset length mismatch in {p.name}: "
+            f"Q has {x.size} points, I has {i_rel.size}"
+        )
+    if err.shape != x.shape:
+        raise ValueError(
+            f"NXcanSAS dataset length mismatch in {p.name}: "
+            f"Q has {x.size} points, Idev has {err.size}"
+        )
 
     order = np.argsort(x)
     return {
