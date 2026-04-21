@@ -75,7 +75,7 @@
 - `--version` flag for the `saxsabs` CLI.
 - Comprehensive Google-style docstrings for all core and I/O modules.
 - CI matrix expanded to Python 3.10/3.11/3.12 on Ubuntu/Windows/macOS.
-- JOSS paper PDF build validation via `openjournals/paperdraft` in CI.
+- JOSS paper PDF build validation added to CI.
 - `codemeta.json` for software metadata interoperability.
 - `[project.urls]` in `pyproject.toml` with Homepage, Repository, Issues, Changelog links.
 - README badges (CI status, license).

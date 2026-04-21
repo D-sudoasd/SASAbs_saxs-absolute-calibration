@@ -15,7 +15,7 @@
 - [x] Installable package (`pyproject.toml`)
 - [x] Automated tests (`tests/`)
 - [x] Continuous integration (`.github/workflows/ci.yml`)
-- [x] Multi-platform CI matrix (Ubuntu / Windows / macOS × Python 3.10–3.13)
+- [x] Multi-platform CI matrix (Ubuntu / Windows / macOS x Python 3.10-3.13)
 - [x] Headless reproducibility path (`saxsabs` CLI)
 - [x] `python -m saxsabs` entry point (`__main__.py`)
 - [x] `__version__` in package `__init__.py`
@@ -46,7 +46,7 @@
 
 - [x] `pytest -q`
 - [x] `ruff check src tests`
-- [x] JOSS paper PDF build via `openjournals/paperdraft` in CI
+- [x] JOSS paper PDF build via `openjournals/inara` in CI
 
 ## Remaining blockers
 
