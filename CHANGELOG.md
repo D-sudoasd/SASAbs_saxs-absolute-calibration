@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Same-机时 (beamtime) automatic grouping** — new core `cluster_by_acquisition_time` + `AcquisitionGroup` in `saxsabs.core.session_grouper`. Tab2 now has a "检测机时分组 / Detect Groups" button that clusters files by timestamp (header preferred, mtime fallback) with a 90-minute default gap. Groups are exposed to the batch report path and can drive future per-run output subdirectories and smarter auto BG/Dark matching.
+- **Core extraction & deduplication** — `reference_matching` (build/score/select best BG/Dark) and improved header timestamp extraction now live in `src/saxsabs/core` and `io/parsers`. The GUI delegates to them when available, reducing ~150 LOC of duplicated logic.
+- New public re-exports: `evaluate_preflight_gate`, `RunPolicy`, `build_reference_library`, `AcquisitionGroup`, `cluster_by_acquisition_time`, `extract_acquisition_timestamp`, etc.
+- Two new test modules: `test_session_grouper.py` and `test_reference_matching.py`.
+
+### Changed
+- Tooltip system hardened (smarter screen-edge positioning, slightly better dark-mode contrast, safer error handling).
+- `parse_header` and `compute_norm_factor` in the Workbench now prefer the canonical core implementations (with legacy fallback for safety).
+
+### Fixed
+- Minor robustness improvements in header timestamp parsing for grouping use-case.
+
 ## [1.1.1] - 2026-04-22
 
 ### Fixed

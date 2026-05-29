@@ -40,6 +40,64 @@ scattering (SAXS) absolute-intensity calibration workflows. It provides:
 - **Bilingual GUI** (中文 / English) with Sun Valley (Win 11) theme and
   light / dark mode toggle
 
+## GUI Workflow Overview
+
+The **SAXSAbs Workbench** has four main tabs with a clear division of labor:
+
+| Tab | Name                        | Input Type          | What it does |
+|-----|-----------------------------|---------------------|--------------|
+| 1   | K-Factor Calibration        | **2D images**       | Calibrate K-factor using standard sample (GC or Water) from raw 2D detector images |
+| 2   | Batch Processing            | **2D images**       | Process large numbers of 2D TIFF/EDF images into absolute intensity 1D profiles |
+| 3   | External 1D → Absolute      | **Already integrated 1D** | Apply absolute scaling to 1D profiles exported from pyFAI or other software |
+| 4   | Help                        | —                   | Detailed usage guide |
+
+**Important distinction** (请务必注意):
+
+- **Tab 1 和 Tab 2** 是**完整的 2D 图像处理流程**：
+  - 输入：原始 2D 探测器图像（TIFF、EDF、CBF 等）
+  - 内部完成：2D 扣背景 + 方位角积分（使用 pyFAI） + 绝对强度换算
+  - 适合：大多数束线用户日常使用
+
+- **Tab 3** 仅用于**后处理 1D 数据**：
+  - 输入：已经用 pyFAI 或其他软件积分好的 1D 曲线
+  - 只做：绝对强度标定（K 因子应用）
+  - 适合：与合作者交换 1D 数据时使用，或你自己已经提前积分好的情况
+
+**强烈建议**：除非你明确知道自己只有 1D 数据，否则请优先使用 **Tab 1 + Tab 2** 这一整套 2D 处理流程。
+
+**Recommended workflow**:
+1. Use **Tab 1** to obtain a reliable K-factor.
+2. Use **Tab 2** for routine high-throughput processing of 2D data.
+3. Use **Tab 3** when collaborating with people who only provide integrated 1D curves.
+
+### 快速选择路径（新用户必看）
+
+请根据下图快速判断自己应该使用哪些 Tab：
+
+请根据下图快速判断自己应该使用哪些 Tab：
+
+```mermaid
+flowchart TD
+    Start[开始] --> Has2D{你有原始 2D 探测器图像<br/>（TIFF / EDF 等）吗？}
+
+    Has2D -->|是| NeedK{是否需要自己标定 K 因子？}
+    Has2D -->|否，只有已积分的 1D 数据| Tab3[使用 Tab 3<br/>External 1D → Absolute]
+
+    NeedK -->|是| Tab1[先用 Tab 1<br/>做 K 因子标定]
+    NeedK -->|否，已有可靠的 K| Tab2[使用 Tab 2<br/>Batch Processing]
+
+    Tab1 --> Tab2
+    Tab2 --> Done2D[获得绝对强度 1D 结果<br/>+ 完整报告]
+    Tab3 --> Done1D[获得绝对强度 1D 结果]
+
+    classDef primary fill:#e0f2fe,stroke:#0369a1
+    class Tab1,Tab2,Tab3 primary
+```
+
+**简单规则**：
+- **有 2D 原始图像** → 主要使用 **Tab 1 + Tab 2**
+- **只有外部软件积分好的 1D 数据** → 只使用 **Tab 3**
+
 ## Highlights of recent improvements
 
 ### Scientific accuracy
@@ -95,6 +153,18 @@ Developer tools:
 ```bash
 pip install -e .[dev]
 ```
+
+## Quick Start with the GUI (Recommended for most users)
+
+1. Double-click `Start_SAXSAbs_Workbench.bat` (Windows) or run:
+   ```bash
+   python saxsabs_workbench.py
+   ```
+2. **First time**: Go to **Tab 1** to calibrate a K-factor using your standard sample.
+3. Then go to **Tab 2** to process your real 2D datasets in batch.
+4. If you only have already-integrated 1D data, use **Tab 3**.
+
+See the new "GUI Workflow Overview" table above for which tab to use.
 
 ## Launch as standalone desktop program (Windows)
 

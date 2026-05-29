@@ -508,3 +508,132 @@ def read_nxcansas_h5(path: str | Path) -> dict[str, Any]:
         "i_col": "I",
         "err_col": "Idev" if e_ds is not None else "",
     }
+
+
+# ---------------------------------------------------------------------------
+# Acquisition timestamp extraction (for 机时 / session grouping)
+# ---------------------------------------------------------------------------
+
+_ACQ_TIME_KEYS = [
+    # common synchrotron / area detector header keys (case-insensitive after norm)
+    "starttime",
+    "acquisitiontime",
+    "acqtime",
+    "exposurestart",
+    "startdate",
+    "collectiontime",
+    "headertime",
+    "datetime",
+    "date",
+    "time",
+    "unixepoch",
+    "epoc",
+    "mtime",  # last resort in some detectors
+]
+
+def _try_parse_datetime(value: Any) -> float | None:
+    """Best-effort conversion of many date/time header formats to unix timestamp."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float, np.number)):
+        v = float(value)
+        # Heuristic: if it looks like seconds since epoch (2001-01-01 .. 2100)
+        if 1e9 < v < 4e9:
+            return v
+        # If it looks like milliseconds
+        if 1e12 < v < 4e15:
+            return v / 1000.0
+        return None
+
+    s = str(value).strip()
+    if not s or s.lower() in ("none", "null", "nan"):
+        return None
+
+    # Try common numeric unix cases first
+    try:
+        v = float(s)
+        if 1e9 < v < 4e9:
+            return v
+        if 1e12 < v < 4e15:
+            return v / 1000.0
+    except Exception:
+        pass
+
+    # Try python's datetime + dateutil if present
+    try:
+        from datetime import datetime
+
+        # ISO8601 / common beamline formats
+        for fmt in (
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y/%m/%d %H:%M:%S",
+            "%d/%m/%Y %H:%M:%S",
+            "%Y-%m-%d",
+        ):
+            try:
+                dt = datetime.strptime(s.split(".")[0], fmt)
+                return dt.timestamp()
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # dateutil is the most robust fallback (optional dependency)
+    try:
+        from dateutil import parser as du_parser  # type: ignore
+
+        dt = du_parser.parse(s, fuzzy=True)
+        return dt.timestamp()
+    except Exception:
+        pass
+
+    return None
+
+
+def extract_acquisition_timestamp(
+    header: dict[str, Any] | None,
+    *,
+    fallback_mtime: float | None = None,
+) -> float | None:
+    """Extract acquisition / start time from a heterogeneous instrument header.
+
+    Returns a unix timestamp (seconds since epoch) when successful, otherwise None.
+    This is intentionally best-effort and used primarily for same-机时 grouping.
+    """
+    if not header:
+        return fallback_mtime
+
+    # Build normalized lookup
+    norm: dict[str, Any] = {}
+    for k, v in header.items():
+        nk = str(k).strip().lower().replace("_", "").replace(" ", "").replace("/", "")
+        norm[nk] = v
+
+    for key in _ACQ_TIME_KEYS:
+        if key in norm:
+            ts = _try_parse_datetime(norm[key])
+            if ts is not None:
+                return ts
+
+        # also try contains match for longer keys
+        for nk, nv in norm.items():
+            if key in nk and len(nk) <= len(key) + 8:
+                ts = _try_parse_datetime(nv)
+                if ts is not None:
+                    return ts
+
+    return fallback_mtime
+
+
+def parse_header_values_with_meta(
+    header_mapping: dict[str, Any] | None,
+) -> tuple[float | None, float | None, float | None, float | None]:
+    """Like parse_header_values but also returns best-effort acquisition timestamp.
+
+    Returns (exp, mon, trans, acq_ts_unix).
+    The timestamp is best-effort and may be None.
+    """
+    exp, mon, trans = parse_header_values(header_mapping)
+    ts = extract_acquisition_timestamp(header_mapping)
+    return exp, mon, trans, ts

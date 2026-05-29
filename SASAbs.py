@@ -72,6 +72,7 @@ I18N = {
         "t2_add_btn": "Add Files",
         "t2_clear_btn": "Clear Queue",
         "t2_check_btn": "Dry Check",
+        "t2_group_btn": "Detect Groups / 机时分组",
         "t2_run_btn": "\u25b6  Start Batch Processing",
         "t3_guide_title": "External 1D Workflow",
         "t3_guide_text": "① Obtain K in Tab1\n② Select pipeline mode (scaled/raw)\n③ Import external 1D files\n④ Select correction formula and X-axis type\n⑤ Dry-check then batch-export absolute intensity",
@@ -227,6 +228,7 @@ I18N = {
         "tip_t2_add": "Multi-select TIFF files.",
         "tip_t2_clear": "Clear queue; does not delete files on disk.",
         "tip_t2_check": "Batch-check each file's exp/mon/T and thickness availability.",
+        "tip_t2_group": "Auto-detect files from the same experimental run (机时) using timestamps. Creates logical groups for output organization and smarter BG/Dark matching.",
         "tip_t2_listbox": "Current sample queue.",
         "tip_t2_run": "Run batch. Single-file failure does not abort the batch.",
         "tip_t2_progress": "Batch processing progress.",
@@ -432,6 +434,7 @@ I18N = {
         "t2_add_btn": "添加文件",
         "t2_clear_btn": "清空队列",
         "t2_check_btn": "预检查",
+        "t2_group_btn": "检测机时分组",
         "t2_run_btn": "\u25b6  开始批处理",
         "t3_guide_title": "外部 1D 绝对强度校正流程",
         "t3_guide_text": "① 先在 Tab1 得到可信 K 因子\n② 选择流程：仅比例缩放 / 原始1D完整校正\n③ 导入外部1D文件（原始模式还需 BG1D/Dark1D 与参数）\n④ 选择校正公式（K/d 或 K）与 X 轴类型\n⑤ 先预检查，再批量输出绝对强度表格",
@@ -587,6 +590,7 @@ I18N = {
         "tip_t2_add": "支持多选 TIFF 文件。",
         "tip_t2_clear": "清空队列，不会删除磁盘文件。",
         "tip_t2_check": "批量检查每个文件的 exp/mon/T 和厚度可用性。",
+        "tip_t2_group": "根据时间戳自动识别同一次机时（实验轮次）的文件。可用于按组输出子目录和优先匹配同组BG/Dark。",
         "tip_t2_listbox": "显示当前待处理样品列表。",
         "tip_t2_run": "执行批处理。单文件失败不会中断整批。",
         "tip_t2_progress": "显示批处理进度。",
@@ -795,11 +799,13 @@ except Exception:
                 app._sync_native_widget_colors()
 
     class ToolTip:
-        """Minimal cross-platform tooltip for ttk / tk widgets."""
-        _DELAY_MS = 450
-        def __init__(self, widget, text):
+        """Improved cross-platform tooltip with smarter positioning and i18n support."""
+        DEFAULT_DELAY_MS = 420
+
+        def __init__(self, widget, text, delay_ms=None):
             self.widget = widget
             self.text = text
+            self.delay_ms = delay_ms if delay_ms is not None else self.DEFAULT_DELAY_MS
             self._tw = None
             self._id_after = None
             widget.bind("<Enter>", self._schedule, add="+")
@@ -808,34 +814,64 @@ except Exception:
 
         def _schedule(self, event=None):
             self._hide()
-            self._id_after = self.widget.after(self._DELAY_MS, self._show)
+            self._id_after = self.widget.after(self.delay_ms, self._show)
 
         def _show(self):
             if not self.text:
                 return
-            x = self.widget.winfo_rootx() + 20
-            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
-            tw = tk.Toplevel(self.widget)
-            tw.wm_overrideredirect(True)
-            tw.wm_geometry(f"+{x}+{y}")
-            # Adapt colours to current theme
-            is_dark = (_sv_ttk is not None and _sv_ttk.get_theme() == "dark")
-            bg = "#3a3a3a" if is_dark else "#ffffe1"
-            fg = "#e0e0e0" if is_dark else "#1a1a1a"
-            lbl = tk.Label(tw, text=self.text, justify="left",
-                           background=bg, foreground=fg,
-                           relief="solid", borderwidth=1,
-                           font=("Segoe UI", 9), wraplength=360,
-                           padx=6, pady=4)
-            lbl.pack()
-            self._tw = tw
+            try:
+                wx = self.widget.winfo_rootx()
+                wy = self.widget.winfo_rooty()
+                ww = self.widget.winfo_width()
+                wh = self.widget.winfo_height()
+                tw = tk.Toplevel(self.widget)
+                tw.wm_overrideredirect(True)
+
+                # Create label first to measure size
+                is_dark = (_sv_ttk is not None and _sv_ttk.get_theme() == "dark")
+                bg = "#2d2d2d" if is_dark else "#ffffe7"
+                fg = "#f0f0f0" if is_dark else "#1a1a1a"
+                lbl = tk.Label(tw, text=self.text, justify="left",
+                               background=bg, foreground=fg,
+                               relief="solid", borderwidth=1,
+                               font=("Segoe UI", 9), wraplength=420,
+                               padx=8, pady=5)
+                lbl.pack()
+
+                tw.update_idletasks()
+                tw_w = tw.winfo_reqwidth()
+                tw_h = tw.winfo_reqheight()
+
+                # Smart positioning: prefer below, flip above if near bottom of screen
+                screen_h = self.widget.winfo_screenheight()
+                screen_w = self.widget.winfo_screenwidth()
+
+                x = wx + 12
+                y = wy + wh + 6
+
+                if y + tw_h > screen_h - 8:
+                    y = max(8, wy - tw_h - 4)
+                if x + tw_w > screen_w - 8:
+                    x = max(8, screen_w - tw_w - 8)
+
+                tw.wm_geometry(f"+{int(x)}+{int(y)}")
+                self._tw = tw
+            except Exception:
+                # Never let a tooltip crash the app
+                self._tw = None
 
         def _hide(self, event=None):
             if self._id_after:
-                self.widget.after_cancel(self._id_after)
+                try:
+                    self.widget.after_cancel(self._id_after)
+                except Exception:
+                    pass
                 self._id_after = None
             if self._tw:
-                self._tw.destroy()
+                try:
+                    self._tw.destroy()
+                except Exception:
+                    pass
                 self._tw = None
 
         def update_text(self, new_text):
@@ -935,6 +971,39 @@ try:
 except Exception:
     write_cansas1d_xml = None
     write_nxcansas_h5 = None
+
+# Core normalization + parsing (used to deduplicate GUI logic)
+try:
+    from saxsabs.core.normalization import compute_norm_factor as _core_compute_norm_factor
+except Exception:
+    _core_compute_norm_factor = None
+
+try:
+    from saxsabs.io.parsers import parse_header_values as _core_parse_header_values
+except Exception:
+    _core_parse_header_values = None
+
+# Reference matching (BG/Dark auto-match) - extracted
+try:
+    from saxsabs.core.reference_matching import (
+        build_reference_library as _core_build_reference_library,
+        reference_score as _core_reference_score,
+        select_best_reference as _core_select_best_reference,
+    )
+except Exception:
+    _core_build_reference_library = None
+    _core_reference_score = None
+    _core_select_best_reference = None
+
+# 机时 / session grouper
+try:
+    from saxsabs.core.session_grouper import (
+        cluster_by_acquisition_time as _core_cluster_by_acquisition_time,
+        AcquisitionGroup as _CoreAcquisitionGroup,
+    )
+except Exception:
+    _core_cluster_by_acquisition_time = None
+    _CoreAcquisitionGroup = None
 
 FLOAT_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 HC_KEV_A = 12.398419843320025  # E(keV) * lambda(A)
@@ -1242,15 +1311,31 @@ class SAXSAbsWorkbenchApp:
 
         # --- Unified typography hierarchy ---
         _FONT_FAMILY = "Segoe UI"
-        # Detect current theme for adaptive foreground colours
+        # === Premium Color System (Phase 2 High-End Aesthetics) ===
         try:
             import sv_ttk as _sv
             _is_dark = _sv.get_theme() == "dark"
         except Exception:
             _is_dark = False
-        _title_fg = "#e0e0e0" if _is_dark else "#1a1a2e"
-        _accent_fg = "#60a5fa" if _is_dark else "#0078d4"
-        _hint_fg = "#9ca3af" if _is_dark else "#6b7280"
+
+        if _is_dark:
+            # Dark mode — calm, sophisticated, easy on the eyes for long lab sessions
+            _title_fg      = "#f1f5f9"
+            _accent_fg     = "#3b82f6"        # Strong but not harsh blue
+            _accent_soft   = "#60a5fa"        # Softer accent for secondary highlights
+            _hint_fg       = "#94a3b8"
+            _surface_bg    = "#1e293b"        # Slightly elevated surface for cards
+            _text_primary  = "#e2e8f0"
+            _text_secondary = "#cbd5e1"
+        else:
+            # Light mode — clean and professional
+            _title_fg      = "#0f172a"
+            _accent_fg     = "#2563eb"
+            _accent_soft   = "#3b82f6"
+            _hint_fg       = "#475569"
+            _surface_bg    = "#f8fafc"
+            _text_primary  = "#1e293b"
+            _text_secondary = "#334155"
 
         style.configure("Title.TLabel",
                         font=(_FONT_FAMILY, 13, "bold"),
@@ -1263,6 +1348,10 @@ class SAXSAbsWorkbenchApp:
         style.configure("Hint.TLabel",
                         font=(_FONT_FAMILY, 8),
                         foreground=_hint_fg)
+        # Refined primary text for better readability
+        style.configure("TLabel",
+                        foreground=_text_primary)
+
         # Accent button font (sv_ttk supplies colours automatically)
         style.configure("Accent.TButton",
                         font=(_FONT_FAMILY, 10, "bold"))
@@ -1270,14 +1359,49 @@ class SAXSAbsWorkbenchApp:
         style.configure("TNotebook.Tab",
                         font=(_FONT_FAMILY, 10),
                         padding=(14, 6))
-        # LabelFrame internal padding – breathable
+        # === Spacing constants (easy to tune globally) ===
+        SECTION_PADX = 10
+        SECTION_PADY = 6
+        ROW_PADY = 5
+        INNER_PADX = 6
+        INNER_PADY = 4
+
+        # LabelFrame internal padding – generous breathing room (was 10,8)
         style.configure("Group.TLabelframe",
-                        padding=(10, 8))
+                        padding=(12, 10))
+
+        # Premium card-like elevation for sections (especially nice in dark mode)
+        style.configure("Group.TLabelframe",
+                        relief="solid",
+                        borderwidth=1,
+                        bordercolor="#334155" if _is_dark else "#e2e8f0")
+
         # Status bar style
         style.configure("Status.TLabel",
                         font=(_FONT_FAMILY, 8),
                         foreground=_hint_fg,
                         padding=(8, 3))
+
+        # === Strong visual hierarchy styles (Phase 2 premium) ===
+        # Important values (especially K-factor) – must stand out elegantly
+        style.configure("Important.TLabel",
+                        font=(_FONT_FAMILY, 12, "bold"),
+                        foreground=_accent_fg)
+
+        # Primary action buttons – premium, confident, satisfying to use (Phase 2 high-end)
+        style.configure("PrimaryAction.TButton",
+                        font=(_FONT_FAMILY, 11, "bold"),
+                        padding=(14, 9))
+
+        # Slightly stronger Group title for dark mode separation
+        style.configure("Group.TLabelframe.Label",
+                        font=(_FONT_FAMILY, 9, "bold"),
+                        foreground=_accent_fg)
+
+        # Premium subtle card surface (for important sections)
+        style.configure("Card.TLabelframe",
+                        background=_surface_bg,
+                        padding=(14, 12))
 
         # Store references for dark-mode syncing (initialise only once)
         if not hasattr(self, "_native_widgets"):
@@ -1311,6 +1435,39 @@ class SAXSAbsWorkbenchApp:
         except Exception:
             pass
 
+    def _get_ui_font(self, size=9, weight="normal", prefer_chinese=False):
+        """
+        Return a font tuple that works well for both English and Chinese.
+        This is the main fix for 乱码 in Text widgets and reports.
+        """
+        import platform
+        system = platform.system()
+
+        if prefer_chinese or system == "Windows":
+            # Best Chinese support on Windows
+            candidates = [
+                "Microsoft YaHei UI",
+                "Microsoft YaHei",
+                "SimHei",
+                "SimSun",
+                "Segoe UI",
+                "Consolas"
+            ]
+        else:
+            candidates = ["Segoe UI", "Helvetica", "Consolas"]
+
+        for font_name in candidates:
+            try:
+                # Test if the font is available by creating a temporary font
+                test_font = tk.font.Font(family=font_name, size=size)
+                # If we reach here without error, the font is usable
+                return (font_name, size, weight)
+            except Exception:
+                continue
+
+        # Final fallback
+        return ("Consolas", size, weight)
+
     def _sync_native_widget_colors(self):
         """Called after theme toggle to update all native tk widgets + mpl."""
         # Re-apply adaptive ttk styles (Title, Hint, Group, Status, Tab)
@@ -1332,7 +1489,7 @@ class SAXSAbsWorkbenchApp:
             is_dark = _sv.get_theme() == "dark"
         except Exception:
             is_dark = False
-        canvas_bg = "#1e1e1e" if is_dark else "#fafafa"
+        canvas_bg = "#0f172a" if is_dark else "#f8fafc"  # Phase 2 premium dark surface
         alive_c = []
         for c in self._scroll_canvases:
             try:
@@ -1366,10 +1523,10 @@ class SAXSAbsWorkbenchApp:
 
     def _make_scrollable_frame(self, parent):
         """Wrap *parent* with a vertical-scrollable Canvas; return inner Frame."""
-        # Choose canvas bg matching theme
+        # Choose canvas bg matching theme (Phase 2 premium dark mode)
         try:
             import sv_ttk as _sv
-            _bg = "#1e1e1e" if _sv.get_theme() == "dark" else "#fafafa"
+            _bg = "#0f172a" if _sv.get_theme() == "dark" else "#f8fafc"  # richer dark surface
         except Exception:
             _bg = "#fafafa"
         canvas = tk.Canvas(parent, highlightthickness=0, borderwidth=0, bg=_bg)
@@ -1416,7 +1573,7 @@ class SAXSAbsWorkbenchApp:
         is_key = text_or_key in lang_pack
         resolved = self.tr(text_or_key) if is_key else text_or_key
         lbl = ttk.Label(parent, text=f"{self.tr('hint_prefix')}: {resolved}", style="Hint.TLabel", justify="left", wraplength=wraplength)
-        lbl.pack(fill="x", padx=3, pady=(1, 3))
+        lbl.pack(fill="x", padx=6, pady=(3, 4))  # raised from 3/(1,3) for breathing room
         if is_key:
             if not hasattr(self, "_i18n_hints"):
                 self._i18n_hints = []
@@ -1512,6 +1669,29 @@ class SAXSAbsWorkbenchApp:
         raise ValueError(f"未知 I0 归一化模式: {mode}")
 
     def compute_norm_factor(self, exp, mon, trans, mode):
+        """Compute normalization factor. Prefers the core implementation when available."""
+        if _core_compute_norm_factor is not None:
+            try:
+                # Core version returns nan on bad input and raises only on bad mode
+                val = _core_compute_norm_factor(exp, mon, trans, mode)
+                # Re-emit the T>1 warning that the GUI historically logged
+                if not np.isfinite(val) and trans is not None:
+                    try:
+                        tv = float(trans)
+                        if tv > 1.0:
+                            logger.warning(
+                                "Transmission T=%.4f > 1.0 (physically impossible); "
+                                "normalization factor set to NaN. Check header parsing.",
+                                tv,
+                            )
+                    except Exception:
+                        pass
+                return val
+            except Exception:
+                # fall through to legacy implementation
+                pass
+
+        # --- legacy implementation (kept for robustness during transition) ---
         if mon is None or trans is None:
             return np.nan
         try:
@@ -1634,6 +1814,19 @@ class SAXSAbsWorkbenchApp:
                         if not re.match(r"^[A-Za-z_][A-Za-z0-9_\- ]{0,64}$", k):
                             continue
                         add_meta(k, parts[1])
+            except Exception:
+                pass
+
+        # --- Prefer the core parser (deduplicates key-matching logic + better T handling) ---
+        if _core_parse_header_values is not None:
+            try:
+                c_exp, c_mon, c_trans = _core_parse_header_values(meta)
+                try:
+                    from saxsabs.io.parsers import extract_acquisition_timestamp as _ext_ts
+                    self._last_parsed_header_ts = _ext_ts(meta)
+                except Exception:
+                    self._last_parsed_header_ts = None
+                return c_exp, c_mon, c_trans
             except Exception:
                 pass
 
@@ -2140,6 +2333,17 @@ class SAXSAbsWorkbenchApp:
         return None
 
     def build_reference_library(self, paths):
+        if _core_build_reference_library is not None:
+            try:
+                # Pass our (still working) parse_header as the header reader
+                return _core_build_reference_library(
+                    paths,
+                    parse_header_fn=self.parse_header,
+                )
+            except Exception:
+                pass
+
+        # legacy fallback
         refs = []
         for p in list(dict.fromkeys(paths or [])):
             try:
@@ -2159,6 +2363,13 @@ class SAXSAbsWorkbenchApp:
         return refs
 
     def reference_score(self, sample_meta, ref_meta, kind="bg"):
+        if _core_reference_score is not None:
+            try:
+                return _core_reference_score(sample_meta, ref_meta, kind=kind)
+            except Exception:
+                pass
+
+        # legacy fallback
         score = 0.0
         used = 0.0
 
@@ -2186,6 +2397,12 @@ class SAXSAbsWorkbenchApp:
         return score / used
 
     def select_best_reference(self, sample_meta, refs, kind="bg"):
+        if _core_select_best_reference is not None:
+            try:
+                return _core_select_best_reference(sample_meta, refs, kind=kind)
+            except Exception:
+                pass
+
         if not refs:
             return None, None
         same_shape = [r for r in refs if r.get("shape") == sample_meta.get("shape")]
@@ -2201,8 +2418,10 @@ class SAXSAbsWorkbenchApp:
     # =========================================================================
     def init_tab1_k_calc(self):
         p = self.tab1
-        left_panel = ttk.Frame(p, width=400)
+        left_panel = ttk.Frame(p)
         left_panel.pack(side="left", fill="y", padx=5, pady=5)
+        # Removed fixed width=400 — it caused clipping with Chinese labels and on smaller screens.
+        # The panel now sizes naturally while still looking good next to the plot.
 
         # 流程提示
         f_guide = ttk.LabelFrame(left_panel, text=self.tr("t1_guide_title"), style="Group.TLabelframe")
@@ -2231,7 +2450,7 @@ class SAXSAbsWorkbenchApp:
         self.t1_std_ref_path = tk.StringVar()
 
         row_std_type = ttk.Frame(f_files); row_std_type.pack(fill="x", pady=1)
-        lbl_std_type = ttk.Label(row_std_type, text=self.tr("lbl_t1_std_type"), width=15, anchor="e")
+        lbl_std_type = ttk.Label(row_std_type, text=self.tr("lbl_t1_std_type"), anchor="e")
         lbl_std_type.pack(side="left")
         self._register_i18n_widget(lbl_std_type, "lbl_t1_std_type")
         std_options = [
@@ -2253,7 +2472,7 @@ class SAXSAbsWorkbenchApp:
 
         # Water temperature row (hidden by default)
         self.t1_water_row = ttk.Frame(f_files)
-        lbl_wt = ttk.Label(self.t1_water_row, text=self.tr("lbl_t1_water_temp"), width=15, anchor="e")
+        lbl_wt = ttk.Label(self.t1_water_row, text=self.tr("lbl_t1_water_temp"), anchor="e")
         lbl_wt.pack(side="left")
         self._register_i18n_widget(lbl_wt, "lbl_t1_water_temp")
         ttk.Entry(self.t1_water_row, textvariable=self.t1_water_temp, width=8).pack(side="left", padx=5)
@@ -2353,9 +2572,9 @@ class SAXSAbsWorkbenchApp:
         # 3. 操作按钮
         btn_row = ttk.Frame(left_panel)
         btn_row.pack(fill="x", pady=10)
-        btn_cal = ttk.Button(btn_row, text=self.tr("t1_run_btn"), command=self.run_calibration, style="Accent.TButton")
+        btn_cal = ttk.Button(btn_row, text=self.tr("t1_run_btn"), command=self.run_calibration, style="PrimaryAction.TButton")
         self._register_i18n_widget(btn_cal, "t1_run_btn")
-        btn_cal.pack(side="left", fill="x", expand=True, ipady=5)
+        btn_cal.pack(side="left", fill="x", expand=True, ipady=7)  # stronger visual weight for the most important action on the tab
         btn_hist = ttk.Button(btn_row, text=self.tr("t1_hist_btn"), command=self.open_k_history)
         self._register_i18n_widget(btn_hist, "t1_hist_btn")
         btn_hist.pack(side="left", padx=(6, 0))
@@ -2366,12 +2585,19 @@ class SAXSAbsWorkbenchApp:
         f_rep = ttk.LabelFrame(left_panel, text=self.tr("t1_report_title"), style="Group.TLabelframe")
         self._register_i18n_widget(f_rep, "t1_report_title")
         f_rep.pack(fill="both", expand=True, pady=5)
-        self.txt_report = tk.Text(f_rep, font=("Consolas", 9), height=15, width=40)
+        report_font = self._get_ui_font(9)
+        self.txt_report = tk.Text(f_rep, font=report_font, height=15, width=40)
         self.txt_report.pack(fill="both", expand=True)
         # Configure semantic highlight tags for report text
         self.txt_report.tag_configure("error", foreground="#dc2626")
         self.txt_report.tag_configure("success", foreground="#16a34a", font=("Consolas", 9, "bold"))
         self.txt_report.tag_configure("warning", foreground="#d97706")
+        self.txt_report.tag_configure("kfactor", foreground="#0078d4", font=("Consolas", 10, "bold"))  # make K the star of the report
+
+        # Premium preflight status tags
+        self.txt_report.tag_configure("preflight_READY", foreground="#16a34a", font=("Consolas", 9, "bold"))
+        self.txt_report.tag_configure("preflight_CAUTION", foreground="#d97706", font=("Consolas", 9, "bold"))
+        self.txt_report.tag_configure("preflight_BLOCKED", foreground="#dc2626", font=("Consolas", 9, "bold"))
         self._register_native_widget(self.txt_report)
         self.add_tooltip(self.txt_report, "tip_t1_report")
 
@@ -2400,6 +2626,7 @@ class SAXSAbsWorkbenchApp:
         p = self._make_scrollable_frame(self.tab2)
         
         self.t2_files = []
+        self.t2_groups = []  # list of AcquisitionGroup (or simple dicts for UI)
         self.t2_mu = tk.DoubleVar(value=20.2)
         self.t2_calc_mode = tk.StringVar(value="auto") 
         self.t2_fixed_thk = tk.DoubleVar(value=1.0)
@@ -2446,24 +2673,37 @@ class SAXSAbsWorkbenchApp:
 
         # --- Settings ---
         top_frame = ttk.Frame(p)
-        top_frame.pack(fill="x", padx=10, pady=5)
+        top_frame.pack(fill="x", padx=10, pady=6)   # more breathing room
         
         # 1. Global
         c1 = ttk.LabelFrame(top_frame, text=self.tr("lf_t2_global"), style="Group.TLabelframe")
-        c1.pack(side="left", fill="y", padx=5)
+        c1.pack(side="left", fill="y", padx=8, pady=2)  # was padx=5 → increased to avoid occlusion
         self._register_i18n_widget(c1, "lf_t2_global")
         self.add_hint(c1, "hint_t2_global", wraplength=300)
         c1_grid = ttk.Frame(c1)
         c1_grid.pack(fill="x")
-        lbl_k = ttk.Label(c1_grid, text=self.tr("lbl_t2_k_factor"))
-        lbl_k.grid(row=0, column=0, sticky="e")
+
+        # === Premium K-Factor Treatment (Phase 2) ===
+        lbl_k = ttk.Label(c1_grid, text=self.tr("lbl_t2_k_factor"), style="Bold.TLabel")
+        lbl_k.grid(row=0, column=0, sticky="e", pady=2)
         self._register_i18n_widget(lbl_k, "lbl_t2_k_factor")
-        e_k = ttk.Entry(c1_grid, textvariable=self.global_vars["k_factor"], width=10)
-        e_k.grid(row=0, column=1, padx=5)
+
+        e_k = ttk.Entry(c1_grid, textvariable=self.global_vars["k_factor"], width=12, 
+                        font=("Segoe UI", 13, "bold"))
+        e_k.grid(row=0, column=1, padx=6, pady=2)
+        # Make K the visually most important scalar
+        try:
+            e_k.configure(foreground="#1d4ed8")
+        except Exception:
+            pass
+
+        # Elegant hint
+        ttk.Label(c1_grid, text="← most important value", style="Hint.TLabel").grid(row=0, column=2, padx=(4,0))
+
         lbl_bgf = ttk.Label(c1_grid, text=self.tr("lbl_t2_bg_file"))
         lbl_bgf.grid(row=1, column=0, sticky="e")
         self._register_i18n_widget(lbl_bgf, "lbl_t2_bg_file")
-        lbl_bg = ttk.Label(c1_grid, textvariable=self.global_vars["bg_path"], width=20, style="Hint.TLabel")
+        lbl_bg = ttk.Label(c1_grid, textvariable=self.global_vars["bg_path"], style="Hint.TLabel")  # removed hard width=20 to prevent Chinese clipping
         lbl_bg.grid(row=1, column=1, padx=5)
         lbl_i0 = ttk.Label(c1_grid, text=self.tr("lbl_t2_i0_semantic"))
         lbl_i0.grid(row=2, column=0, sticky="e")
@@ -2485,7 +2725,7 @@ class SAXSAbsWorkbenchApp:
 
         # 2. Thickness
         c2 = ttk.LabelFrame(top_frame, text=self.tr("lf_t2_thickness"), style="Group.TLabelframe")
-        c2.pack(side="left", fill="y", padx=5)
+        c2.pack(side="left", fill="y", padx=8, pady=2)  # was padx=5 → increased to avoid occlusion
         self._register_i18n_widget(c2, "lf_t2_thickness")
         self.add_hint(c2, "hint_t2_thickness", wraplength=320)
         
@@ -2518,7 +2758,7 @@ class SAXSAbsWorkbenchApp:
         
         # 3. Integration
         c3 = ttk.LabelFrame(top_frame, text=self.tr("lf_t2_integration"), style="Group.TLabelframe")
-        c3.pack(side="left", fill="y", padx=5)
+        c3.pack(side="left", fill="y", padx=8, pady=2)  # was padx=5 → increased to avoid occlusion
         self._register_i18n_widget(c3, "lf_t2_integration")
         self.add_hint(c3, "hint_t2_integration", wraplength=320)
         c3_grid = ttk.Frame(c3)
@@ -2717,6 +2957,12 @@ class SAXSAbsWorkbenchApp:
         btn_clear = ttk.Button(tb, text=self.tr("t2_clear_btn"), command=self.clear_batch_files)
         self._register_i18n_widget(btn_clear, "t2_clear_btn")
         btn_clear.pack(side="left")
+
+        btn_group = ttk.Button(tb, text=self.tr("t2_group_btn"), command=self.detect_batch_groups)
+        self._register_i18n_widget(btn_group, "t2_group_btn")
+        btn_group.pack(side="left", padx=(8, 0))
+        self.add_tooltip(btn_group, "tip_t2_group")
+
         btn_check = ttk.Button(tb, text=self.tr("t2_check_btn"), command=self.dry_run, style="Accent.TButton")
         self._register_i18n_widget(btn_check, "t2_check_btn")
         btn_check.pack(side="right", padx=10)
@@ -2736,9 +2982,9 @@ class SAXSAbsWorkbenchApp:
         # --- Action ---
         bot_frame = ttk.Frame(p)
         bot_frame.pack(fill="x", padx=10, pady=10)
-        btn_run = ttk.Button(bot_frame, text=self.tr("t2_run_btn"), command=self.run_batch, style="Accent.TButton")
+        btn_run = ttk.Button(bot_frame, text=self.tr("t2_run_btn"), command=self.run_batch, style="PrimaryAction.TButton")
         self._register_i18n_widget(btn_run, "t2_run_btn")
-        btn_run.pack(fill="x", ipady=5)
+        btn_run.pack(fill="x", ipady=8)  # strongest visual weight — this is the main action for most users
         self.prog_bar = ttk.Progressbar(bot_frame, mode="determinate")
         self.prog_bar.pack(fill="x", pady=5)
         row_out_dir = self.add_dir_row(bot_frame, self.tr("lbl_t2_outdir"), self.t2_output_root)
@@ -2974,7 +3220,7 @@ class SAXSAbsWorkbenchApp:
         self._register_i18n_widget(cb_buf, "cb_t3_buffer_enable")
         row_buf = self.add_file_row(buf_frame, self.tr("lbl_t3_buffer_file"), self.t3_buffer_path, "*.dat *.txt *.csv *.xml")
         row_alpha = ttk.Frame(buf_frame); row_alpha.pack(fill="x", pady=1)
-        lbl_alpha = ttk.Label(row_alpha, text=self.tr("lbl_t3_alpha"), width=15, anchor="e")
+        lbl_alpha = ttk.Label(row_alpha, text=self.tr("lbl_t3_alpha"), anchor="e")
         lbl_alpha.pack(side="left")
         self._register_i18n_widget(lbl_alpha, "lbl_t3_alpha")
         ttk.Entry(row_alpha, textvariable=self.t3_alpha, width=8).pack(side="left", padx=5)
@@ -2983,7 +3229,7 @@ class SAXSAbsWorkbenchApp:
         # ---- Output format selector ----
         self.t3_output_format = tk.StringVar(value="tsv")
         fmt_row = ttk.Frame(buf_frame); fmt_row.pack(fill="x", pady=(4, 2))
-        lbl_ofmt = ttk.Label(fmt_row, text=self.tr("lbl_output_format"), width=15, anchor="e")
+        lbl_ofmt = ttk.Label(fmt_row, text=self.tr("lbl_output_format"), anchor="e")
         lbl_ofmt.pack(side="left")
         self._register_i18n_widget(lbl_ofmt, "lbl_output_format")
         self.t3_fmt_combo = ttk.Combobox(
@@ -3024,9 +3270,9 @@ class SAXSAbsWorkbenchApp:
 
         bot = ttk.Frame(p)
         bot.pack(fill="x", padx=10, pady=10)
-        btn_run = ttk.Button(bot, text=self.tr("t3_run_btn"), command=self.run_external_1d_batch, style="Accent.TButton")
+        btn_run = ttk.Button(bot, text=self.tr("t3_run_btn"), command=self.run_external_1d_batch, style="PrimaryAction.TButton")
         self._register_i18n_widget(btn_run, "t3_run_btn")
-        btn_run.pack(fill="x", ipady=5)
+        btn_run.pack(fill="x", ipady=7)
         self.t3_prog_bar = ttk.Progressbar(bot, mode="determinate")
         self.t3_prog_bar.pack(fill="x", pady=5)
         row_out_dir = self.add_dir_row(bot, self.tr("lbl_t3_outdir"), self.t3_output_root)
@@ -3837,10 +4083,15 @@ class SAXSAbsWorkbenchApp:
 
         top = tk.Toplevel(self.root)
         top.title(self.tr("title_t3_dryrun"))
-        txt = tk.Text(top, font=("Consolas", 9))
+        txt = tk.Text(top, font=self._get_ui_font(9))
         txt.pack(fill="both", expand=True)
         self._register_native_widget(txt)
-        txt.insert(tk.END, f"{self._preflight_label_text(gate)}\n")
+        preflight_text = self._preflight_label_text(gate)
+        start = txt.index(tk.END)
+        txt.insert(tk.END, preflight_text + "\n")
+        level_tag = f"preflight_{gate.level}"
+        if level_tag in ("preflight_READY", "preflight_CAUTION", "preflight_BLOCKED"):
+            txt.tag_add(level_tag, start, txt.index(tk.END))
         txt.insert(tk.END, f"{self.tr('pre_k_factor')} {k}\n")
         txt.insert(tk.END, f"{self.tr('pre_pipeline')} {pipeline_mode}\n")
         txt.insert(tk.END, f"{self.tr('pre_corr_mode')} {mode}\n")
@@ -4193,9 +4444,11 @@ class SAXSAbsWorkbenchApp:
         text_wrap.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         y_scroll = ttk.Scrollbar(text_wrap, orient="vertical")
         y_scroll.pack(side="right", fill="y")
+        # Use a font that supports both English and Chinese well (fixes 乱码)
+        help_font = self._get_ui_font(9, prefer_chinese=True)
         txt = tk.Text(
             text_wrap,
-            font=("Consolas", 9),
+            font=help_font,
             wrap="word",
             yscrollcommand=y_scroll.set,
             padx=8,
@@ -4791,7 +5044,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         canvas.get_tk_widget().pack(fill="both", expand=True)
         canvas.draw()
 
-        txt = tk.Text(lower, font=("Consolas", 9))
+        txt = tk.Text(lower, font=self._get_ui_font(9))
         txt.pack(fill="both", expand=True)
         self._register_native_widget(txt)
         show_cols = [c for c in ["Timestamp", "Norm_Mode", "SolidAngle_On", "K_Factor", "K_Std", "RelStd_pct", "PointsUsed", "Q_Min", "Q_Max"] if c in df.columns]
@@ -4809,6 +5062,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 tag = "success"
             elif any(kw in msg_lower for kw in ("warning", "caution", "注意", "警告")):
                 tag = "warning"
+            elif "k-factor" in msg_lower or "k factor" in msg_lower or "k 因子" in msg_lower:
+                tag = "kfactor"  # special prominent tag for the most important number
             start_idx = self.txt_report.index(tk.END)
             self.txt_report.insert(tk.END, line + "\n")
             if tag:
@@ -4933,13 +5188,19 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     row = {
                         "Index": idx,
                         "File": fname,
+                        "FullPath": str(fpath),
+                        "FileMTime": datetime.datetime.fromtimestamp(Path(fpath).stat().st_mtime).isoformat(timespec="seconds") if Path(fpath).exists() else "",
+                        "GroupID": "",
                         "Status": status,
                         "Reason": reason,
+                        "K_Factor": context.get("k_factor", ""),
+                        "SolidAngle": "ON" if context.get("apply_solid_angle") else "OFF",
                         "Norm_Mode": context["monitor_mode"],
                         "Exposure_s": exp,
                         "Monitor": mon,
                         "Trans": trans,
                         "Thk_cm": thk_cm,
+                        "Thickness_Method": context.get("calc_mode", ""),
                         "Norm_s": norm_s,
                         "BG_Norm": bg_norm_used,
                         "BG_Used": bg_path_used,
@@ -4948,6 +5209,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         "Dark_Score": dark_score,
                         "ModesSelected": ",".join(context["selected_modes"]),
                         "Outputs": " | ".join(outputs),
+                        "OutputDir": "",
                     }
                     return {"row": row, "logs": logs, "mode_stats": mode_stats}
 
@@ -5262,16 +5524,23 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             reason = str(file_err)
             log_line(f"[失败] {fname}: {reason}")
 
+        # --- Enhanced row for better traceability and comparison (Priority A) ---
         row = {
             "Index": idx,
             "File": fname,
+            "FullPath": str(fpath),
+            "FileMTime": datetime.datetime.fromtimestamp(Path(fpath).stat().st_mtime).isoformat(timespec="seconds") if Path(fpath).exists() else "",
+            "GroupID": "",  # Will be filled later when 机时 grouping is deeper integrated
             "Status": status,
             "Reason": reason,
+            "K_Factor": context.get("k_factor", ""),
+            "SolidAngle": "ON" if context.get("apply_solid_angle") else "OFF",
             "Norm_Mode": context["monitor_mode"],
             "Exposure_s": exp,
             "Monitor": mon,
             "Trans": trans,
             "Thk_cm": thk_cm,
+            "Thickness_Method": context.get("calc_mode", ""),
             "Norm_s": norm_s,
             "BG_Norm": bg_norm_used,
             "BG_Used": bg_path_used,
@@ -5280,6 +5549,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             "Dark_Score": dark_score,
             "ModesSelected": ",".join(context["selected_modes"]),
             "Outputs": " | ".join(outputs),
+            "OutputDir": str(context.get("save_dirs", {}).get("1d_full", "")) if "1d_full" in context.get("selected_modes", []) else "",
         }
         return {"row": row, "logs": logs, "mode_stats": mode_stats}
 
@@ -5595,6 +5865,68 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             report_path = report_dir / f"batch_report_{stamp}.csv"
             pd.DataFrame(rows).to_csv(report_path, index=False, encoding="utf-8-sig")
 
+            # --- Generate batch_manifest.json for full job traceability (Priority A) ---
+            try:
+                manifest = {
+                    "run_id": stamp,
+                    "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+                    "software": {
+                        "name": "SAXSAbs Workbench",
+                        "version": APP_VERSION,
+                    },
+                    "input": {
+                        "files": [str(f) for f in files],
+                        "count": len(files),
+                    },
+                    "global_settings": {
+                        "k_factor": k,
+                        "solid_angle": "ON" if apply_solid_angle else "OFF",
+                        "monitor_mode": monitor_mode,
+                        "ref_mode": ref_mode,
+                        "calc_mode": self.t2_calc_mode.get(),
+                        "mu": mu if self.t2_calc_mode.get() == "auto" else None,
+                        "fixed_thk_cm": fixed_thk_cm if self.t2_calc_mode.get() == "fixed" else None,
+                        "alpha": float(self.t2_alpha.get()) if self.t2_alpha_enabled.get() else 1.0,
+                        "output_format": self.t2_output_format.get() if hasattr(self, "t2_output_format") else "tsv",
+                    },
+                    "bg_dark": {
+                        "bg_paths": bg_paths,
+                        "dark_path": dk_p,
+                        "fixed_bg_norm": fixed_bg_norm,
+                        "bg_library_count": len(bg_library) if 'bg_library' in locals() else 0,
+                        "dark_library_count": len(dark_library) if 'dark_library' in locals() else 0,
+                    },
+                    "integration": {
+                        "modes": selected_modes,
+                        "sector_specs": sector_specs,
+                        "sector_save_each": sector_save_each,
+                        "sector_save_combined": sector_save_combined,
+                        "qmin_radial_chi": float(self.t2_rad_qmin.get()) if "radial_chi" in selected_modes else None,
+                        "qmax_radial_chi": float(self.t2_rad_qmax.get()) if "radial_chi" in selected_modes else None,
+                    },
+                    "execution": {
+                        "workers": workers,
+                        "resume": resume,
+                        "overwrite": overwrite,
+                        "strict_instrument": self.t2_strict_instrument.get(),
+                        "tolerance_pct": self.t2_instr_tol_pct.get(),
+                    },
+                    "output": {
+                        "root": str(out_root),
+                        "report_file": str(report_path),
+                    },
+                    "grouping": {
+                        "groups_detected": len(getattr(self, "t2_groups", [])),
+                        "group_ids": [g.get("id", "") for g in getattr(self, "t2_groups", [])],
+                    }
+                }
+                manifest_path = report_dir / f"batch_manifest_{stamp}.json"
+                with open(manifest_path, "w", encoding="utf-8") as f:
+                    json.dump(manifest, f, indent=2, ensure_ascii=False)
+                self.log(f"[完成] 已生成批处理作业清单: {manifest_path.name}")
+            except Exception as manifest_err:
+                self.log(f"[警告] 生成 batch_manifest 失败: {manifest_err}")
+
             tab3_meta_stamp = None
             tab3_meta_latest = None
             tab3_meta_rows = 0
@@ -5719,7 +6051,14 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         if hasattr(self, "t2_queue_info"):
             total = len(getattr(self, "t2_files", []))
             uniq = len(dict.fromkeys(getattr(self, "t2_files", [])))
-            self.t2_queue_info.set(self._fmt_queue_info(total, uniq))
+            base = self._fmt_queue_info(total, uniq)
+            groups = getattr(self, "t2_groups", None) or []
+            if groups and len(groups) > 1:
+                n_g = len(groups)
+                base = f"{base} | {n_g} 机时分组"
+            elif groups and len(groups) == 1:
+                base = f"{base} | 1 机时分组"
+            self.t2_queue_info.set(base)
 
         if hasattr(self, "t2_out_hint_var"):
             modes = self.get_selected_modes()
@@ -5936,9 +6275,15 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         
         top = tk.Toplevel(self.root)
         top.title(self.tr("title_t2_dryrun"))
-        txt = tk.Text(top, font=("Consolas",9)); txt.pack(fill="both", expand=True)
+        dryrun_font = self._get_ui_font(9)
+        txt = tk.Text(top, font=dryrun_font); txt.pack(fill="both", expand=True)
         self._register_native_widget(txt)
-        txt.insert(tk.END, f"{self._preflight_label_text(gate)}\n")
+        preflight_text = self._preflight_label_text(gate)
+        start = txt.index(tk.END)
+        txt.insert(tk.END, preflight_text + "\n")
+        level_tag = f"preflight_{gate.level}"
+        if level_tag in ("preflight_READY", "preflight_CAUTION", "preflight_BLOCKED"):
+            txt.tag_add(level_tag, start, txt.index(tk.END))
         txt.insert(tk.END, f"{self.tr('pre_i0_norm')} {monitor_mode} (norm={self.monitor_norm_formula(monitor_mode)})\n")
         txt.insert(tk.END, f"{self.tr('pre_integ_mode')} {','.join(selected_modes) if selected_modes else self.tr('pre_integ_none')}\n")
         if "1d_sector" in selected_modes:
@@ -6317,7 +6662,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         frm_res = ttk.LabelFrame(top, text=self.tr("lbl_mu_contrib"))
         frm_res.pack(fill="both", expand=True, padx=8, pady=4)
 
-        result_text = tk.Text(frm_res, height=8, width=55, state="disabled", font=("Consolas", 9))
+        result_text = tk.Text(frm_res, height=8, width=55, state="disabled", font=self._get_ui_font(9))
         result_text.pack(fill="both", expand=True, padx=4, pady=4)
         self._register_native_widget(result_text)
 
@@ -6457,6 +6802,69 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         self.refresh_queue_status()
     def clear_batch_files(self):
         self.t2_files = []; self.lb_batch.delete(0, tk.END)
+        self.t2_groups = []
+        self.refresh_queue_status()
+
+    def detect_batch_groups(self):
+        """Detect same-机时 groups using the new core session_grouper (or simple mtime fallback)."""
+        if not self.t2_files:
+            self.log("[机时分组] 队列为空，无需分组。")
+            return
+
+        files = list(self.t2_files)
+
+        groups = []
+        if _core_cluster_by_acquisition_time is not None:
+            try:
+                # Pass a small adapter that uses our existing parse_header + mtime
+                def _ts_extractor(p):
+                    try:
+                        # Use last parsed if available from a recent parse_header call
+                        if hasattr(self, "_last_parsed_header_ts") and self._last_parsed_header_ts:
+                            return self._last_parsed_header_ts
+                        # Best effort: open header
+                        e, m, t = self.parse_header(p)
+                        # parse_header now stores _last_parsed_header_ts when core is used
+                        return getattr(self, "_last_parsed_header_ts", None)
+                    except Exception:
+                        return None
+
+                raw_groups = _core_cluster_by_acquisition_time(
+                    files,
+                    gap_minutes=90.0,
+                    use_header_timestamps=True,
+                    header_ts_extractor=_ts_extractor,
+                )
+                # Convert to lightweight dicts for UI (avoid dataclass dependency in old GUI path)
+                for g in raw_groups:
+                    groups.append({
+                        "id": g.group_id,
+                        "files": [str(f) for f in g.files],
+                        "start": g.start_ts,
+                        "size": g.size,
+                    })
+            except Exception as ex:
+                self.log(f"[机时分组] 核心分组器异常，回退到简单mtime分组: {ex}")
+
+        if not groups:
+            # Very simple fallback: single group containing everything
+            groups = [{
+                "id": "all_files",
+                "files": files,
+                "start": None,
+                "size": len(files),
+            }]
+
+        self.t2_groups = groups
+        n = len(groups)
+        total = sum(g["size"] for g in groups)
+        self.log(f"[机时分组] 检测到 {n} 个分组，共 {total} 个文件。")
+        for g in groups[:6]:
+            self.log(f"  - {g['id']}: {g['size']} 文件")
+        if n > 6:
+            self.log(f"  ... 其余 {n-6} 组")
+
+        # For now just update the info label (visual grouped list comes in follow-up)
         self.refresh_queue_status()
 
     def apply_session(self, session_path: str):
