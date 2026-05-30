@@ -6,12 +6,7 @@ from pathlib import Path
 import tempfile
 import time
 
-import pytest
-
-from saxsabs.core.session_grouper import (
-    cluster_by_acquisition_time,
-    AcquisitionGroup,
-)
+from saxsabs.core.session_grouper import cluster_by_acquisition_time
 
 
 def test_empty_input():
@@ -50,7 +45,7 @@ def test_time_gap_clustering(tmp_path):
     assert 3 <= max(sizes) <= 4  # depending on exact gap math
 
 
-def test_header_ts_preferred(monkeypatch, tmp_path):
+def test_header_ts_preferred(tmp_path):
     p = tmp_path / "with_header.tif"
     p.touch()
 
@@ -68,3 +63,27 @@ def test_header_ts_preferred(monkeypatch, tmp_path):
     )
     assert len(groups) == 1
     assert called["n"] >= 1
+
+
+def test_distinct_header_timestamps_are_not_reused(tmp_path):
+    p1 = tmp_path / "run_a.tif"
+    p2 = tmp_path / "run_b.tif"
+    p1.touch()
+    p2.touch()
+    ts_by_path = {
+        str(p1): 1700000000.0,
+        str(p2): 1700000000.0 + 3 * 3600.0,
+    }
+
+    def fake_header_ts(path):
+        return ts_by_path[str(Path(path))]
+
+    groups = cluster_by_acquisition_time(
+        [p1, p2],
+        gap_minutes=90,
+        use_header_timestamps=True,
+        header_ts_extractor=fake_header_ts,
+    )
+
+    assert [g.size for g in groups] == [1, 1]
+    assert [g.start_ts for g in groups] == [ts_by_path[str(p1)], ts_by_path[str(p2)]]

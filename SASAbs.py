@@ -6831,12 +6831,9 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 # Pass a small adapter that uses our existing parse_header + mtime
                 def _ts_extractor(p):
                     try:
-                        # Use last parsed if available from a recent parse_header call
-                        if hasattr(self, "_last_parsed_header_ts") and self._last_parsed_header_ts:
-                            return self._last_parsed_header_ts
-                        # Best effort: open header
-                        e, m, t = self.parse_header(p)
-                        # parse_header now stores _last_parsed_header_ts when core is used
+                        self._last_parsed_header_ts = None
+                        self.parse_header(p)
+                        # parse_header stores _last_parsed_header_ts for the current file.
                         return getattr(self, "_last_parsed_header_ts", None)
                     except Exception:
                         return None

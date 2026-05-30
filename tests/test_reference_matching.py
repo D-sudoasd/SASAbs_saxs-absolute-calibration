@@ -1,6 +1,6 @@
 """Basic tests for the extracted reference_matching module."""
 
-import pytest
+from types import SimpleNamespace
 
 from saxsabs.core.reference_matching import (
     reference_score,
@@ -32,3 +32,15 @@ def test_build_reference_library_skips_bad_paths():
     # Non-existent paths should be skipped gracefully
     refs = build_reference_library(["/this/file/does/not/exist_12345.tif"])
     assert refs == []
+
+
+def test_build_reference_library_default_parser_accepts_header_keyword():
+    def fake_open_image(path):
+        return SimpleNamespace(data=[[1, 2], [3, 4]], header={"ExposureTime": "1.0"})
+
+    refs = build_reference_library(["synthetic_ref.tif"], open_image_fn=fake_open_image)
+
+    assert len(refs) == 1
+    assert refs[0]["path"] == "synthetic_ref.tif"
+    assert refs[0]["shape"] == (2, 2)
+    assert refs[0]["exp"] is None

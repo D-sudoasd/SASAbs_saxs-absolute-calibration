@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 import numpy as np
 
@@ -74,7 +74,7 @@ def build_reference_library(
     unique_paths = list(dict.fromkeys(str(p) for p in paths if p))
 
     if parse_header_fn is None:
-        def parse_header_fn(p, h=None):  # type: ignore
+        def parse_header_fn(p, header_dict=None):  # type: ignore
             return None, None, None
 
     if open_image_fn is None:
