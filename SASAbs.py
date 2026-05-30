@@ -5,6 +5,7 @@ Repository: https://github.com/D-sudoasd/SASAbs_saxs-absolute-calibration
 License: BSD-3-Clause
 """
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
 import argparse
 import sys
@@ -1459,7 +1460,7 @@ class SAXSAbsWorkbenchApp:
         for font_name in candidates:
             try:
                 # Test if the font is available by creating a temporary font
-                test_font = tk.font.Font(family=font_name, size=size)
+                test_font = tkfont.Font(family=font_name, size=size)
                 # If we reach here without error, the font is usable
                 return (font_name, size, weight)
             except Exception:
@@ -2674,10 +2675,12 @@ class SAXSAbsWorkbenchApp:
         # --- Settings ---
         top_frame = ttk.Frame(p)
         top_frame.pack(fill="x", padx=10, pady=6)   # more breathing room
+        top_frame.columnconfigure(0, weight=1, uniform="t2_top")
+        top_frame.columnconfigure(1, weight=1, uniform="t2_top")
         
         # 1. Global
         c1 = ttk.LabelFrame(top_frame, text=self.tr("lf_t2_global"), style="Group.TLabelframe")
-        c1.pack(side="left", fill="y", padx=8, pady=2)  # was padx=5 → increased to avoid occlusion
+        c1.grid(row=0, column=0, sticky="nsew", padx=5, pady=4)
         self._register_i18n_widget(c1, "lf_t2_global")
         self.add_hint(c1, "hint_t2_global", wraplength=300)
         c1_grid = ttk.Frame(c1)
@@ -2703,8 +2706,14 @@ class SAXSAbsWorkbenchApp:
         lbl_bgf = ttk.Label(c1_grid, text=self.tr("lbl_t2_bg_file"))
         lbl_bgf.grid(row=1, column=0, sticky="e")
         self._register_i18n_widget(lbl_bgf, "lbl_t2_bg_file")
-        lbl_bg = ttk.Label(c1_grid, textvariable=self.global_vars["bg_path"], style="Hint.TLabel")  # removed hard width=20 to prevent Chinese clipping
-        lbl_bg.grid(row=1, column=1, padx=5)
+        lbl_bg = ttk.Label(
+            c1_grid,
+            textvariable=self.global_vars["bg_path"],
+            style="Hint.TLabel",
+            wraplength=260,
+            justify="left",
+        )
+        lbl_bg.grid(row=1, column=1, columnspan=2, padx=5, sticky="w")
         lbl_i0 = ttk.Label(c1_grid, text=self.tr("lbl_t2_i0_semantic"))
         lbl_i0.grid(row=2, column=0, sticky="e")
         self._register_i18n_widget(lbl_i0, "lbl_t2_i0_semantic")
@@ -2725,7 +2734,7 @@ class SAXSAbsWorkbenchApp:
 
         # 2. Thickness
         c2 = ttk.LabelFrame(top_frame, text=self.tr("lf_t2_thickness"), style="Group.TLabelframe")
-        c2.pack(side="left", fill="y", padx=8, pady=2)  # was padx=5 → increased to avoid occlusion
+        c2.grid(row=0, column=1, sticky="nsew", padx=5, pady=4)
         self._register_i18n_widget(c2, "lf_t2_thickness")
         self.add_hint(c2, "hint_t2_thickness", wraplength=320)
         
@@ -2758,7 +2767,7 @@ class SAXSAbsWorkbenchApp:
         
         # 3. Integration
         c3 = ttk.LabelFrame(top_frame, text=self.tr("lf_t2_integration"), style="Group.TLabelframe")
-        c3.pack(side="left", fill="y", padx=8, pady=2)  # was padx=5 → increased to avoid occlusion
+        c3.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=5, pady=4)
         self._register_i18n_widget(c3, "lf_t2_integration")
         self.add_hint(c3, "hint_t2_integration", wraplength=320)
         c3_grid = ttk.Frame(c3)
@@ -2784,18 +2793,18 @@ class SAXSAbsWorkbenchApp:
 
         f_sec_multi = ttk.Frame(c3_grid); f_sec_multi.grid(row=2, column=0, sticky="w")
         lbl_msec = ttk.Label(f_sec_multi, text=self.tr("lbl_t2_multi_sector"))
-        lbl_msec.pack(side="left")
+        lbl_msec.grid(row=0, column=0, sticky="w")
         self._register_i18n_widget(lbl_msec, "lbl_t2_multi_sector")
         e_sec_multi = ttk.Entry(f_sec_multi, textvariable=self.t2_sector_ranges_text, width=26)
-        e_sec_multi.pack(side="left")
+        e_sec_multi.grid(row=0, column=1, sticky="w", padx=(2, 0))
         lbl_sec_ex = ttk.Label(f_sec_multi, text=self.tr("lbl_t2_sector_example"))
-        lbl_sec_ex.pack(side="left")
+        lbl_sec_ex.grid(row=0, column=2, sticky="w", padx=(4, 0))
         self._register_i18n_widget(lbl_sec_ex, "lbl_t2_sector_example")
         cb_sec_each = ttk.Checkbutton(f_sec_multi, text=self.tr("cb_t2_sec_save_each"), variable=self.t2_sector_save_each)
-        cb_sec_each.pack(side="left", padx=(6, 0))
+        cb_sec_each.grid(row=1, column=1, sticky="w", pady=(2, 0))
         self._register_i18n_widget(cb_sec_each, "cb_t2_sec_save_each")
         cb_sec_sum = ttk.Checkbutton(f_sec_multi, text=self.tr("cb_t2_sec_save_sum"), variable=self.t2_sector_save_combined)
-        cb_sec_sum.pack(side="left", padx=(4, 0))
+        cb_sec_sum.grid(row=1, column=2, sticky="w", padx=(4, 0), pady=(2, 0))
         self._register_i18n_widget(cb_sec_sum, "cb_t2_sec_save_sum")
 
         f_tex = ttk.Frame(c3_grid); f_tex.grid(row=3, column=0, sticky="w")
@@ -2829,9 +2838,10 @@ class SAXSAbsWorkbenchApp:
         # 4. 修正与执行策略
         adv_frame = ttk.Frame(p)
         adv_frame.pack(fill="x", padx=10, pady=(2, 4))
+        adv_frame.columnconfigure(0, weight=1)
 
         c4 = ttk.LabelFrame(adv_frame, text=self.tr("lf_t2_correction"), style="Group.TLabelframe")
-        c4.pack(side="left", fill="x", expand=True, padx=5)
+        c4.grid(row=0, column=0, sticky="ew", padx=5, pady=4)
         self._register_i18n_widget(c4, "lf_t2_correction")
         self.add_hint(c4, "hint_t2_correction", wraplength=480)
 
@@ -2859,7 +2869,7 @@ class SAXSAbsWorkbenchApp:
         self.add_tooltip(row_flat["entry"], "tip_t2_flat")
 
         c5 = ttk.LabelFrame(adv_frame, text=self.tr("lf_t2_execution"), style="Group.TLabelframe")
-        c5.pack(side="left", fill="x", expand=True, padx=5)
+        c5.grid(row=1, column=0, sticky="ew", padx=5, pady=4)
         self._register_i18n_widget(c5, "lf_t2_execution")
         self.add_hint(c5, "hint_t2_execution", wraplength=480)
 
@@ -3048,9 +3058,11 @@ class SAXSAbsWorkbenchApp:
 
         top = ttk.Frame(p)
         top.pack(fill="x", padx=10, pady=5)
+        top.columnconfigure(0, weight=1, uniform="t3_top")
+        top.columnconfigure(1, weight=1, uniform="t3_top")
 
         c1 = ttk.LabelFrame(top, text=self.tr("lf_t3_global"), style="Group.TLabelframe")
-        c1.pack(side="left", fill="y", padx=5)
+        c1.grid(row=0, column=0, sticky="nsew", padx=5, pady=4)
         self._register_i18n_widget(c1, "lf_t3_global")
         self.add_hint(c1, "hint_t3_global", wraplength=380)
 
@@ -3118,7 +3130,7 @@ class SAXSAbsWorkbenchApp:
         self.add_tooltip(cb_x, "tip_t3_x_mode")
 
         c2 = ttk.LabelFrame(top, text=self.tr("lf_t3_execution"), style="Group.TLabelframe")
-        c2.pack(side="left", fill="y", padx=5)
+        c2.grid(row=0, column=1, sticky="nsew", padx=5, pady=4)
         self._register_i18n_widget(c2, "lf_t3_execution")
         self.add_hint(c2, "hint_t3_execution", wraplength=320)
         row_exec = ttk.Frame(c2)
@@ -3142,7 +3154,7 @@ class SAXSAbsWorkbenchApp:
         self.add_tooltip(cb_overwrite, "tip_t3_overwrite")
 
         c3 = ttk.LabelFrame(top, text=self.tr("lf_t3_raw_params"), style="Group.TLabelframe")
-        c3.pack(side="left", fill="y", padx=5)
+        c3.grid(row=1, column=0, sticky="nsew", padx=5, pady=4)
         self._register_i18n_widget(c3, "lf_t3_raw_params")
         self.add_hint(c3, "hint_t3_raw", wraplength=420)
 
@@ -3213,7 +3225,7 @@ class SAXSAbsWorkbenchApp:
         self.t3_buffer_status = tk.StringVar(value=self.tr("lbl_t3_buffer_status"))
 
         buf_frame = ttk.LabelFrame(top, text=self.tr("lf_t3_buffer"), style="Group.TLabelframe")
-        buf_frame.pack(side="left", fill="y", padx=5)
+        buf_frame.grid(row=1, column=1, sticky="nsew", padx=5, pady=4)
         self._register_i18n_widget(buf_frame, "lf_t3_buffer")
         cb_buf = ttk.Checkbutton(buf_frame, text=self.tr("cb_t3_buffer_enable"), variable=self.t3_buffer_enabled)
         cb_buf.pack(anchor="w", padx=3, pady=2)
