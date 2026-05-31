@@ -848,7 +848,6 @@ except Exception:
             try:
                 wx = self.widget.winfo_rootx()
                 wy = self.widget.winfo_rooty()
-                ww = self.widget.winfo_width()
                 wh = self.widget.winfo_height()
                 tw = tk.Toplevel(self.widget)
                 tw.wm_overrideredirect(True)
@@ -1464,13 +1463,6 @@ class SAXSAbsWorkbenchApp:
         style.configure("TNotebook.Tab",
                         font=(_FONT_FAMILY, 10),
                         padding=(14, 6))
-        # === Spacing constants (easy to tune globally) ===
-        SECTION_PADX = 10
-        SECTION_PADY = 6
-        ROW_PADY = 5
-        INNER_PADX = 6
-        INNER_PADY = 4
-
         # LabelFrame internal padding – generous breathing room (was 10,8)
         style.configure("Group.TLabelframe",
                         padding=(12, 10))
@@ -1564,7 +1556,7 @@ class SAXSAbsWorkbenchApp:
         for font_name in candidates:
             try:
                 # Test if the font is available by creating a temporary font
-                test_font = tkfont.Font(family=font_name, size=size)
+                tkfont.Font(family=font_name, size=size)
                 # If we reach here without error, the font is usable
                 return (font_name, size, weight)
             except Exception:
@@ -2661,7 +2653,8 @@ class SAXSAbsWorkbenchApp:
         self.t1_water_temp = tk.DoubleVar(value=20.0)
         self.t1_std_ref_path = tk.StringVar()
 
-        row_std_type = ttk.Frame(f_files); row_std_type.pack(fill="x", pady=1)
+        row_std_type = ttk.Frame(f_files)
+        row_std_type.pack(fill="x", pady=1)
         lbl_std_type = ttk.Label(row_std_type, text=self.tr("lbl_t1_std_type"), anchor="e")
         lbl_std_type.pack(side="left")
         self._register_i18n_widget(lbl_std_type, "lbl_t1_std_type")
@@ -2950,7 +2943,8 @@ class SAXSAbsWorkbenchApp:
         self._register_i18n_widget(c2, "lf_t2_thickness")
         self.add_hint(c2, "hint_t2_thickness", wraplength=320)
         
-        r1 = ttk.Frame(c2); r1.pack(anchor="w")
+        r1 = ttk.Frame(c2)
+        r1.pack(anchor="w")
         rb_auto = ttk.Radiobutton(r1, text=self.tr("rb_t2_auto_thk"), variable=self.t2_calc_mode, value="auto")
         rb_auto.pack(side="left")
         self._register_i18n_widget(rb_auto, "rb_t2_auto_thk")
@@ -2963,7 +2957,8 @@ class SAXSAbsWorkbenchApp:
         btn_est.pack(side="left", padx=2)
         self._register_i18n_widget(btn_est, "btn_t2_mu_est")
         
-        r2 = ttk.Frame(c2); r2.pack(anchor="w")
+        r2 = ttk.Frame(c2)
+        r2.pack(anchor="w")
         rb_fix = ttk.Radiobutton(r2, text=self.tr("rb_t2_fix_thk"), variable=self.t2_calc_mode, value="fixed")
         rb_fix.pack(side="left")
         self._register_i18n_widget(rb_fix, "rb_t2_fix_thk")
@@ -2988,7 +2983,8 @@ class SAXSAbsWorkbenchApp:
         cb_full = ttk.Checkbutton(c3_grid, text=self.tr("cb_t2_full_ring"), variable=self.t2_mode_full)
         cb_full.grid(row=0, column=0, sticky="w")
         self._register_i18n_widget(cb_full, "cb_t2_full_ring")
-        f_sec = ttk.Frame(c3_grid); f_sec.grid(row=1, column=0, sticky="w")
+        f_sec = ttk.Frame(c3_grid)
+        f_sec.grid(row=1, column=0, sticky="w")
         cb_sec = ttk.Checkbutton(f_sec, text=self.tr("cb_t2_sector"), variable=self.t2_mode_sector)
         cb_sec.pack(side="left")
         self._register_i18n_widget(cb_sec, "cb_t2_sector")
@@ -3003,7 +2999,8 @@ class SAXSAbsWorkbenchApp:
         btn_sec_preview.pack(side="left", padx=(4, 0))
         self._register_i18n_widget(btn_sec_preview, "btn_t2_iq_preview")
 
-        f_sec_multi = ttk.Frame(c3_grid); f_sec_multi.grid(row=2, column=0, sticky="w")
+        f_sec_multi = ttk.Frame(c3_grid)
+        f_sec_multi.grid(row=2, column=0, sticky="w")
         lbl_msec = ttk.Label(f_sec_multi, text=self.tr("lbl_t2_multi_sector"))
         lbl_msec.grid(row=0, column=0, sticky="w")
         self._register_i18n_widget(lbl_msec, "lbl_t2_multi_sector")
@@ -3019,7 +3016,8 @@ class SAXSAbsWorkbenchApp:
         cb_sec_sum.grid(row=1, column=2, sticky="w", padx=(4, 0), pady=(2, 0))
         self._register_i18n_widget(cb_sec_sum, "cb_t2_sec_save_sum")
 
-        f_tex = ttk.Frame(c3_grid); f_tex.grid(row=3, column=0, sticky="w")
+        f_tex = ttk.Frame(c3_grid)
+        f_tex.grid(row=3, column=0, sticky="w")
         cb_tex = ttk.Checkbutton(f_tex, text=self.tr("cb_t2_texture"), variable=self.t2_mode_chi)
         cb_tex.pack(side="left")
         self._register_i18n_widget(cb_tex, "cb_t2_texture")
@@ -3057,7 +3055,8 @@ class SAXSAbsWorkbenchApp:
         self._register_i18n_widget(c4, "lf_t2_correction")
         self.add_hint(c4, "hint_t2_correction", wraplength=480)
 
-        c4_row1 = ttk.Frame(c4); c4_row1.pack(fill="x", pady=2)
+        c4_row1 = ttk.Frame(c4)
+        c4_row1.pack(fill="x", pady=2)
         cb_solid = ttk.Checkbutton(c4_row1, text=self.tr("cb_t2_solid_angle"), variable=self.t2_apply_solid_angle)
         cb_solid.pack(side="left")
         self._register_i18n_widget(cb_solid, "cb_t2_solid_angle")
@@ -3085,7 +3084,8 @@ class SAXSAbsWorkbenchApp:
         self._register_i18n_widget(c5, "lf_t2_execution")
         self.add_hint(c5, "hint_t2_execution", wraplength=480)
 
-        row_ref = ttk.Frame(c5); row_ref.pack(fill="x")
+        row_ref = ttk.Frame(c5)
+        row_ref.pack(fill="x")
         rb_ref_fixed = ttk.Radiobutton(row_ref, text=self.tr("rb_t2_ref_fixed"), variable=self.t2_ref_mode, value="fixed")
         rb_ref_fixed.pack(side="left")
         self._register_i18n_widget(rb_ref_fixed, "rb_t2_ref_fixed")
@@ -3093,7 +3093,8 @@ class SAXSAbsWorkbenchApp:
         rb_ref_auto.pack(side="left", padx=(8, 0))
         self._register_i18n_widget(rb_ref_auto, "rb_t2_ref_auto")
 
-        row_lib = ttk.Frame(c5); row_lib.pack(fill="x", pady=2)
+        row_lib = ttk.Frame(c5)
+        row_lib.pack(fill="x", pady=2)
         btn_bg_lib = ttk.Button(row_lib, text=self.tr("btn_t2_bg_lib"), command=self.add_bg_library_files)
         btn_bg_lib.pack(side="left")
         self._register_i18n_widget(btn_bg_lib, "btn_t2_bg_lib")
@@ -3109,11 +3110,13 @@ class SAXSAbsWorkbenchApp:
         btn_clear_lib.pack(side="left", padx=(5, 0))
         self._register_i18n_widget(btn_clear_lib, "btn_t2_clear_lib")
 
-        row_lib_info = ttk.Frame(c5); row_lib_info.pack(fill="x")
+        row_lib_info = ttk.Frame(c5)
+        row_lib_info.pack(fill="x")
         ttk.Label(row_lib_info, textvariable=self.t2_bg_lib_info, style="Hint.TLabel").pack(side="left")
         ttk.Label(row_lib_info, textvariable=self.t2_dark_lib_info, style="Hint.TLabel").pack(side="left", padx=(10, 0))
 
-        row_exec = ttk.Frame(c5); row_exec.pack(fill="x", pady=2)
+        row_exec = ttk.Frame(c5)
+        row_exec.pack(fill="x", pady=2)
         lbl_wk = ttk.Label(row_exec, text=self.tr("lbl_t2_workers"))
         lbl_wk.pack(side="left")
         self._register_i18n_widget(lbl_wk, "lbl_t2_workers")
@@ -3126,7 +3129,8 @@ class SAXSAbsWorkbenchApp:
         cb_overwrite.pack(side="left", padx=(8, 0))
         self._register_i18n_widget(cb_overwrite, "cb_t2_overwrite")
 
-        row_strict = ttk.Frame(c5); row_strict.pack(fill="x")
+        row_strict = ttk.Frame(c5)
+        row_strict.pack(fill="x")
         cb_strict = ttk.Checkbutton(row_strict, text=self.tr("cb_t2_strict"), variable=self.t2_strict_instrument)
         cb_strict.pack(side="left")
         self._register_i18n_widget(cb_strict, "cb_t2_strict")
@@ -3148,7 +3152,8 @@ class SAXSAbsWorkbenchApp:
         self.add_tooltip(e_tol, "tip_t2_tolerance")
 
         # --- α-scaling and output format row ---
-        row_alpha_fmt = ttk.Frame(c5); row_alpha_fmt.pack(fill="x", pady=(4, 0))
+        row_alpha_fmt = ttk.Frame(c5)
+        row_alpha_fmt.pack(fill="x", pady=(4, 0))
         cb_alpha = ttk.Checkbutton(row_alpha_fmt, text=self.tr("cb_t2_buffer_enable"), variable=self.t2_alpha_enabled)
         cb_alpha.pack(side="left")
         self._register_i18n_widget(cb_alpha, "cb_t2_buffer_enable")
@@ -3157,7 +3162,8 @@ class SAXSAbsWorkbenchApp:
         self._register_i18n_widget(lbl_a2, "lbl_t2_alpha")
         ttk.Entry(row_alpha_fmt, textvariable=self.t2_alpha, width=6).pack(side="left")
 
-        row_fmt2 = ttk.Frame(c5); row_fmt2.pack(fill="x", pady=(2, 0))
+        row_fmt2 = ttk.Frame(c5)
+        row_fmt2.pack(fill="x", pady=(2, 0))
         lbl_ofmt2 = ttk.Label(row_fmt2, text=self.tr("lbl_output_format"))
         lbl_ofmt2.pack(side="left")
         self._register_i18n_widget(lbl_ofmt2, "lbl_output_format")
@@ -3177,7 +3183,8 @@ class SAXSAbsWorkbenchApp:
         mid_frame.pack(fill="both", expand=True, padx=10, pady=5)
         self.add_hint(mid_frame, "hint_t2_queue")
         
-        tb = ttk.Frame(mid_frame); tb.pack(fill="x")
+        tb = ttk.Frame(mid_frame)
+        tb.pack(fill="x")
         btn_add = ttk.Button(tb, text=self.tr("t2_add_btn"), command=self.add_batch_files)
         self._register_i18n_widget(btn_add, "t2_add_btn")
         btn_add.pack(side="left")
@@ -3452,8 +3459,9 @@ class SAXSAbsWorkbenchApp:
         cb_buf = ttk.Checkbutton(buf_frame, text=self.tr("cb_t3_buffer_enable"), variable=self.t3_buffer_enabled)
         cb_buf.pack(anchor="w", padx=3, pady=2)
         self._register_i18n_widget(cb_buf, "cb_t3_buffer_enable")
-        row_buf = self.add_file_row(buf_frame, self.tr("lbl_t3_buffer_file"), self.t3_buffer_path, "*.dat *.txt *.csv *.xml")
-        row_alpha = ttk.Frame(buf_frame); row_alpha.pack(fill="x", pady=1)
+        self.add_file_row(buf_frame, self.tr("lbl_t3_buffer_file"), self.t3_buffer_path, "*.dat *.txt *.csv *.xml")
+        row_alpha = ttk.Frame(buf_frame)
+        row_alpha.pack(fill="x", pady=1)
         lbl_alpha = ttk.Label(row_alpha, text=self.tr("lbl_t3_alpha"), anchor="e")
         lbl_alpha.pack(side="left")
         self._register_i18n_widget(lbl_alpha, "lbl_t3_alpha")
@@ -3462,7 +3470,8 @@ class SAXSAbsWorkbenchApp:
 
         # ---- Output format selector ----
         self.t3_output_format = tk.StringVar(value="tsv")
-        fmt_row = ttk.Frame(buf_frame); fmt_row.pack(fill="x", pady=(4, 2))
+        fmt_row = ttk.Frame(buf_frame)
+        fmt_row.pack(fill="x", pady=(4, 2))
         lbl_ofmt = ttk.Label(fmt_row, text=self.tr("lbl_output_format"), anchor="e")
         lbl_ofmt.pack(side="left")
         self._register_i18n_widget(lbl_ofmt, "lbl_output_format")
@@ -4998,9 +5007,11 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
     def run_calibration(self):
         try:
             files = {k: v.get() for k, v in self.t1_files.items()}
-            if not all(files.values()): raise ValueError("文件不完整：请先选择标准样、背景、暗场和 poni。")
+            if not all(files.values()):
+                raise ValueError("文件不完整：请先选择标准样、背景、暗场和 poni。")
             p = {k: v.get() for k, v in self.t1_params.items()}
-            if p["std_thk"] <= 0: raise ValueError("标准样厚度必须 > 0 mm。")
+            if p["std_thk"] <= 0:
+                raise ValueError("标准样厚度必须 > 0 mm。")
             monitor_mode = self.get_monitor_mode()
             apply_solid_angle = bool(self.global_vars["apply_solid_angle"].get())
 
@@ -5030,7 +5041,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             )
             norm_bg = float(np.nanmedian(np.asarray(bg_norms, dtype=np.float64)))
             
-            if norm_std <= 0 or norm_bg <= 0: raise ValueError("归一化因子 <= 0，请检查 Time/I0/T。")
+            if norm_std <= 0 or norm_bg <= 0:
+                raise ValueError("归一化因子 <= 0，请检查 Time/I0/T。")
             norm_ratio = norm_bg / max(norm_std, 1e-12)
             if norm_ratio < 0.01 or norm_ratio > 100.0:
                 self.report(
@@ -5143,7 +5155,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     k_std = np.nanstd(ratios_used)
                     points_total = len(q_ref_used)
 
-            if k_val <= 0: raise ValueError(f"计算得到的 K <= 0 ({k_val})，请检查本底缩放和参数。")
+            if k_val <= 0:
+                raise ValueError(f"计算得到的 K <= 0 ({k_val})，请检查本底缩放和参数。")
 
             self.global_vars["k_factor"].set(k_val)
             self.global_vars["k_solid_angle"].set("on" if apply_solid_angle else "off")
@@ -5846,14 +5859,17 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
     # =========================================================================
     def run_batch(self):
         try:
-            if not self.t2_files: raise ValueError("队列为空：请先添加样品文件。")
+            if not self.t2_files:
+                raise ValueError("队列为空：请先添加样品文件。")
             k = float(self.global_vars["k_factor"].get())
             bg_p = self.global_vars["bg_path"].get()
             dk_p = self.global_vars["dark_path"].get()
             poni = self.global_vars["poni_path"].get()
             
-            if k <= 0: raise ValueError("K 因子无效（必须 > 0）。")
-            if not all([bg_p, dk_p, poni]): raise ValueError("缺少背景/暗场/poni 文件。")
+            if k <= 0:
+                raise ValueError("K 因子无效（必须 > 0）。")
+            if not all([bg_p, dk_p, poni]):
+                raise ValueError("缺少背景/暗场/poni 文件。")
             monitor_mode = self.get_monitor_mode()
             self.log(f"[配置] I0 归一化模式: {monitor_mode} (norm={self.monitor_norm_formula(monitor_mode)})")
             self.log(f"[配置] SolidAngle 修正: {'ON' if bool(self.t2_apply_solid_angle.get()) else 'OFF'}")
@@ -6415,7 +6431,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         )
 
     def dry_run(self):
-        if not self.t2_files: return
+        if not self.t2_files:
+            return
         files = list(dict.fromkeys(self.t2_files))
         rows = []
         failed_files = 0
@@ -6564,7 +6581,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         top = tk.Toplevel(self.root)
         top.title(self.tr("title_t2_dryrun"))
         dryrun_font = self._get_ui_font(9)
-        txt = tk.Text(top, font=dryrun_font); txt.pack(fill="both", expand=True)
+        txt = tk.Text(top, font=dryrun_font)
+        txt.pack(fill="both", expand=True)
         self._register_native_widget(txt)
         preflight_text = self._preflight_label_text(gate)
         start = txt.index(tk.END)
@@ -6894,7 +6912,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             except Exception:
                 pass
 
-        row_e = ttk.Frame(frm_energy); row_e.pack(fill="x", pady=2)
+        row_e = ttk.Frame(frm_energy)
+        row_e.pack(fill="x", pady=2)
         ttk.Label(row_e, text="E (keV):").pack(side="left", padx=4)
         e_energy = ttk.Entry(row_e, textvariable=energy_var, width=10)
         e_energy.pack(side="left")
@@ -6931,7 +6950,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
 
         # --- Density ---
         rho_var = tk.DoubleVar(value=4.43)
-        row_rho = ttk.Frame(frm_mat); row_rho.pack(fill="x", pady=2)
+        row_rho = ttk.Frame(frm_mat)
+        row_rho.pack(fill="x", pady=2)
         ttk.Label(row_rho, text=self.tr("lbl_mu_density")).pack(side="left", padx=4)
         e_rho = ttk.Entry(row_rho, textvariable=rho_var, width=8)
         e_rho.pack(side="left")
@@ -6996,22 +7016,27 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
 
         ttk.Button(top, text=self.tr("btn_mu_apply"), command=do_calc).pack(pady=8)
 
-    def add_file_row(self, p, l, v, pat, cmd=None):
-        f = ttk.Frame(p); f.pack(fill="x", pady=3)
-        lbl = ttk.Label(f, text=l, width=18, anchor="e", justify="right", wraplength=150)
+    def add_file_row(self, p, label_text, v, pat, cmd=None):
+        f = ttk.Frame(p)
+        f.pack(fill="x", pady=3)
+        lbl = ttk.Label(f, text=label_text, width=18, anchor="e", justify="right", wraplength=150)
         lbl.pack(side="left", padx=(0, 6))
         ent = ttk.Entry(f, textvariable=v)
         ent.pack(side="left", fill="x", expand=True, padx=(0, 4))
         def b():
             fp = filedialog.askopenfilename(filetypes=[("File", pat)])
-            if fp: v.set(fp); cmd(fp) if cmd else None
+            if fp:
+                v.set(fp)
+                if cmd:
+                    cmd(fp)
         btn = ttk.Button(f, text="...", width=3, command=b)
         btn.pack(side="left")
         return {"frame": f, "label": lbl, "entry": ent, "button": btn}
 
-    def add_dir_row(self, p, l, v):
-        f = ttk.Frame(p); f.pack(fill="x", pady=3)
-        lbl = ttk.Label(f, text=l, width=18, anchor="e", justify="right", wraplength=150)
+    def add_dir_row(self, p, label_text, v):
+        f = ttk.Frame(p)
+        f.pack(fill="x", pady=3)
+        lbl = ttk.Label(f, text=label_text, width=18, anchor="e", justify="right", wraplength=150)
         lbl.pack(side="left", padx=(0, 6))
         ent = ttk.Entry(f, textvariable=v)
         ent.pack(side="left", fill="x", expand=True, padx=(0, 4))
@@ -7075,14 +7100,21 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
 
     def on_load_std_t1(self, fp):
         e, m, t = self.parse_header(fp)
-        if e is not None: self.t1_params["std_exp"].set(e)
-        if m is not None: self.t1_params["std_i0"].set(m)
-        if t is not None: self.t1_params["std_t"].set(t)
+        if e is not None:
+            self.t1_params["std_exp"].set(e)
+        if m is not None:
+            self.t1_params["std_i0"].set(m)
+        if t is not None:
+            self.t1_params["std_t"].set(t)
+
     def on_load_bg_t1(self, fp):
         e, m, t = self.parse_header(fp)
-        if e is not None: self.t1_params["bg_exp"].set(e)
-        if m is not None: self.t1_params["bg_i0"].set(m)
-        if t is not None: self.t1_params["bg_t"].set(t)
+        if e is not None:
+            self.t1_params["bg_exp"].set(e)
+        if m is not None:
+            self.t1_params["bg_i0"].set(m)
+        if t is not None:
+            self.t1_params["bg_t"].set(t)
 
     def select_multi_bg_t1(self):
         fs = filedialog.askopenfilenames(filetypes=[("Image", "*.tif *.tiff *.edf *.cbf")])
@@ -7101,7 +7133,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
     def clear_batch_files(self):
         if self.t2_files and not self.confirm_action("confirm_clear_t2_queue"):
             return
-        self.t2_files = []; self.lb_batch.delete(0, tk.END)
+        self.t2_files = []
+        self.lb_batch.delete(0, tk.END)
         self.t2_groups = []
         self.refresh_queue_status()
 
