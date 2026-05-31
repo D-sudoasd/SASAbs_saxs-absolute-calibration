@@ -6,7 +6,14 @@ import sys
 from matplotlib.figure import Figure
 import pytest
 
-import saxs_mpl_style
+REPO_ROOT = Path(__file__).resolve().parents[1]
+STYLE_PATH = REPO_ROOT / "saxs_mpl_style.py"
+STYLE_SPEC = importlib.util.spec_from_file_location("saxs_mpl_style", STYLE_PATH)
+assert STYLE_SPEC is not None
+assert STYLE_SPEC.loader is not None
+saxs_mpl_style = importlib.util.module_from_spec(STYLE_SPEC)
+sys.modules.setdefault("saxs_mpl_style", saxs_mpl_style)
+STYLE_SPEC.loader.exec_module(saxs_mpl_style)
 
 
 def test_plot_presets_cover_required_export_modes():
