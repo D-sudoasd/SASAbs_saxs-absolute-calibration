@@ -39,6 +39,7 @@ gui = [
 io = ["fabio>=2023.0"]
 hdf5 = ["h5py>=3.8"]
 dev = [
+  "matplotlib>=3.7",
   "pytest>=8.0",
   "ruff>=0.5",
 ]
