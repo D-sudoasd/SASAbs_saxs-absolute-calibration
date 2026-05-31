@@ -16,7 +16,6 @@ import pyFAI
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from matplotlib.figure import Figure
 from pathlib import Path
 import traceback
 import math
@@ -66,7 +65,16 @@ I18N = {
         "t1_run_btn": "\u25b6  Run K Calibration",
         "t1_hist_btn": "K History",
         "t1_report_title": "Analysis Report",
-        "t1_plot_tip": "Plot: black dashed=net signal; blue=K-corrected; red circles=NIST",
+        "t1_plot_tip": "Plot: dashed=net signal; blue=K-corrected; orange=NIST/reference",
+        "plot_preset_label": "Figure preset:",
+        "plot_format_label": "Format:",
+        "plot_export_btn": "Export Figure",
+        "plot_export_title": "Export publication figure",
+        "plot_export_success": "Figure exported: {path}",
+        "plot_export_error": "Figure export failed:\n{err}",
+        "tip_plot_preset": "Controls figure size, DPI, font size, line width, and export layout.",
+        "tip_plot_format": "PNG/TIFF are high-DPI raster formats; PDF/SVG/EPS are vector formats.",
+        "tip_plot_export": "Save the current plot with the selected publication preset and tight bounding box.",
         "t2_guide_title": "Batch Workflow",
         "t2_guide_text": "① Ensure K, BG/Dark, and poni are ready\n② Select thickness logic\n③ Select one or more integration modes\n④ Add sample files and run dry-check\n⑤ Start batch and review batch_report.csv",
         "t2_mid_title": "Sample Queue",
@@ -99,6 +107,10 @@ I18N = {
         "msg_ichi_preview_error_title": "I-chi Preview Error",
         "msg_warning_title": "Warning",
         "msg_input_error_title": "Input Error",
+        "confirm_clear_title": "Confirm clear",
+        "confirm_clear_t2_queue": "Clear the current Tab2 sample queue? This does not delete files on disk.",
+        "confirm_clear_t3_queue": "Clear the current Tab3 1D queue? This does not delete files on disk.",
+        "confirm_clear_ref_lib": "Clear all auto BG/Dark reference candidates? This does not delete files on disk.",
         "help_panel_title": "Program Help",
         "help_panel_intro": "Goal: obtain a reliable K factor in Tab1, then process robust batches in Tab2.",
         "help_scroll_label": "Help text:",
@@ -428,7 +440,16 @@ I18N = {
         "t1_run_btn": "\u25b6  运行 K 因子标定",
         "t1_hist_btn": "K 历史",
         "t1_report_title": "分析报告（建议重点看 Std Dev）",
-        "t1_plot_tip": "图示说明：黑虚线=净信号；蓝线=K 校正后；红圈=NIST 参考点",
+        "t1_plot_tip": "图示说明：虚线=净信号；蓝线=K 校正后；橙色=NIST/参考点",
+        "plot_preset_label": "图像预设:",
+        "plot_format_label": "格式:",
+        "plot_export_btn": "导出图像",
+        "plot_export_title": "导出论文级图像",
+        "plot_export_success": "图像已导出: {path}",
+        "plot_export_error": "图像导出失败:\n{err}",
+        "tip_plot_preset": "控制图像尺寸、DPI、字号、线宽和导出版式。",
+        "tip_plot_format": "PNG/TIFF 是高分辨率位图；PDF/SVG/EPS 是矢量格式。",
+        "tip_plot_export": "按当前预设保存图像，并自动使用 tight bounding box 避免标签裁切。",
         "t2_guide_title": "批处理工作流（推荐顺序）",
         "t2_guide_text": "① 先确认 K 因子和 BG/暗场/poni 已就绪\n② 选择厚度逻辑（自动/固定）\n③ 选择一个或多个积分模式（可同时勾选）\n④ 添加样品文件并点击预检查\n⑤ 启动批处理并查看 batch_report.csv",
         "t2_mid_title": "样品队列",
@@ -461,6 +482,10 @@ I18N = {
         "msg_ichi_preview_error_title": "I-chi 预览错误",
         "msg_warning_title": "警告",
         "msg_input_error_title": "输入错误",
+        "confirm_clear_title": "确认清空",
+        "confirm_clear_t2_queue": "确认清空当前 Tab2 样品队列？这不会删除磁盘文件。",
+        "confirm_clear_t3_queue": "确认清空当前 Tab3 1D 队列？这不会删除磁盘文件。",
+        "confirm_clear_ref_lib": "确认清空所有自动 BG/Dark 候选库？这不会删除磁盘文件。",
         "help_panel_title": "程序帮助（新手版）",
         "help_panel_intro": "目标：先在 Tab1 得到可靠 K 因子，再在 Tab2 做稳健批处理。",
         "help_scroll_label": "帮助文本（可滚动）：",
@@ -894,12 +919,76 @@ except Exception:
 try:
     import saxs_mpl_style
 except Exception:
-    class _SaxsMplStyleFallback:
-        @staticmethod
-        def apply_nature_style():
-            return None
+    _style_path = Path(__file__).resolve().parent / "saxs_mpl_style.py"
+    if _style_path.exists():
+        try:
+            import importlib.util as _importlib_util
 
-    saxs_mpl_style = _SaxsMplStyleFallback()
+            _style_spec = _importlib_util.spec_from_file_location("saxs_mpl_style", _style_path)
+            if _style_spec is None or _style_spec.loader is None:
+                raise ImportError(f"Cannot load Matplotlib style module: {_style_path}")
+            saxs_mpl_style = _importlib_util.module_from_spec(_style_spec)
+            sys.modules.setdefault("saxs_mpl_style", saxs_mpl_style)
+            _style_spec.loader.exec_module(saxs_mpl_style)
+        except Exception:
+            saxs_mpl_style = None
+    else:
+        saxs_mpl_style = None
+
+    if saxs_mpl_style is None:
+        class _SaxsMplStyleFallback:
+            PRESET_LABELS = {
+                "raw_inspection": "Raw inspection",
+                "publication": "Publication",
+            }
+            SCIENCE_COLORS = {
+                "blue": "#2b6cb0",
+                "orange": "#dd6b20",
+                "gray": "#4a5568",
+            }
+
+            @staticmethod
+            def apply_nature_style(*_args, **_kwargs):
+                return None
+
+            @classmethod
+            def preset_choices(cls):
+                return cls.PRESET_LABELS.items()
+
+            @staticmethod
+            def create_figure(**kwargs):
+                from matplotlib.figure import Figure
+
+                kwargs.pop("preset", None)
+                kwargs.setdefault("figsize", (7.2, 5.0))
+                kwargs.setdefault("dpi", 100)
+                return Figure(**kwargs)
+
+            @staticmethod
+            def style_axes(ax, xlabel=None, ylabel=None, **_kwargs):
+                if xlabel:
+                    ax.set_xlabel(xlabel)
+                if ylabel:
+                    ax.set_ylabel(ylabel)
+                return ax
+
+            @staticmethod
+            def style_legend(ax, loc="best", **_kwargs):
+                handles, _labels = ax.get_legend_handles_labels()
+                return ax.legend(loc=loc) if handles else None
+
+            @staticmethod
+            def style_colorbar(colorbar, label=None, **_kwargs):
+                if label:
+                    colorbar.set_label(label)
+                return colorbar
+
+            @staticmethod
+            def save_figure(fig, path, **_kwargs):
+                fig.savefig(path, dpi=300, bbox_inches="tight", pad_inches=0.04)
+                return Path(path)
+
+        saxs_mpl_style = _SaxsMplStyleFallback()
 
 _SRC_DIR = Path(__file__).resolve().parent / "src"
 if _SRC_DIR.exists() and str(_SRC_DIR) not in sys.path:
@@ -1018,10 +1107,10 @@ class SAXSAbsWorkbenchApp:
             self.language = "en"
         self.root.title(self.tr("app_title"))
         self.root.geometry("1280x900")
-        self.root.minsize(1024, 700)
+        self.root.minsize(1100, 720)
         
-        # Apply Nature style globally
-        saxs_mpl_style.apply_nature_style()
+        # Apply shared scientific plot defaults globally.
+        saxs_mpl_style.apply_nature_style("raw_inspection")
         
         self.set_style()
         self._tooltips = []
@@ -1298,6 +1387,9 @@ class SAXSAbsWorkbenchApp:
     def show_warning(self, title_key, message):
         messagebox.showwarning(self.tr(title_key), message)
 
+    def confirm_action(self, message_key):
+        return messagebox.askyesno(self.tr("confirm_clear_title"), self.tr(message_key))
+
     def set_style(self):
         # Apply Sun-Valley theme first (light by default)
         apply_ios_theme(self.root)
@@ -1352,10 +1444,22 @@ class SAXSAbsWorkbenchApp:
         # Refined primary text for better readability
         style.configure("TLabel",
                         foreground=_text_primary)
+        style.configure("TEntry",
+                        padding=(5, 4))
+        style.configure("TCombobox",
+                        padding=(5, 4))
+        style.configure("TButton",
+                        padding=(10, 6))
 
         # Accent button font (sv_ttk supplies colours automatically)
         style.configure("Accent.TButton",
                         font=(_FONT_FAMILY, 10, "bold"))
+        style.configure("Secondary.TButton",
+                        font=(_FONT_FAMILY, 9),
+                        padding=(10, 6))
+        style.configure("Danger.TButton",
+                        font=(_FONT_FAMILY, 9, "bold"),
+                        foreground="#b91c1c")
         # Tab label – slightly larger, padded
         style.configure("TNotebook.Tab",
                         font=(_FONT_FAMILY, 10),
@@ -1514,7 +1618,7 @@ class SAXSAbsWorkbenchApp:
             "xtick.color": txt_c,
             "ytick.color": txt_c,
         })
-        for attr in ("fig", "fig_preview"):
+        for attr in ("fig1", "fig", "fig_preview"):
             fig = getattr(self, attr, None)
             if fig is not None:
                 fig.set_facecolor(fig_bg)
@@ -1580,6 +1684,113 @@ class SAXSAbsWorkbenchApp:
                 self._i18n_hints = []
             self._i18n_hints.append((lbl, text_or_key))
         return lbl
+
+    def _plot_preset_options(self):
+        return [(key, label) for key, label in saxs_mpl_style.preset_choices()]
+
+    def _plot_preset_labels(self):
+        return [label for _, label in self._plot_preset_options()]
+
+    def _plot_preset_key_from_label(self, label):
+        for key, preset_label in self._plot_preset_options():
+            if preset_label == label:
+                return key
+        return "publication"
+
+    def _new_figure(self, preset="raw_inspection", **kwargs):
+        return saxs_mpl_style.create_figure(preset=preset, **kwargs)
+
+    def _style_axis_for_publication(self, ax, preset="publication", xlabel=None, ylabel=None):
+        saxs_mpl_style.style_axes(ax, preset=preset, xlabel=xlabel, ylabel=ylabel)
+        saxs_mpl_style.style_legend(ax, preset=preset)
+        return ax
+
+    def _add_figure_export_bar(self, parent, fig_getter, default_name):
+        bar = ttk.Frame(parent)
+        bar.pack(fill="x", pady=(0, 4))
+
+        preset_var = tk.StringVar(value=saxs_mpl_style.PRESET_LABELS["publication"])
+        fmt_var = tk.StringVar(value="png")
+
+        lbl_preset = ttk.Label(bar, text=self.tr("plot_preset_label"))
+        lbl_preset.pack(side="left")
+        self._register_i18n_widget(lbl_preset, "plot_preset_label")
+
+        preset_combo = ttk.Combobox(
+            bar,
+            textvariable=preset_var,
+            values=self._plot_preset_labels(),
+            state="readonly",
+            width=22,
+        )
+        preset_combo.pack(side="left", padx=(4, 10))
+
+        lbl_fmt = ttk.Label(bar, text=self.tr("plot_format_label"))
+        lbl_fmt.pack(side="left")
+        self._register_i18n_widget(lbl_fmt, "plot_format_label")
+
+        fmt_combo = ttk.Combobox(
+            bar,
+            textvariable=fmt_var,
+            values=("png", "tif", "tiff", "pdf", "svg", "eps"),
+            state="readonly",
+            width=6,
+        )
+        fmt_combo.pack(side="left", padx=(4, 10))
+
+        def do_export():
+            fig = fig_getter()
+            preset_key = self._plot_preset_key_from_label(preset_var.get())
+            fmt = fmt_var.get().lower().strip() or "png"
+            self._export_figure_dialog(fig, preset_key, fmt, default_name)
+
+        btn_export = ttk.Button(
+            bar,
+            text=self.tr("plot_export_btn"),
+            command=do_export,
+            style="Accent.TButton",
+        )
+        btn_export.pack(side="right")
+        self._register_i18n_widget(btn_export, "plot_export_btn")
+
+        self.add_tooltip(preset_combo, "tip_plot_preset")
+        self.add_tooltip(fmt_combo, "tip_plot_format")
+        self.add_tooltip(btn_export, "tip_plot_export")
+        return {"bar": bar, "preset": preset_var, "format": fmt_var, "button": btn_export}
+
+    def _export_figure_dialog(self, fig, preset_key, fmt, default_name):
+        if fig is None:
+            self.show_warning("plot_export_title", "No figure is available for export.")
+            return
+        fmt = fmt.lower().lstrip(".")
+        filetypes = [
+            ("PNG image", "*.png"),
+            ("TIFF image", "*.tif *.tiff"),
+            ("PDF vector", "*.pdf"),
+            ("SVG vector", "*.svg"),
+            ("EPS vector", "*.eps"),
+        ]
+        path = filedialog.asksaveasfilename(
+            title=self.tr("plot_export_title"),
+            defaultextension=f".{fmt}",
+            initialfile=f"{default_name}.{fmt}",
+            filetypes=filetypes,
+        )
+        if not path:
+            return
+        try:
+            out = saxs_mpl_style.save_figure(fig, path, preset=preset_key)
+            canvas = getattr(fig, "canvas", None)
+            if canvas is not None:
+                try:
+                    canvas.draw_idle()
+                except Exception:
+                    pass
+            msg = self.tr("plot_export_success").format(path=out)
+            self.report(msg)
+            self.show_info("plot_export_title", msg)
+        except Exception as exc:
+            self.show_error("plot_export_title", self.tr("plot_export_error").format(err=exc))
 
     # =========================================================================
     # 核心解析器
@@ -2419,10 +2630,10 @@ class SAXSAbsWorkbenchApp:
     # =========================================================================
     def init_tab1_k_calc(self):
         p = self.tab1
-        left_panel = ttk.Frame(p)
-        left_panel.pack(side="left", fill="y", padx=5, pady=5)
-        # Removed fixed width=400 — it caused clipping with Chinese labels and on smaller screens.
-        # The panel now sizes naturally while still looking good next to the plot.
+        left_panel_holder = ttk.Frame(p, width=440)
+        left_panel_holder.pack(side="left", fill="y", padx=8, pady=8)
+        left_panel_holder.pack_propagate(False)
+        left_panel = self._make_scrollable_frame(left_panel_holder)
 
         # 流程提示
         f_guide = ttk.LabelFrame(left_panel, text=self.tr("t1_guide_title"), style="Group.TLabelframe")
@@ -2612,8 +2823,9 @@ class SAXSAbsWorkbenchApp:
         )
         self._register_i18n_widget(lbl_plot_tip, "t1_plot_tip")
         lbl_plot_tip.pack(anchor="w", pady=(0, 2))
-        self.fig1 = Figure(figsize=(6, 5), dpi=100)
+        self.fig1 = self._new_figure("raw_inspection")
         self.ax1 = self.fig1.add_subplot(111)
+        self._add_figure_export_bar(right_panel, lambda: self.fig1, "saxsabs_calibration")
         self.canvas1 = FigureCanvasTkAgg(self.fig1, master=right_panel)
         self.canvas1.get_tk_widget().pack(fill="both", expand=True)
         self.toolbar1 = NavigationToolbar2Tk(self.canvas1, right_panel)
@@ -2888,7 +3100,12 @@ class SAXSAbsWorkbenchApp:
         btn_dark_lib = ttk.Button(row_lib, text=self.tr("btn_t2_dark_lib"), command=self.add_dark_library_files)
         btn_dark_lib.pack(side="left", padx=(5, 0))
         self._register_i18n_widget(btn_dark_lib, "btn_t2_dark_lib")
-        btn_clear_lib = ttk.Button(row_lib, text=self.tr("btn_t2_clear_lib"), command=self.clear_reference_libraries)
+        btn_clear_lib = ttk.Button(
+            row_lib,
+            text=self.tr("btn_t2_clear_lib"),
+            command=self.clear_reference_libraries,
+            style="Danger.TButton",
+        )
         btn_clear_lib.pack(side="left", padx=(5, 0))
         self._register_i18n_widget(btn_clear_lib, "btn_t2_clear_lib")
 
@@ -2964,7 +3181,12 @@ class SAXSAbsWorkbenchApp:
         btn_add = ttk.Button(tb, text=self.tr("t2_add_btn"), command=self.add_batch_files)
         self._register_i18n_widget(btn_add, "t2_add_btn")
         btn_add.pack(side="left")
-        btn_clear = ttk.Button(tb, text=self.tr("t2_clear_btn"), command=self.clear_batch_files)
+        btn_clear = ttk.Button(
+            tb,
+            text=self.tr("t2_clear_btn"),
+            command=self.clear_batch_files,
+            style="Danger.TButton",
+        )
         self._register_i18n_widget(btn_clear, "t2_clear_btn")
         btn_clear.pack(side="left")
 
@@ -3264,10 +3486,20 @@ class SAXSAbsWorkbenchApp:
         btn_add = ttk.Button(tb, text=self.tr("t3_add_btn"), command=self.add_external_1d_files)
         self._register_i18n_widget(btn_add, "t3_add_btn")
         btn_add.pack(side="left")
-        btn_clear = ttk.Button(tb, text=self.tr("t3_clear_btn"), command=self.clear_external_1d_files)
+        btn_clear = ttk.Button(
+            tb,
+            text=self.tr("t3_clear_btn"),
+            command=self.clear_external_1d_files,
+            style="Danger.TButton",
+        )
         self._register_i18n_widget(btn_clear, "t3_clear_btn")
         btn_clear.pack(side="left", padx=(4, 0))
-        btn_check = ttk.Button(tb, text=self.tr("t3_check_btn"), command=self.dry_run_external_1d)
+        btn_check = ttk.Button(
+            tb,
+            text=self.tr("t3_check_btn"),
+            command=self.dry_run_external_1d,
+            style="Accent.TButton",
+        )
         self._register_i18n_widget(btn_check, "t3_check_btn")
         btn_check.pack(side="right")
         self.add_tooltip(btn_add, "tip_t3_add")
@@ -3311,6 +3543,8 @@ class SAXSAbsWorkbenchApp:
         self.refresh_external_1d_status()
 
     def clear_external_1d_files(self):
+        if self.t3_files and not self.confirm_action("confirm_clear_t3_queue"):
+            return
         self.t3_files = []
         self.lb_ext1d.delete(0, tk.END)
         self.refresh_external_1d_status()
@@ -4927,17 +5161,43 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             
             # Plot
             self.ax1.clear()
-            self.ax1.loglog(q, i_net_vol, 'k--', alpha=0.4, label="Measured Net")
-            self.ax1.loglog(q, i_net_vol * k_val, 'b-', label="Corrected")
+            colors = saxs_mpl_style.SCIENCE_COLORS
+            self.ax1.loglog(
+                q,
+                i_net_vol,
+                linestyle="--",
+                color=colors["gray"],
+                alpha=0.75,
+                label="Measured net",
+            )
+            self.ax1.loglog(q, i_net_vol * k_val, color=colors["blue"], label="K-corrected")
             std_label = STANDARD_REGISTRY[std_key].name if (STANDARD_REGISTRY and std_key in STANDARD_REGISTRY) else std_key
             if not is_water:
-                self.ax1.loglog(q_ref, i_ref, 'ro', mfc='none', label=std_label)
+                self.ax1.loglog(
+                    q_ref,
+                    i_ref,
+                    linestyle="none",
+                    marker="o",
+                    mfc="none",
+                    mec=colors["orange"],
+                    color=colors["orange"],
+                    label=std_label,
+                )
             else:
-                self.ax1.axhline(float(i_ref[0]), color='r', ls='--', alpha=0.6, label=std_label)
-            self.ax1.set_xlabel("q ($A^{-1}$)")
-            self.ax1.set_ylabel("Absolute Intensity ($cm^{-1}$)")
+                self.ax1.axhline(
+                    float(i_ref[0]),
+                    color=colors["orange"],
+                    ls="--",
+                    alpha=0.8,
+                    label=std_label,
+                )
+            self._style_axis_for_publication(
+                self.ax1,
+                preset="raw_inspection",
+                xlabel="q (A$^{-1}$)",
+                ylabel="Absolute intensity (cm$^{-1}$)",
+            )
             self.ax1.set_title(f"K={k_val:.2f}")
-            self.ax1.legend()
             self.canvas1.draw()
             
             # Save Check File with Error
@@ -5036,21 +5296,35 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         lower = ttk.Frame(top)
         lower.pack(fill="both", expand=True)
 
-        fig = Figure(figsize=(7.2, 3.4), dpi=100)
+        fig = self._new_figure("raw_inspection", figsize=(7.2, 3.4))
         ax = fig.add_subplot(111)
         x = np.arange(len(df))
         y = pd.to_numeric(df["K_Factor"], errors="coerce").to_numpy(dtype=np.float64)
         e = pd.to_numeric(df.get("K_Std", np.nan), errors="coerce").to_numpy(dtype=np.float64)
+        colors = saxs_mpl_style.SCIENCE_COLORS
 
         if np.any(np.isfinite(e)):
-            ax.errorbar(x, y, yerr=e, fmt="o-", capsize=3, label="K ± Std")
+            ax.errorbar(
+                x,
+                y,
+                yerr=e,
+                fmt="o-",
+                capsize=3,
+                color=colors["blue"],
+                ecolor=colors["gray"],
+                label="K +/- Std",
+            )
         else:
-            ax.plot(x, y, "o-", label="K")
-        ax.set_xlabel("Run Index")
-        ax.set_ylabel("K Factor")
+            ax.plot(x, y, "o-", color=colors["blue"], label="K")
+        self._style_axis_for_publication(
+            ax,
+            preset="raw_inspection",
+            xlabel="Run index",
+            ylabel="K factor",
+        )
         ax.set_title("K Drift Monitor")
-        ax.grid(alpha=0.3)
-        ax.legend()
+        ax.grid(alpha=0.18, linewidth=0.5)
+        self._add_figure_export_bar(upper, lambda: fig, "saxsabs_k_history")
 
         canvas = FigureCanvasTkAgg(fig, master=upper)
         canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -5130,6 +5404,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         self.t2_dark_lib_info.set(self.tr("var_dark_lib").format(n=len(self.t2_dark_candidates)))
 
     def clear_reference_libraries(self):
+        if (self.t2_bg_candidates or self.t2_dark_candidates) and not self.confirm_action("confirm_clear_ref_lib"):
+            return
         self.t2_bg_candidates = []
         self.t2_dark_candidates = []
         self.t2_bg_lib_info.set(self.tr("var_bg_lib").format(n=0))
@@ -6463,7 +6739,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             )
             info.pack(fill="x", padx=8, pady=(8, 4))
 
-            fig = Figure(figsize=(7.2, 6.0), dpi=100)
+            fig = self._new_figure("raw_inspection", figsize=(7.2, 6.0))
             ax = fig.add_subplot(111)
             im = ax.imshow(ctx["show_img"], cmap="gray", origin="upper", interpolation="nearest")
             ov = np.ma.masked_where(~iq_mask, np.ones_like(ctx["show_img"]))
@@ -6495,13 +6771,18 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         )
 
             ax.set_title(self.tr("info_iq_title"))
-            ax.set_xlabel("Pixel X")
-            ax.set_ylabel("Pixel Y")
-            ax.legend(loc="upper right", fontsize=8)
+            self._style_axis_for_publication(
+                ax,
+                preset="raw_inspection",
+                xlabel="Pixel X",
+                ylabel="Pixel Y",
+            )
+            saxs_mpl_style.style_legend(ax, preset="raw_inspection", loc="upper right")
 
             cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-            cb.set_label("Intensity (clipped)")
+            saxs_mpl_style.style_colorbar(cb, preset="raw_inspection", label="Intensity (clipped)")
 
+            self._add_figure_export_bar(top, lambda: fig, "saxsabs_iq_preview")
             canvas = FigureCanvasTkAgg(fig, master=top)
             canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=6)
             canvas.draw()
@@ -6540,7 +6821,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             )
             info.pack(fill="x", padx=8, pady=(8, 4))
 
-            fig = Figure(figsize=(7.2, 6.0), dpi=100)
+            fig = self._new_figure("raw_inspection", figsize=(7.2, 6.0))
             ax = fig.add_subplot(111)
             im = ax.imshow(ctx["show_img"], cmap="gray", origin="upper", interpolation="nearest")
             ov = np.ma.masked_where(~q_mask, np.ones_like(ctx["show_img"]))
@@ -6560,13 +6841,18 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 pass
 
             ax.set_title(self.tr("info_ichi_title"))
-            ax.set_xlabel("Pixel X")
-            ax.set_ylabel("Pixel Y")
-            ax.legend(loc="upper right", fontsize=8)
+            self._style_axis_for_publication(
+                ax,
+                preset="raw_inspection",
+                xlabel="Pixel X",
+                ylabel="Pixel Y",
+            )
+            saxs_mpl_style.style_legend(ax, preset="raw_inspection", loc="upper right")
 
             cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-            cb.set_label("Intensity (clipped)")
+            saxs_mpl_style.style_colorbar(cb, preset="raw_inspection", label="Intensity (clipped)")
 
+            self._add_figure_export_bar(top, lambda: fig, "saxsabs_ichi_preview")
             canvas = FigureCanvasTkAgg(fig, master=top)
             canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=6)
             canvas.draw()
@@ -6712,7 +6998,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
 
     def add_file_row(self, p, l, v, pat, cmd=None):
         f = ttk.Frame(p); f.pack(fill="x", pady=3)
-        lbl = ttk.Label(f, text=l, width=16, anchor="e")
+        lbl = ttk.Label(f, text=l, width=18, anchor="e", justify="right", wraplength=150)
         lbl.pack(side="left", padx=(0, 6))
         ent = ttk.Entry(f, textvariable=v)
         ent.pack(side="left", fill="x", expand=True, padx=(0, 4))
@@ -6725,7 +7011,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
 
     def add_dir_row(self, p, l, v):
         f = ttk.Frame(p); f.pack(fill="x", pady=3)
-        lbl = ttk.Label(f, text=l, width=16, anchor="e")
+        lbl = ttk.Label(f, text=l, width=18, anchor="e", justify="right", wraplength=150)
         lbl.pack(side="left", padx=(0, 6))
         ent = ttk.Entry(f, textvariable=v)
         ent.pack(side="left", fill="x", expand=True, padx=(0, 4))
@@ -6813,6 +7099,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 self.lb_batch.insert(tk.END, Path(f).name)
         self.refresh_queue_status()
     def clear_batch_files(self):
+        if self.t2_files and not self.confirm_action("confirm_clear_t2_queue"):
+            return
         self.t2_files = []; self.lb_batch.delete(0, tk.END)
         self.t2_groups = []
         self.refresh_queue_status()
