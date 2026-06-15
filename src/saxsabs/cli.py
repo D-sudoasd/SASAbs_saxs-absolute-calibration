@@ -45,6 +45,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_k.add_argument("--qmin", type=float, default=0.01)
     p_k.add_argument("--qmax", type=float, default=0.2)
 
+    p_bl = sub.add_parser(
+        "bl19b2-abs2d",
+        help="Process BL19B2 dat001 TIFFs into absolute corrected 2D HDF5/EDF outputs",
+    )
+    p_bl.add_argument("--input-root", required=True, type=Path)
+    p_bl.add_argument("--poni", required=True, type=Path)
+    p_bl.add_argument("--output-root", type=Path, default=None)
+    p_bl.add_argument("--mu", type=float, default=20.2, help="mu in cm^-1 for thickness")
+    p_bl.add_argument("--alpha", type=float, default=1.0, help="background scaling factor")
+    p_bl.add_argument("--qmin", type=float, default=0.01)
+    p_bl.add_argument("--qmax", type=float, default=0.2)
+    p_bl.add_argument("--npt", type=int, default=1000)
+    p_bl.add_argument("--max-frames", type=int, default=None)
+    p_bl.add_argument("--dry-run", action="store_true")
+    p_bl.add_argument("--overwrite", action="store_true")
+    p_bl.add_argument("--no-preview", action="store_true")
+    p_bl.add_argument("--dtype", choices=["float32", "float64"], default="float32")
+    p_bl.add_argument("--standard-thickness-cm", type=float, default=None)
+    p_bl.add_argument("--dark-hot-pixel-threshold", type=float, default=10.0)
+
     return p
 
 
@@ -100,6 +120,30 @@ def main() -> None:
                 ensure_ascii=False,
             )
         )
+        return
+
+    if args.command == "bl19b2-abs2d":
+        from .workflows.bl19b2_abs2d import BL19B2Abs2DConfig, run_bl19b2_abs2d
+
+        out = run_bl19b2_abs2d(
+            BL19B2Abs2DConfig(
+                input_root=args.input_root,
+                poni_path=args.poni,
+                output_root=args.output_root,
+                mu_cm_inv=args.mu,
+                alpha=args.alpha,
+                q_window=(args.qmin, args.qmax),
+                npt=args.npt,
+                dtype=args.dtype,
+                dry_run=args.dry_run,
+                max_frames=args.max_frames,
+                overwrite=args.overwrite,
+                write_preview=not args.no_preview,
+                standard_thickness_cm=args.standard_thickness_cm,
+                dark_hot_pixel_threshold=args.dark_hot_pixel_threshold,
+            )
+        )
+        print(json.dumps(out, ensure_ascii=False))
         return
 
 

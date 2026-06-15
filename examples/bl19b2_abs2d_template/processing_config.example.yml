@@ -1,0 +1,56 @@
+schema: saxsabs.bl19b2_abs2d.config.v1
+description: Template for future SPring-8 BL19B2 SAXS absolute-corrected 2D batches.
+
+# Replace these paths for each new beamtime.
+input_root: H:/path/to/BL19B2 DATA/datXXX
+poni_path: E:/path/to/BL19B2_SAXS_Califile.poni
+output_root: H:/path/to/BL19B2 DATA/datXXX_absolute_corrected_2D
+
+# Reference files are resolved under input_root/reference_saxs by the current CLI.
+# Keep these names when possible; if a beamtime uses different names, rename/copy
+# the selected references into reference_saxs or update the workflow before running.
+references:
+  dark: reference_saxs/dark001.tif
+  background: reference_saxs/BG001.tif
+  standard: reference_saxs/GC001.tif
+  mask: reference_saxs/MASK_file.edf
+  direct_beam_qc: reference_saxs/drt001.tif
+
+calibration:
+  standard_key: SRM3600
+  mu_cm_inv: 20.2
+  alpha: 1.0
+  qmin: 0.01
+  qmax: 0.2
+  npt: 1000
+  dtype: float32
+  dark_hot_pixel_threshold: 10.0
+  standard_thickness_cm: null
+
+assumptions:
+  transmission_field: ABS
+  normalization_formula: exposure_s * MON * ABS
+  dark_scaling: exposure_matched
+  mask_convention: pyFAI 0=valid 1=masked
+  solid_angle_applied_in_image: false
+  polarization_applied_in_image: false
+
+dry_run_command: >-
+  py -3.11 -m saxsabs.cli bl19b2-abs2d
+  --dry-run
+  --input-root "<input_root>"
+  --poni "<poni_path>"
+  --output-root "<output_root>"
+
+full_run_command: >-
+  py -3.11 -m saxsabs.cli bl19b2-abs2d
+  --input-root "<input_root>"
+  --poni "<poni_path>"
+  --output-root "<output_root>"
+  --mu 20.2
+  --alpha 1.0
+  --qmin 0.01
+  --qmax 0.2
+  --npt 1000
+  --dtype float32
+  --dark-hot-pixel-threshold 10.0

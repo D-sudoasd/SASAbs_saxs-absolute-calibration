@@ -38,6 +38,13 @@ gui = [
 ]
 io = ["fabio>=2023.0"]
 hdf5 = ["h5py>=3.8"]
+bl19b2 = [
+  "fabio>=2023.0",
+  "h5py>=3.8",
+  "matplotlib>=3.7",
+  "pyFAI>=2023.0",
+  "tifffile>=2023.0",
+]
 dev = [
   "matplotlib>=3.7",
   "pytest>=8.0",
