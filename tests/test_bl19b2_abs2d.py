@@ -270,8 +270,8 @@ def test_build_rerun_command_records_cli_paths_and_parameters(tmp_path: Path):
     command = build_rerun_command(config, poni_path=tmp_path / "safe" / "BL19B2_SAXS_Califile.poni")
 
     assert "py -3.11 -m saxsabs.cli bl19b2-abs2d" in command
-    assert f"--input-root '{tmp_path}\\dat001'" in command
-    assert f"--poni '{tmp_path}\\safe\\BL19B2_SAXS_Califile.poni'" in command
+    assert f"--input-root '{tmp_path / 'dat001'}'" in command
+    assert f"--poni '{tmp_path / 'safe' / 'BL19B2_SAXS_Califile.poni'}'" in command
     assert "--mu 20.2" in command
     assert "--qmin 0.01" in command
     assert "--dark-hot-pixel-threshold 10" in command
