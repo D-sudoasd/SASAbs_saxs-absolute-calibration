@@ -27,6 +27,13 @@ from .io.parsers import (
     extract_acquisition_timestamp,
 )
 from .io.writers import write_cansas1d_xml, write_nxcansas_h5
+from .io.calibrated2d import (
+    Calibrated2DExportConfig,
+    Calibrated2DExportResult,
+    build_absolute_detector_image,
+    make_sample_id,
+    write_calibrated2d_package,
+)
 from .constants import (
     NIST_SRM3600_DATA,
     STANDARD_REGISTRY,
@@ -66,6 +73,11 @@ __all__ = [
     "extract_acquisition_timestamp",
     "write_cansas1d_xml",
     "write_nxcansas_h5",
+    "Calibrated2DExportConfig",
+    "Calibrated2DExportResult",
+    "build_absolute_detector_image",
+    "make_sample_id",
+    "write_calibrated2d_package",
     # preflight & execution policy (batch support)
     "evaluate_preflight_gate",
     "PreflightGateSummary",

@@ -79,6 +79,7 @@ I18N = {
         "t2_guide_text": "① Ensure K, BG/Dark, and poni are ready\n② Select thickness logic\n③ Select one or more integration modes\n④ Add sample files and run dry-check\n⑤ Start batch and review batch_report.csv",
         "t2_mid_title": "Sample Queue",
         "t2_add_btn": "Add Files",
+        "t2_add_folder_btn": "Add Folder",
         "t2_clear_btn": "Clear Queue",
         "t2_check_btn": "Dry Check",
         "t2_group_btn": "Detect Groups / 机时分组",
@@ -185,11 +186,16 @@ I18N = {
         "rb_t2_ref_auto": "Auto-match BG/Dark",
         "btn_t2_bg_lib": "BG Library",
         "btn_t2_dark_lib": "Dark Library",
+        "btn_t2_bg_lib_folder": "BG Folder",
+        "btn_t2_dark_lib_folder": "Dark Folder",
         "btn_t2_clear_lib": "Clear Lib",
         "lbl_t2_workers": "Workers:",
         "cb_t2_resume": "Resume (skip existing output)",
         "cb_t2_overwrite": "Force overwrite",
         "cb_t2_strict": "Strict instrument consistency",
+        "cb_t2_export_cal2d": "Export calibrated 2D package",
+        "cb_t2_cal2d_flat": "Apply flat into exported 2D",
+        "lbl_t2_cal2d_dtype": "Cal2D dtype:",
         "lbl_t2_tolerance": "Tolerance(%):",
         "lbl_t2_outdir": "Output dir:",
         # --- Tab2 hints ---
@@ -232,13 +238,19 @@ I18N = {
         "tip_t2_ref_auto": "Auto-select BG & Dark closest in exposure/I0/T/time.",
         "tip_t2_bg_lib": "Select background file library for auto-matching.",
         "tip_t2_dark_lib": "Select dark file library for auto-matching.",
+        "tip_t2_bg_lib_folder": "Recursively add background candidates from a folder.",
+        "tip_t2_dark_lib_folder": "Recursively add dark candidates from a folder.",
         "tip_t2_clear_lib": "Clear BG/Dark libraries.",
         "tip_t2_workers": "Parallel threads; 1 = serial. Suggest 1–8.",
         "tip_t2_resume": "Skip existing output files; supports resume after interruption.",
         "tip_t2_overwrite": "Ignore existing output and recalculate.",
         "tip_t2_strict": "Check energy/wavelength/distance/pixel/size consistency; stop on mismatch.",
         "tip_t2_tolerance": "Consistency tolerance %, e.g. 0.5 means 0.5%.",
+        "tip_t2_export_cal2d": "Write detector-space absolute-calibrated 2D EDF plus PONI, mask and metadata for pyFAI/pydidas reintegration.",
+        "tip_t2_cal2d_flat": "If enabled, flat correction is baked into the exported 2D image. Do not pass flat again to pyFAI.",
+        "tip_t2_cal2d_dtype": "Float32 is compact; float64 preserves more numerical precision.",
         "tip_t2_add": "Multi-select TIFF files.",
+        "tip_t2_add_folder": "Recursively add 2D image files from a folder (.tif/.tiff/.edf/.cbf).",
         "tip_t2_clear": "Clear queue; does not delete files on disk.",
         "tip_t2_check": "Batch-check each file's exp/mon/T and thickness availability.",
         "tip_t2_group": "Auto-detect files from the same experimental run (机时) using timestamps. Creates logical groups for output organization and smarter BG/Dark matching.",
@@ -454,6 +466,7 @@ I18N = {
         "t2_guide_text": "① 先确认 K 因子和 BG/暗场/poni 已就绪\n② 选择厚度逻辑（自动/固定）\n③ 选择一个或多个积分模式（可同时勾选）\n④ 添加样品文件并点击预检查\n⑤ 启动批处理并查看 batch_report.csv",
         "t2_mid_title": "样品队列",
         "t2_add_btn": "添加文件",
+        "t2_add_folder_btn": "添加文件夹",
         "t2_clear_btn": "清空队列",
         "t2_check_btn": "预检查",
         "t2_group_btn": "检测机时分组",
@@ -560,11 +573,16 @@ I18N = {
         "rb_t2_ref_auto": "自动匹配 BG/Dark",
         "btn_t2_bg_lib": "选择 BG 库",
         "btn_t2_dark_lib": "选择 Dark 库",
+        "btn_t2_bg_lib_folder": "BG文件夹",
+        "btn_t2_dark_lib_folder": "Dark文件夹",
         "btn_t2_clear_lib": "清空库",
         "lbl_t2_workers": "并行线程:",
         "cb_t2_resume": "断点续跑(跳过已存在输出)",
         "cb_t2_overwrite": "强制覆盖输出",
         "cb_t2_strict": "严格仪器一致性校验",
+        "cb_t2_export_cal2d": "导出校正后2D数据包",
+        "cb_t2_cal2d_flat": "将 flat 写入导出2D",
+        "lbl_t2_cal2d_dtype": "Cal2D精度:",
         "lbl_t2_tolerance": "阈值(%):",
         "lbl_t2_outdir": "输出根目录:",
         # --- Tab2 hints ---
@@ -607,13 +625,19 @@ I18N = {
         "tip_t2_ref_auto": "按曝光/I0/T/时间与样品最接近原则自动选 BG 和 Dark。",
         "tip_t2_bg_lib": "选择可供自动匹配的背景文件集合。",
         "tip_t2_dark_lib": "选择可供自动匹配的暗场文件集合。",
+        "tip_t2_bg_lib_folder": "递归添加文件夹中的背景候选图像。",
+        "tip_t2_dark_lib_folder": "递归添加文件夹中的暗场候选图像。",
         "tip_t2_clear_lib": "清空 BG/Dark 库。",
         "tip_t2_workers": "并行线程数，1 表示串行。建议 1~8。",
         "tip_t2_resume": "已存在输出文件时自动跳过，支持中断后续跑。",
         "tip_t2_overwrite": "忽略已存在输出并重新计算。",
         "tip_t2_strict": "检查能量/波长/距离/像素/尺寸一致性，不一致则停止。",
         "tip_t2_tolerance": "一致性阈值百分比，例如 0.5 表示 0.5%。",
+        "tip_t2_export_cal2d": "导出 detector-space 绝对强度2D图、PONI、mask 和 metadata，供 pyFAI/pydidas 后续重新积分。",
+        "tip_t2_cal2d_flat": "开启后 flat 会烧入导出2D图；后续 pyFAI 不应再次传入 flat。",
+        "tip_t2_cal2d_dtype": "float32 文件更小；float64 保留更多数值精度。",
         "tip_t2_add": "支持多选 TIFF 文件。",
+        "tip_t2_add_folder": "递归添加文件夹中的二维图像（.tif/.tiff/.edf/.cbf）。",
         "tip_t2_clear": "清空队列，不会删除磁盘文件。",
         "tip_t2_check": "批量检查每个文件的 exp/mon/T 和厚度可用性。",
         "tip_t2_group": "根据时间戳自动识别同一次机时（实验轮次）的文件。可用于按组输出子目录和优先匹配同组BG/Dark。",
@@ -1060,6 +1084,19 @@ try:
 except Exception:
     write_cansas1d_xml = None
     write_nxcansas_h5 = None
+
+try:
+    from saxsabs.io.calibrated2d import (
+        Calibrated2DExportConfig,
+        build_absolute_detector_image,
+        make_sample_id,
+        write_calibrated2d_package,
+    )
+except Exception:
+    Calibrated2DExportConfig = None
+    build_absolute_detector_image = None
+    make_sample_id = None
+    write_calibrated2d_package = None
 
 # Core normalization + parsing (used to deduplicate GUI logic)
 try:
@@ -2851,6 +2888,9 @@ class SAXSAbsWorkbenchApp:
         self.t2_alpha = tk.DoubleVar(value=1.0)
         self.t2_alpha_enabled = tk.BooleanVar(value=False)
         self.t2_output_format = tk.StringVar(value="tsv")
+        self.t2_export_cal2d = tk.BooleanVar(value=False)
+        self.t2_cal2d_dtype = tk.StringVar(value="float32")
+        self.t2_cal2d_apply_flat = tk.BooleanVar(value=True)
         self.t2_bg_candidates = []
         self.t2_dark_candidates = []
         self.t2_bg_lib_info = tk.StringVar(value=self.tr("var_bg_lib").format(n=0))
@@ -3101,6 +3141,20 @@ class SAXSAbsWorkbenchApp:
         btn_dark_lib = ttk.Button(row_lib, text=self.tr("btn_t2_dark_lib"), command=self.add_dark_library_files)
         btn_dark_lib.pack(side="left", padx=(5, 0))
         self._register_i18n_widget(btn_dark_lib, "btn_t2_dark_lib")
+        btn_bg_lib_folder = ttk.Button(
+            row_lib,
+            text=self.tr("btn_t2_bg_lib_folder"),
+            command=self.add_bg_library_folder_recursive,
+        )
+        btn_bg_lib_folder.pack(side="left", padx=(5, 0))
+        self._register_i18n_widget(btn_bg_lib_folder, "btn_t2_bg_lib_folder")
+        btn_dark_lib_folder = ttk.Button(
+            row_lib,
+            text=self.tr("btn_t2_dark_lib_folder"),
+            command=self.add_dark_library_folder_recursive,
+        )
+        btn_dark_lib_folder.pack(side="left", padx=(5, 0))
+        self._register_i18n_widget(btn_dark_lib_folder, "btn_t2_dark_lib_folder")
         btn_clear_lib = ttk.Button(
             row_lib,
             text=self.tr("btn_t2_clear_lib"),
@@ -3144,6 +3198,8 @@ class SAXSAbsWorkbenchApp:
         self.add_tooltip(rb_ref_auto, "tip_t2_ref_auto")
         self.add_tooltip(btn_bg_lib, "tip_t2_bg_lib")
         self.add_tooltip(btn_dark_lib, "tip_t2_dark_lib")
+        self.add_tooltip(btn_bg_lib_folder, "tip_t2_bg_lib_folder")
+        self.add_tooltip(btn_dark_lib_folder, "tip_t2_dark_lib_folder")
         self.add_tooltip(btn_clear_lib, "tip_t2_clear_lib")
         self.add_tooltip(e_workers, "tip_t2_workers")
         self.add_tooltip(cb_resume, "tip_t2_resume")
@@ -3177,6 +3233,39 @@ class SAXSAbsWorkbenchApp:
         self.t2_fmt_combo.current(0)
         self.t2_fmt_combo.pack(side="left", padx=5)
 
+        row_cal2d = ttk.Frame(c5)
+        row_cal2d.pack(fill="x", pady=(2, 0))
+        cb_cal2d = ttk.Checkbutton(
+            row_cal2d,
+            text=self.tr("cb_t2_export_cal2d"),
+            variable=self.t2_export_cal2d,
+        )
+        cb_cal2d.pack(side="left")
+        self._register_i18n_widget(cb_cal2d, "cb_t2_export_cal2d")
+        lbl_cal2d_dtype = ttk.Label(row_cal2d, text=self.tr("lbl_t2_cal2d_dtype"))
+        lbl_cal2d_dtype.pack(side="left", padx=(8, 2))
+        self._register_i18n_widget(lbl_cal2d_dtype, "lbl_t2_cal2d_dtype")
+        cb_cal2d_dtype = ttk.Combobox(
+            row_cal2d,
+            textvariable=self.t2_cal2d_dtype,
+            values=["float32", "float64"],
+            width=8,
+            state="readonly",
+        )
+        cb_cal2d_dtype.current(0)
+        cb_cal2d_dtype.pack(side="left")
+        cb_cal2d_flat = ttk.Checkbutton(
+            row_cal2d,
+            text=self.tr("cb_t2_cal2d_flat"),
+            variable=self.t2_cal2d_apply_flat,
+        )
+        cb_cal2d_flat.pack(side="left", padx=(8, 0))
+        self._register_i18n_widget(cb_cal2d_flat, "cb_t2_cal2d_flat")
+        self.add_tooltip(cb_cal2d, "tip_t2_export_cal2d")
+        self.add_tooltip(lbl_cal2d_dtype, "tip_t2_cal2d_dtype")
+        self.add_tooltip(cb_cal2d_dtype, "tip_t2_cal2d_dtype")
+        self.add_tooltip(cb_cal2d_flat, "tip_t2_cal2d_flat")
+
         # --- List ---
         mid_frame = ttk.LabelFrame(p, text=self.tr("t2_mid_title"), style="Group.TLabelframe")
         self._register_i18n_widget(mid_frame, "t2_mid_title")
@@ -3188,6 +3277,9 @@ class SAXSAbsWorkbenchApp:
         btn_add = ttk.Button(tb, text=self.tr("t2_add_btn"), command=self.add_batch_files)
         self._register_i18n_widget(btn_add, "t2_add_btn")
         btn_add.pack(side="left")
+        btn_add_folder = ttk.Button(tb, text=self.tr("t2_add_folder_btn"), command=self.add_batch_folder_recursive)
+        self._register_i18n_widget(btn_add_folder, "t2_add_folder_btn")
+        btn_add_folder.pack(side="left", padx=(5, 0))
         btn_clear = ttk.Button(
             tb,
             text=self.tr("t2_clear_btn"),
@@ -3206,6 +3298,7 @@ class SAXSAbsWorkbenchApp:
         self._register_i18n_widget(btn_check, "t2_check_btn")
         btn_check.pack(side="right", padx=10)
         self.add_tooltip(btn_add, "tip_t2_add")
+        self.add_tooltip(btn_add_folder, "tip_t2_add_folder")
         self.add_tooltip(btn_clear, "tip_t2_clear")
         self.add_tooltip(btn_check, "tip_t2_check")
 
@@ -3239,6 +3332,7 @@ class SAXSAbsWorkbenchApp:
         self.t2_mode_full.trace_add("write", lambda *_: self.refresh_queue_status())
         self.t2_mode_sector.trace_add("write", lambda *_: self.refresh_queue_status())
         self.t2_mode_chi.trace_add("write", lambda *_: self.refresh_queue_status())
+        self.t2_export_cal2d.trace_add("write", lambda *_: self.refresh_queue_status())
         self.t2_sector_ranges_text.trace_add("write", lambda *_: self.refresh_queue_status())
         self.t2_sector_save_each.trace_add("write", lambda *_: self.refresh_queue_status())
         self.t2_sector_save_combined.trace_add("write", lambda *_: self.refresh_queue_status())
@@ -5416,6 +5510,42 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 self.t2_dark_candidates.append(f)
         self.t2_dark_lib_info.set(self.tr("var_dark_lib").format(n=len(self.t2_dark_candidates)))
 
+    def _collect_image_files_recursive(self, root_dir):
+        root = Path(root_dir)
+        exts = {".tif", ".tiff", ".edf", ".cbf"}
+        if not root.exists():
+            return []
+        files = [
+            str(p)
+            for p in root.rglob("*")
+            if p.is_file() and p.suffix.lower() in exts
+        ]
+        return sorted(files, key=lambda x: x.lower())
+
+    def add_bg_library_folder_recursive(self):
+        directory = filedialog.askdirectory()
+        if not directory:
+            return
+        added = 0
+        for f in self._collect_image_files_recursive(directory):
+            if f not in self.t2_bg_candidates:
+                self.t2_bg_candidates.append(f)
+                added += 1
+        self.t2_bg_lib_info.set(self.tr("var_bg_lib").format(n=len(self.t2_bg_candidates)))
+        self.log(f"[BG库] 递归添加 {added} 个背景候选文件。")
+
+    def add_dark_library_folder_recursive(self):
+        directory = filedialog.askdirectory()
+        if not directory:
+            return
+        added = 0
+        for f in self._collect_image_files_recursive(directory):
+            if f not in self.t2_dark_candidates:
+                self.t2_dark_candidates.append(f)
+                added += 1
+        self.t2_dark_lib_info.set(self.tr("var_dark_lib").format(n=len(self.t2_dark_candidates)))
+        self.log(f"[Dark库] 递归添加 {added} 个暗场候选文件。")
+
     def clear_reference_libraries(self):
         if (self.t2_bg_candidates or self.t2_dark_candidates) and not self.confirm_action("confirm_clear_ref_lib"):
             return
@@ -5455,6 +5585,13 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         dark_score = np.nan
         outputs = []
         mode_errors = []
+        cal2d_status = "未启用"
+        cal2d_reason = ""
+        cal2d_sample_id = ""
+        cal2d_image = ""
+        cal2d_metadata = ""
+        cal2d_poni = ""
+        cal2d_mask = ""
         status = "失败"
         reason = ""
 
@@ -5475,7 +5612,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 )
 
             expected_targets = self.build_sample_output_targets(context, out_stem)
-            if expected_targets and should_skip_all_existing(
+            if (not context.get("export_cal2d")) and expected_targets and should_skip_all_existing(
                 [p.exists() for _, p in expected_targets],
                 run_policy,
             ):
@@ -5511,6 +5648,13 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         "ModesSelected": ",".join(context["selected_modes"]),
                         "Outputs": " | ".join(outputs),
                         "OutputDir": "",
+                        "Cal2D_Status": cal2d_status,
+                        "Cal2D_Reason": cal2d_reason,
+                        "Cal2D_SampleID": cal2d_sample_id,
+                        "Cal2D_Image": cal2d_image,
+                        "Cal2D_Metadata": cal2d_metadata,
+                        "Cal2D_PONI": cal2d_poni,
+                        "Cal2D_Mask": cal2d_mask,
                     }
                     return {"row": row, "logs": logs, "mode_stats": mode_stats}
 
@@ -5620,7 +5764,106 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             mode_success = 0
             mode_skip = 0
             scale_factor = context["k_factor"] / thk_cm
+            cal2d_success = 0
+            cal2d_skip = 0
+            if context.get("export_cal2d"):
+                if (
+                    Calibrated2DExportConfig is None
+                    or build_absolute_detector_image is None
+                    or make_sample_id is None
+                    or write_calibrated2d_package is None
+                ):
+                    raise RuntimeError("calibrated 2D 导出模块不可用。")
+                try:
+                    cal2d_sample_id = make_sample_id(out_stem, fpath)
+                    cal2d_root = Path(context["cal2d_root"])
+                    cal2d_target = cal2d_root / "images" / f"{cal2d_sample_id}_cal2d.edf"
+                    if run_policy.should_skip_existing(cal2d_target.exists()):
+                        cal2d_status = "已跳过"
+                        cal2d_reason = "输出已存在"
+                        cal2d_image = str(cal2d_target)
+                        cal2d_metadata = str(cal2d_root / "metadata" / f"{cal2d_sample_id}_cal2d.json")
+                        cal2d_poni = str(cal2d_root / "geometry" / f"{cal2d_sample_id}.poni")
+                        cal2d_mask = str(cal2d_root / "masks" / f"{cal2d_sample_id}_mask.npy")
+                        outputs.append(f"cal2d:{cal2d_target.name}(existing)")
+                        cal2d_skip = 1
+                    else:
+                        flat_for_export = flat_arr if context.get("cal2d_apply_flat") else None
+                        cal2d_img = build_absolute_detector_image(
+                            img_net,
+                            k_factor=context["k_factor"],
+                            thickness_cm=thk_cm,
+                            flat=flat_for_export,
+                            apply_flat=bool(context.get("cal2d_apply_flat")) and flat_arr is not None,
+                        )
+                        cal2d_meta = {
+                            "normalization": {
+                                "mode": monitor_mode,
+                                "formula": self.monitor_norm_formula(monitor_mode),
+                                "sample_exp_s": exp if np.isfinite(exp) else None,
+                                "sample_i0": mon,
+                                "sample_transmission": trans,
+                                "norm_sample": norm_s,
+                                "k_factor": context["k_factor"],
+                                "thickness_cm": thk_cm,
+                            },
+                            "background": {
+                                "alpha": context.get("bg_alpha", 1.0),
+                                "bg_file": bg_path_used,
+                                "bg_norm": bg_norm_used,
+                                "dark_file": dark_path_used,
+                            },
+                            "integration_policy": {
+                                "correctSolidAngle": bool(context.get("apply_solid_angle")),
+                                "polarization_factor": context.get("polarization"),
+                                "flat_applied_in_image": bool(context.get("cal2d_apply_flat")) and flat_arr is not None,
+                                "mask_convention": "pyFAI: 0=valid, 1=masked",
+                            },
+                            "flat_path": None
+                            if (bool(context.get("cal2d_apply_flat")) and flat_arr is not None)
+                            else context.get("flat_path", ""),
+                            "software": {
+                                "program": APP_NAME,
+                                "program_version": APP_VERSION,
+                                "pyFAI_version": getattr(pyFAI, "__version__", "unknown"),
+                                "fabio_version": getattr(fabio, "__version__", "unknown"),
+                            },
+                            "source": {
+                                "file_mtime": datetime.datetime.fromtimestamp(Path(fpath).stat().st_mtime).isoformat(timespec="seconds")
+                                if Path(fpath).exists()
+                                else "",
+                                "output_stem": out_stem,
+                                "cal2d_dtype": context.get("cal2d_dtype", "float32"),
+                            },
+                        }
+                        result_cal2d = write_calibrated2d_package(
+                            Calibrated2DExportConfig(
+                                root_dir=cal2d_root,
+                                sample_id=cal2d_sample_id,
+                                raw_sample_path=fpath,
+                                poni_path=context["poni_path"],
+                                image=cal2d_img,
+                                mask=mask_arr,
+                                dtype=context.get("cal2d_dtype", "float32"),
+                                overwrite=bool(context.get("overwrite", False))
+                                or not bool(context.get("resume", False)),
+                                metadata=cal2d_meta,
+                            )
+                        )
+                        cal2d_status = "成功"
+                        cal2d_image = str(result_cal2d.image_path)
+                        cal2d_metadata = str(result_cal2d.metadata_path)
+                        cal2d_poni = str(result_cal2d.poni_path)
+                        cal2d_mask = str(result_cal2d.mask_npy_path)
+                        outputs.append(f"cal2d:{result_cal2d.image_path.name}")
+                        cal2d_success = 1
+                except Exception as cal2d_err:
+                    cal2d_status = "失败"
+                    cal2d_reason = str(cal2d_err)
+                    mode_errors.append(f"cal2d: {cal2d_err}")
+
             expected_total = len(self.build_sample_output_targets(context, out_stem))
+            expected_total += 1 if context.get("export_cal2d") else 0
             if expected_total <= 0:
                 expected_total = len(context["selected_modes"])
 
@@ -5803,14 +6046,16 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     mode_stats[mode]["fail"] += 1
                     mode_errors.append(f"{mode}: {mode_err}")
 
-            if mode_skip == expected_total and mode_success == 0 and not mode_errors:
+            total_success = mode_success + cal2d_success
+            total_skip = mode_skip + cal2d_skip
+            if total_skip == expected_total and total_success == 0 and not mode_errors:
                 status = "已跳过"
-                reason = "所有模式输出已存在"
+                reason = "所有输出已存在"
                 log_line(f"[跳过] {fname}: 所有输出已存在")
-            elif mode_success > 0 and not mode_errors:
+            elif total_success > 0 and not mode_errors:
                 status = "成功"
                 log_line(f"[成功] {fname} -> {', '.join(outputs)}")
-            elif mode_success > 0:
+            elif total_success > 0:
                 status = "部分成功"
                 reason = " | ".join(mode_errors)
                 log_line(f"[部分成功] {fname} -> {', '.join(outputs)}")
@@ -5851,6 +6096,13 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             "ModesSelected": ",".join(context["selected_modes"]),
             "Outputs": " | ".join(outputs),
             "OutputDir": str(context.get("save_dirs", {}).get("1d_full", "")) if "1d_full" in context.get("selected_modes", []) else "",
+            "Cal2D_Status": cal2d_status,
+            "Cal2D_Reason": cal2d_reason,
+            "Cal2D_SampleID": cal2d_sample_id,
+            "Cal2D_Image": cal2d_image,
+            "Cal2D_Metadata": cal2d_metadata,
+            "Cal2D_PONI": cal2d_poni,
+            "Cal2D_Mask": cal2d_mask,
         }
         return {"row": row, "logs": logs, "mode_stats": mode_stats}
 
@@ -5884,8 +6136,11 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 self.refresh_queue_status()
 
             selected_modes = self.get_selected_modes()
-            if not selected_modes:
-                raise ValueError("未选择积分模式：请至少勾选一种（全环/扇区/织构）。")
+            export_cal2d = bool(self.t2_export_cal2d.get()) if hasattr(self, "t2_export_cal2d") else False
+            if not selected_modes and not export_cal2d:
+                raise ValueError("未选择输出：请至少勾选一种积分模式，或启用校正后2D数据包导出。")
+            if export_cal2d and write_calibrated2d_package is None:
+                raise ValueError("calibrated 2D 导出模块不可用。")
 
             apply_solid_angle = bool(self.t2_apply_solid_angle.get())
             k_solid_state = str(self.global_vars["k_solid_angle"].get()).strip().lower()
@@ -5993,6 +6248,9 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             error_model = self.t2_error_model.get().strip().lower()
             if error_model not in ("azimuthal", "poisson", "none"):
                 raise ValueError("误差模型仅支持 azimuthal / poisson / none。")
+            cal2d_dtype = self.t2_cal2d_dtype.get().strip().lower() if hasattr(self, "t2_cal2d_dtype") else "float32"
+            if export_cal2d and cal2d_dtype not in ("float32", "float64"):
+                raise ValueError("Cal2D dtype 仅支持 float32 / float64。")
 
             custom_out_root = self.t2_output_root.get().strip() if hasattr(self, "t2_output_root") else ""
             if custom_out_root:
@@ -6023,6 +6281,9 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     d = out_root / f"processed_robust_{mode}"
                     d.mkdir(exist_ok=True)
                     save_dirs[mode] = d
+            cal2d_root = out_root / "processed_calibrated_2d"
+            if export_cal2d:
+                cal2d_root.mkdir(exist_ok=True)
             report_dir = out_root / "processed_robust_reports"
             report_dir.mkdir(exist_ok=True)
             stem_map = self.build_output_stem_map(files)
@@ -6091,6 +6352,11 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 "run_policy": run_policy,
                 "bg_alpha": float(self.t2_alpha.get()) if self.t2_alpha_enabled.get() else 1.0,
                 "output_format": self.t2_output_format.get() if hasattr(self, "t2_output_format") else "tsv",
+                "export_cal2d": export_cal2d,
+                "cal2d_root": cal2d_root,
+                "cal2d_dtype": cal2d_dtype,
+                "cal2d_apply_flat": bool(self.t2_cal2d_apply_flat.get()) if hasattr(self, "t2_cal2d_apply_flat") else True,
+                "flat_path": self.t2_flat_path.get().strip(),
             }
 
             rows = []
@@ -6168,6 +6434,31 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             report_path = report_dir / f"batch_report_{stamp}.csv"
             pd.DataFrame(rows).to_csv(report_path, index=False, encoding="utf-8-sig")
+            cal2d_manifest_path = None
+            if export_cal2d:
+                cal2d_manifest_rows = []
+                for r in rows:
+                    if r.get("Cal2D_Status") in ("成功", "已跳过") or r.get("Cal2D_Image"):
+                        cal2d_manifest_rows.append({
+                            "sample_id": r.get("Cal2D_SampleID", ""),
+                            "status": r.get("Cal2D_Status", ""),
+                            "reason": r.get("Cal2D_Reason", ""),
+                            "raw_sample": r.get("FullPath", ""),
+                            "calibrated_image": r.get("Cal2D_Image", ""),
+                            "poni": r.get("Cal2D_PONI", ""),
+                            "mask_npy": r.get("Cal2D_Mask", ""),
+                            "metadata": r.get("Cal2D_Metadata", ""),
+                            "k_factor": r.get("K_Factor", ""),
+                            "thickness_cm": r.get("Thk_cm", ""),
+                            "norm_s": r.get("Norm_s", ""),
+                        })
+                cal2d_manifest_path = cal2d_root / f"manifest_cal2d_{stamp}.csv"
+                pd.DataFrame(cal2d_manifest_rows).to_csv(
+                    cal2d_manifest_path,
+                    index=False,
+                    encoding="utf-8-sig",
+                )
+                self.log(f"[完成] 已生成 Cal2D manifest: {cal2d_manifest_path.name}")
 
             # --- Generate batch_manifest.json for full job traceability (Priority A) ---
             try:
@@ -6192,6 +6483,9 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         "fixed_thk_cm": fixed_thk_cm if self.t2_calc_mode.get() == "fixed" else None,
                         "alpha": float(self.t2_alpha.get()) if self.t2_alpha_enabled.get() else 1.0,
                         "output_format": self.t2_output_format.get() if hasattr(self, "t2_output_format") else "tsv",
+                        "export_calibrated_2d": export_cal2d,
+                        "calibrated_2d_dtype": cal2d_dtype if export_cal2d else None,
+                        "calibrated_2d_apply_flat": bool(self.t2_cal2d_apply_flat.get()) if export_cal2d else None,
                     },
                     "bg_dark": {
                         "bg_paths": bg_paths,
@@ -6218,6 +6512,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     "output": {
                         "root": str(out_root),
                         "report_file": str(report_path),
+                        "calibrated_2d_root": str(cal2d_root) if export_cal2d else None,
+                        "calibrated_2d_manifest": str(cal2d_manifest_path) if cal2d_manifest_path else None,
                     },
                     "grouping": {
                         "groups_detected": len(getattr(self, "t2_groups", [])),
@@ -6256,6 +6552,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     }
                 if sector_save_combined and sector_combined_dir is not None:
                     output_dirs_meta["1d_sector_sum"] = str(sector_combined_dir)
+            if export_cal2d:
+                output_dirs_meta["calibrated_2d"] = str(cal2d_root)
 
             meta = {
                 "timestamp": stamp,
@@ -6290,6 +6588,13 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 "output_root": str(out_root),
                 "output_root_custom": bool(custom_out_root),
                 "output_dirs": output_dirs_meta,
+                "calibrated_2d": {
+                    "enabled": export_cal2d,
+                    "root": str(cal2d_root) if export_cal2d else None,
+                    "manifest_csv": str(cal2d_manifest_path) if cal2d_manifest_path else None,
+                    "dtype": cal2d_dtype if export_cal2d else None,
+                    "flat_applied_in_image": bool(self.t2_cal2d_apply_flat.get()) if export_cal2d else None,
+                },
                 "report_csv": str(report_path),
                 "tab3_metadata_csv": str(tab3_meta_stamp) if tab3_meta_stamp else None,
                 "tab3_metadata_latest": str(tab3_meta_latest) if tab3_meta_latest else None,
@@ -6317,7 +6622,11 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             mode_summary = "\n".join(
                 [f"{m}: 成功{mode_ok_count[m]} / 跳过{mode_skip_count[m]} / 失败{mode_fail_count[m]}" for m in selected_modes]
             )
+            if not mode_summary:
+                mode_summary = "未运行 1D/扇区/织构积分"
             dir_lines = []
+            if export_cal2d:
+                dir_lines.append(f"calibrated_2d -> {cal2d_root}")
             for m in selected_modes:
                 if m != "1d_sector":
                     dir_lines.append(f"{m} -> {save_dirs[m]}")
@@ -6342,6 +6651,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     f"模式统计:\n{mode_summary}\n"
                     f"输出目录:\n{dir_summary}\n"
                     f"报告: {report_path.name}\n"
+                    f"Cal2D manifest: {cal2d_manifest_path.name if cal2d_manifest_path else '未启用'}\n"
                     f"Tab3 metadata: {tab3_meta_stamp.name if tab3_meta_stamp else '导出失败'}\n"
                     f"元数据: {meta_path.name}"
                 ),
@@ -6366,10 +6676,13 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
 
         if hasattr(self, "t2_out_hint_var"):
             modes = self.get_selected_modes()
-            if not modes:
+            export_cal2d = hasattr(self, "t2_export_cal2d") and bool(self.t2_export_cal2d.get())
+            if not modes and not export_cal2d:
                 self.t2_out_hint_var.set(self.tr("out_none_mode"))
             else:
                 dirs = []
+                if export_cal2d:
+                    dirs.append("processed_calibrated_2d")
                 for m in modes:
                     if m != "1d_sector":
                         dirs.append(f"processed_robust_{m}")
@@ -7124,12 +7437,26 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         self.on_load_bg_t1(fs[0])
 
     def add_batch_files(self):
-        fs = filedialog.askopenfilenames(filetypes=[("TIFF", "*.tif *.tiff")])
+        fs = filedialog.askopenfilenames(filetypes=[("Image", "*.tif *.tiff *.edf *.cbf")])
         for f in fs:
             if f not in self.t2_files:
                 self.t2_files.append(f)
                 self.lb_batch.insert(tk.END, Path(f).name)
         self.refresh_queue_status()
+
+    def add_batch_folder_recursive(self):
+        directory = filedialog.askdirectory()
+        if not directory:
+            return
+        added = 0
+        for f in self._collect_image_files_recursive(directory):
+            if f not in self.t2_files:
+                self.t2_files.append(f)
+                self.lb_batch.insert(tk.END, Path(f).name)
+                added += 1
+        self.log(f"[队列] 递归添加 {added} 个样品候选文件。")
+        self.refresh_queue_status()
+
     def clear_batch_files(self):
         if self.t2_files and not self.confirm_action("confirm_clear_t2_queue"):
             return

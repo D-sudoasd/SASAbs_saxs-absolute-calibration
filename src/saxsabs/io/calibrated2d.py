@@ -1,0 +1,274 @@
+"""Export detector-space calibrated 2D SAXS images and provenance packages."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+
+SCHEMA_VERSION = "saxsabs.calibrated2d.v1"
+IMAGE_TYPE = "detector_space_absolute_calibrated_net_image"
+MASK_CONVENTION = "pyFAI: 0=valid, 1=masked"
+
+
+@dataclass(frozen=True)
+class Calibrated2DExportConfig:
+    """Configuration for writing one calibrated 2D export package."""
+
+    root_dir: str | Path
+    sample_id: str
+    raw_sample_path: str | Path
+    poni_path: str | Path
+    image: np.ndarray
+    mask: np.ndarray | None = None
+    dtype: str = "float32"
+    overwrite: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Calibrated2DExportResult:
+    """Paths and manifest data produced for one calibrated 2D package."""
+
+    sample_id: str
+    image_path: Path
+    mask_npy_path: Path
+    mask_edf_path: Path
+    poni_path: Path
+    metadata_path: Path
+    manifest_row: dict[str, Any]
+
+
+def make_sample_id(stem: str, source_path: str | Path) -> str:
+    """Return a stable, filesystem-safe sample id with a short path hash."""
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(stem).strip()).strip("._-")
+    if not safe_stem:
+        safe_stem = "sample"
+    try:
+        source_key = str(Path(source_path).resolve())
+    except OSError:
+        source_key = str(source_path)
+    digest = hashlib.sha1(source_key.encode("utf-8", errors="replace")).hexdigest()[:8]
+    return f"{safe_stem}_{digest}"
+
+
+def build_absolute_detector_image(
+    img_net: np.ndarray,
+    k_factor: float,
+    thickness_cm: float,
+    flat: np.ndarray | None = None,
+    apply_flat: bool = True,
+) -> np.ndarray:
+    """Scale a detector-space net image to absolute intensity.
+
+    The input ``img_net`` is expected to already contain dark/background and
+    monitor/transmission correction:
+    ``(sample-dark)/norm_sample - alpha*(background-dark)/norm_background``.
+    """
+    img = np.asarray(img_net, dtype=np.float64)
+    k_val = float(k_factor)
+    d_val = float(thickness_cm)
+    if not np.isfinite(k_val) or k_val <= 0:
+        raise ValueError("k_factor must be finite and > 0")
+    if not np.isfinite(d_val) or d_val <= 0:
+        raise ValueError("thickness_cm must be finite and > 0")
+
+    out = img * (k_val / d_val)
+    if flat is not None and apply_flat:
+        flat_arr = np.asarray(flat, dtype=np.float64)
+        if flat_arr.shape != img.shape:
+            raise ValueError(f"flat shape mismatch: {flat_arr.shape} vs {img.shape}")
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = out / flat_arr
+        out = np.where(np.isfinite(flat_arr) & (flat_arr > 0), out, np.nan)
+    return out
+
+
+def _coerce_dtype(dtype: str) -> np.dtype:
+    dtype_n = str(dtype).strip().lower()
+    if dtype_n in ("float32", "edf float32"):
+        return np.dtype("float32")
+    if dtype_n in ("float64", "edf float64"):
+        return np.dtype("float64")
+    raise ValueError("dtype must be 'float32' or 'float64'")
+
+
+def _pyfai_mask(mask: np.ndarray | None, shape: tuple[int, ...]) -> np.ndarray:
+    if mask is None:
+        return np.zeros(shape, dtype=np.uint8)
+    mask_arr = np.asarray(mask)
+    if mask_arr.shape != shape:
+        raise ValueError(f"mask shape mismatch: {mask_arr.shape} vs {shape}")
+    return np.where(mask_arr != 0, 1, 0).astype(np.uint8)
+
+
+def _write_edf(path: Path, data: np.ndarray, header: dict[str, str] | None = None) -> None:
+    try:
+        from fabio.edfimage import EdfImage
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError("fabio is required for calibrated 2D EDF export") from exc
+
+    img = EdfImage(data=data, header=header or {})
+    img.write(str(path))
+
+
+def _relpath(path: Path, start: Path) -> str:
+    return os.path.relpath(path, start=start).replace(os.sep, "/")
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2DExportResult:
+    """Write one calibrated 2D image package for pyFAI/pydidas reintegration."""
+    root = Path(config.root_dir)
+    sample_id = make_sample_id(config.sample_id, config.raw_sample_path)
+    # Keep caller-provided hashed ids stable; avoid double-hashing.
+    if re.search(r"_[0-9a-f]{8}$", str(config.sample_id)):
+        sample_id = str(config.sample_id)
+
+    image = np.asarray(config.image)
+    if image.ndim != 2:
+        raise ValueError("calibrated image must be a 2-D array")
+    out_dtype = _coerce_dtype(config.dtype)
+    image_out = image.astype(out_dtype, copy=False)
+    mask_out = _pyfai_mask(config.mask, image.shape)
+
+    dirs = {
+        "images": root / "images",
+        "geometry": root / "geometry",
+        "masks": root / "masks",
+        "metadata": root / "metadata",
+    }
+    for directory in dirs.values():
+        directory.mkdir(parents=True, exist_ok=True)
+
+    image_path = dirs["images"] / f"{sample_id}_cal2d.edf"
+    mask_npy_path = dirs["masks"] / f"{sample_id}_mask.npy"
+    mask_edf_path = dirs["masks"] / f"{sample_id}_mask.edf"
+    poni_out_path = dirs["geometry"] / f"{sample_id}.poni"
+    metadata_path = dirs["metadata"] / f"{sample_id}_cal2d.json"
+
+    targets = [image_path, mask_npy_path, mask_edf_path, poni_out_path, metadata_path]
+    if not config.overwrite:
+        existing = [p for p in targets if p.exists()]
+        if existing:
+            raise FileExistsError(f"calibrated 2D export target exists: {existing[0]}")
+
+    raw_sample = Path(config.raw_sample_path)
+    poni_src = Path(config.poni_path)
+    if not poni_src.exists():
+        raise FileNotFoundError(f"PONI file not found: {poni_src}")
+
+    header = {
+        "SAXSAbsSchema": SCHEMA_VERSION,
+        "ImageType": IMAGE_TYPE,
+        "IntensityUnit": "cm^-1",
+        "MaskConvention": MASK_CONVENTION,
+    }
+    _write_edf(image_path, image_out, header=header)
+    np.save(mask_npy_path, mask_out)
+    _write_edf(mask_edf_path, mask_out, header={"MaskConvention": MASK_CONVENTION})
+    shutil.copy2(poni_src, poni_out_path)
+
+    metadata_dir = metadata_path.parent
+    user_meta = _json_safe(dict(config.metadata or {}))
+    integration_policy = dict(user_meta.get("integration_policy", {}))
+    flat_applied = bool(integration_policy.get("flat_applied_in_image", False))
+    correct_solid = bool(integration_policy.get("correctSolidAngle", False))
+    polarization = integration_policy.get("polarization_factor")
+
+    meta = {
+        "schema": SCHEMA_VERSION,
+        "image_type": IMAGE_TYPE,
+        "intensity_unit": "cm^-1",
+        "files": {
+            "raw_sample": str(raw_sample),
+            "calibrated_image": _relpath(image_path, metadata_dir),
+            "poni": _relpath(poni_out_path, metadata_dir),
+            "mask_npy": _relpath(mask_npy_path, metadata_dir),
+            "mask_edf": _relpath(mask_edf_path, metadata_dir),
+        },
+        "normalization": user_meta.get("normalization", {}),
+        "background": user_meta.get("background", {}),
+        "corrections_applied_in_image": {
+            "dark": True,
+            "background": True,
+            "monitor": True,
+            "transmission": True,
+            "absolute_k": True,
+            "thickness": True,
+            "flat": flat_applied,
+            "solid_angle": False,
+            "polarization": False,
+        },
+        "integration_policy": {
+            "correctSolidAngle": correct_solid,
+            "polarization_factor": polarization,
+            "flat_applied_in_image": flat_applied,
+            "mask_convention": MASK_CONVENTION,
+        },
+        "recommended_pyfai_reintegration": {
+            "dark": None,
+            "flat": None if flat_applied else user_meta.get("flat_path"),
+            "normalization_factor": 1.0,
+            "correctSolidAngle": correct_solid,
+            "polarization_factor": polarization,
+            "mask": _relpath(mask_npy_path, metadata_dir),
+        },
+        "qc": {
+            "image_shape": list(image.shape),
+            "mask_shape": list(mask_out.shape),
+            "finite_fraction": float(np.isfinite(image).sum() / image.size),
+            "negative_fraction": float(np.sum(np.isfinite(image) & (image < 0)) / image.size),
+        },
+    }
+    for key, value in user_meta.items():
+        if key not in meta and key not in ("integration_policy",):
+            meta[key] = value
+
+    metadata_path.write_text(
+        json.dumps(_json_safe(meta), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    manifest_row = {
+        "sample_id": sample_id,
+        "raw_sample": str(raw_sample),
+        "calibrated_image": str(image_path),
+        "poni": str(poni_out_path),
+        "mask_npy": str(mask_npy_path),
+        "mask_edf": str(mask_edf_path),
+        "metadata": str(metadata_path),
+        "dtype": str(out_dtype),
+        "image_shape": "x".join(str(v) for v in image.shape),
+    }
+
+    return Calibrated2DExportResult(
+        sample_id=sample_id,
+        image_path=image_path,
+        mask_npy_path=mask_npy_path,
+        mask_edf_path=mask_edf_path,
+        poni_path=poni_out_path,
+        metadata_path=metadata_path,
+        manifest_row=manifest_row,
+    )
