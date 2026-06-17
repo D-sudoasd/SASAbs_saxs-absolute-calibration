@@ -2489,11 +2489,29 @@ class SAXSAbsWorkbenchApp:
         ext = ".chi" if mode == "radial_chi" else ".dat"
         return save_dirs[mode] / f"{out_stem}{ext}"
 
+    def resolve_profile_output_path(self, out_path, output_format="tsv"):
+        out_path = Path(out_path)
+        fmt = str(output_format or "tsv").strip().lower()
+        if fmt == "csv":
+            return out_path.with_suffix(".csv")
+        if fmt == "cansas_xml":
+            return out_path.with_suffix(".xml")
+        if fmt == "nxcansas_h5":
+            return out_path.with_suffix(".h5")
+        return out_path
+
     def build_sample_output_targets(self, context, out_stem):
         targets = []
+        output_format = context.get("output_format", "tsv")
         for mode in context["selected_modes"]:
             if mode != "1d_sector":
-                targets.append((mode, self.mode_output_path(context["save_dirs"], mode, out_stem)))
+                targets.append((
+                    mode,
+                    self.resolve_profile_output_path(
+                        self.mode_output_path(context["save_dirs"], mode, out_stem),
+                        output_format,
+                    ),
+                ))
                 continue
 
             if context.get("sector_save_each", True):
@@ -2501,17 +2519,24 @@ class SAXSAbsWorkbenchApp:
                     d = context.get("sector_save_dirs", {}).get(spec["key"])
                     if d is None:
                         continue
-                    targets.append((f"1d_sector{spec['label']}", d / f"{out_stem}.dat"))
+                    targets.append((
+                        f"1d_sector{spec['label']}",
+                        self.resolve_profile_output_path(d / f"{out_stem}.dat", output_format),
+                    ))
 
             if context.get("sector_save_combined", False):
                 d = context.get("sector_combined_dir", None)
                 if d is not None:
-                    targets.append(("1d_sector_sum", d / f"{out_stem}.dat"))
+                    targets.append((
+                        "1d_sector_sum",
+                        self.resolve_profile_output_path(d / f"{out_stem}.dat", output_format),
+                    ))
         return targets
 
     def save_profile_table(self, out_path, x, i_abs, i_err, x_label, output_format="tsv"):
         # Origin-friendly text table: first row is column names, tab-separated.
         out_path = Path(out_path)
+        final_path = self.resolve_profile_output_path(out_path, output_format)
         x_arr = np.asarray(x, dtype=np.float64)
         i_arr = np.asarray(i_abs, dtype=np.float64)
         e_arr = np.asarray(i_err, dtype=np.float64)
@@ -2521,14 +2546,16 @@ class SAXSAbsWorkbenchApp:
                 f"输出格式 {output_format} 仅支持 Q_A^-1 轴数据，当前为 {x_label}。"
             )
 
-        if output_format == "cansas_xml" and write_cansas1d_xml is not None:
-            xml_path = out_path.with_suffix(".xml")
-            write_cansas1d_xml(xml_path, x_arr, i_arr, e_arr)
-            return
-        if output_format == "nxcansas_h5" and write_nxcansas_h5 is not None:
-            h5_path = out_path.with_suffix(".h5")
-            write_nxcansas_h5(h5_path, x_arr, i_arr, e_arr)
-            return
+        if output_format == "cansas_xml":
+            if write_cansas1d_xml is None:
+                raise RuntimeError("canSAS XML writer is unavailable.")
+            write_cansas1d_xml(final_path, x_arr, i_arr, e_arr)
+            return final_path
+        if output_format == "nxcansas_h5":
+            if write_nxcansas_h5 is None:
+                raise RuntimeError("NXcanSAS HDF5 writer is unavailable.")
+            write_nxcansas_h5(final_path, x_arr, i_arr, e_arr)
+            return final_path
 
         df = pd.DataFrame({
             x_label: x_arr,
@@ -2537,8 +2564,6 @@ class SAXSAbsWorkbenchApp:
         })
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
         sep = "," if output_format == "csv" else "\t"
-        suffix = ".csv" if output_format == "csv" else ".dat"
-        final_path = out_path.with_suffix(suffix) if output_format == "csv" else out_path
         df.to_csv(
             final_path,
             sep=sep,
@@ -2547,6 +2572,7 @@ class SAXSAbsWorkbenchApp:
             na_rep="",
             float_format="%.10g",
         )
+        return final_path
 
     def load_optional_array(self, path, name):
         if not path:
@@ -4571,7 +4597,15 @@ class SAXSAbsWorkbenchApp:
                     points = len(prof["x"])
                     x_label = self.infer_external_x_label(fp, prof)
                     ext = ".chi" if x_label == "Chi_deg" else ".dat"
-                    out_path = out_dir / f"{stem_map[fp]}{ext}"
+                    output_format = (
+                        self.t3_output_format.get()
+                        if hasattr(self, "t3_output_format")
+                        else "tsv"
+                    )
+                    out_path = self.resolve_profile_output_path(
+                        out_dir / f"{stem_map[fp]}{ext}",
+                        output_format,
+                    )
 
                     if run_policy.should_skip_existing(out_path.exists()):
                         status = "已跳过"
@@ -4686,10 +4720,16 @@ class SAXSAbsWorkbenchApp:
                                 i_abs = i_abs - buf_alpha * buf_i_interp
                                 err_abs = np.sqrt(err_abs**2 + (buf_alpha * buf_e_interp)**2)
 
-                        _ofmt = self.t3_output_format.get() if hasattr(self, "t3_output_format") else "tsv"
-                        self.save_profile_table(out_path, prof["x"], i_abs, err_abs, x_label, output_format=_ofmt)
+                        written_path = self.save_profile_table(
+                            out_path,
+                            prof["x"],
+                            i_abs,
+                            err_abs,
+                            x_label,
+                            output_format=output_format,
+                        )
                         status = "成功"
-                        outputs = out_path.name
+                        outputs = written_path.name
                         ok += 1
 
                 except Exception as e:
@@ -5868,7 +5908,11 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 expected_total = len(context["selected_modes"])
 
             for mode in context["selected_modes"]:
-                out_path = self.mode_output_path(context["save_dirs"], mode, out_stem)
+                output_format = context.get("output_format", "tsv")
+                out_path = self.resolve_profile_output_path(
+                    self.mode_output_path(context["save_dirs"], mode, out_stem),
+                    output_format,
+                )
                 try:
                     if mode != "1d_sector" and run_policy.should_skip_existing(out_path.exists()):
                         outputs.append(f"{mode}:{out_path.name}(existing)")
@@ -5891,8 +5935,15 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         issue = self.profile_health_issue(i_abs)
                         if issue:
                             raise ValueError(issue)
-                        self.save_profile_table(out_path, res.radial, i_abs, i_err, "Q_A^-1", output_format=context.get("output_format", "tsv"))
-                        outputs.append(f"{mode}:{out_path.name}")
+                        written_path = self.save_profile_table(
+                            out_path,
+                            res.radial,
+                            i_abs,
+                            i_err,
+                            "Q_A^-1",
+                            output_format=output_format,
+                        )
+                        outputs.append(f"{mode}:{written_path.name}")
                         mode_stats[mode]["ok"] += 1
                         mode_success += 1
 
@@ -5906,7 +5957,10 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         sum_out_path = None
                         sum_need_write = False
                         if save_sum:
-                            sum_out_path = context["sector_combined_dir"] / f"{out_stem}.dat"
+                            sum_out_path = self.resolve_profile_output_path(
+                                context["sector_combined_dir"] / f"{out_stem}.dat",
+                                output_format,
+                            )
                             if run_policy.should_skip_existing(sum_out_path.exists()):
                                 outputs.append(f"1d_sector_sum:{sum_out_path.name}(existing)")
                                 mode_stats[mode]["skip"] += 1
@@ -5924,7 +5978,10 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                                     mode_stats[mode]["fail"] += 1
                                     mode_errors.append(f"{spec_tag}: 缺少输出目录映射")
                                     continue
-                                each_out_path = each_dir / f"{out_stem}.dat"
+                                each_out_path = self.resolve_profile_output_path(
+                                    each_dir / f"{out_stem}.dat",
+                                    output_format,
+                                )
                                 each_disp = (
                                     f"{each_out_path.parent.name}/{each_out_path.name}"
                                     if multi_sector else each_out_path.name
@@ -5960,8 +6017,20 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                                     issue = self.profile_health_issue(i_abs)
                                     if issue:
                                         raise ValueError(issue)
-                                    self.save_profile_table(each_out_path, res.radial, i_abs, i_err, "Q_A^-1", output_format=context.get("output_format", "tsv"))
-                                    outputs.append(f"{spec_tag}:{each_disp}")
+                                    written_path = self.save_profile_table(
+                                        each_out_path,
+                                        res.radial,
+                                        i_abs,
+                                        i_err,
+                                        "Q_A^-1",
+                                        output_format=output_format,
+                                    )
+                                    written_disp = (
+                                        f"{written_path.parent.name}/{written_path.name}"
+                                        if multi_sector
+                                        else written_path.name
+                                    )
+                                    outputs.append(f"{spec_tag}:{written_disp}")
                                     mode_stats[mode]["ok"] += 1
                                     mode_success += 1
 
@@ -5994,8 +6063,15 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                                     issue = self.profile_health_issue(i_abs)
                                     if issue:
                                         raise ValueError(issue)
-                                    self.save_profile_table(sum_out_path, merge.radial, i_abs, i_err, "Q_A^-1", output_format=context.get("output_format", "tsv"))
-                                    outputs.append(f"1d_sector_sum:{sum_out_path.name}")
+                                    written_path = self.save_profile_table(
+                                        sum_out_path,
+                                        merge.radial,
+                                        i_abs,
+                                        i_err,
+                                        "Q_A^-1",
+                                        output_format=output_format,
+                                    )
+                                    outputs.append(f"1d_sector_sum:{written_path.name}")
                                     mode_stats[mode]["ok"] += 1
                                     mode_success += 1
                                 except Exception as sum_err:
@@ -6034,8 +6110,15 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         issue = self.profile_health_issue(i_abs)
                         if issue:
                             raise ValueError(issue)
-                        self.save_profile_table(out_path, res.radial, i_abs, i_err, "Chi_deg", output_format=context.get("output_format", "tsv"))
-                        outputs.append(f"{mode}:{out_path.name}")
+                        written_path = self.save_profile_table(
+                            out_path,
+                            res.radial,
+                            i_abs,
+                            i_err,
+                            "Chi_deg",
+                            output_format=output_format,
+                        )
+                        outputs.append(f"{mode}:{written_path.name}")
                         mode_stats[mode]["ok"] += 1
                         mode_success += 1
 
