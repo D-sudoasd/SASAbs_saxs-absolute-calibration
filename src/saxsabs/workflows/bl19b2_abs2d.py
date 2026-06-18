@@ -673,7 +673,7 @@ def build_rerun_command(config: BL19B2Abs2DConfig, *, poni_path: Path | None = N
     poni_for_command = Path(poni_path) if poni_path is not None else Path(config.poni_path)
     lines = [
         "$env:PYTHONPATH='src'",
-        "py -3.11 -m saxsabs.cli bl19b2-abs2d `",
+        f"& {_ps_single_quote(sys.executable)} -m saxsabs.cli bl19b2-abs2d `",
         f"  --input-root {_ps_single_quote(Path(config.input_root))} `",
         f"  --poni {_ps_single_quote(poni_for_command)} `",
         f"  --output-root {_ps_single_quote(config.resolved_output_root())} `",
