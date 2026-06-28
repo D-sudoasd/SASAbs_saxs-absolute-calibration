@@ -70,7 +70,6 @@ def test_wheel_includes_legacy_gui_module(tmp_path: Path):
             "wheel",
             str(REPO_ROOT),
             "--no-deps",
-            "--no-build-isolation",
             "-w",
             str(tmp_path),
         ],
@@ -84,7 +83,11 @@ def test_wheel_includes_legacy_gui_module(tmp_path: Path):
 
     with zipfile.ZipFile(wheels[0]) as wheel:
         names = set(wheel.namelist())
-        entry_points = wheel.read("saxsabs-1.1.1.dist-info/entry_points.txt").decode("utf-8")
+        entry_point_files = [
+            name for name in names if name.endswith(".dist-info/entry_points.txt")
+        ]
+        assert len(entry_point_files) == 1
+        entry_points = wheel.read(entry_point_files[0]).decode("utf-8")
 
     assert "SASAbs.py" in names
     assert "saxsabs/workbench_launcher.py" in names
