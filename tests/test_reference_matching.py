@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import numpy as np
+
 from saxsabs.core.reference_matching import (
     reference_score,
     select_best_reference,
@@ -14,6 +16,15 @@ def test_reference_score_basic():
     ref = {"exp": 1.0, "mon": 1000, "trans": 0.8, "mtime": 100000}
     s = reference_score(sample, ref, kind="bg")
     assert 0 <= s < 0.01  # almost perfect match
+
+
+def test_reference_score_coerces_numeric_string_metadata():
+    sample = {"exp": "1.0", "mon": "1000", "trans": "0.8", "mtime": "100000"}
+    ref = {"exp": "1.1", "mon": "1100", "trans": "0.75", "mtime": "100600"}
+    score = reference_score(sample, ref, kind="bg")
+
+    assert np.isfinite(score)
+    assert score < 1e9
 
 
 def test_select_best_reference_prefers_close():

@@ -1,4 +1,11 @@
-from .parsers import parse_header_values, read_external_1d_profile, read_cansas1d_xml, read_nxcansas_h5
+from .parsers import (
+    extract_acquisition_timestamp,
+    parse_header_values,
+    parse_header_values_with_meta,
+    read_cansas1d_xml,
+    read_external_1d_profile,
+    read_nxcansas_h5,
+)
 from .writers import write_cansas1d_xml, write_nxcansas_h5
 from .calibrated2d import (
     Calibrated2DExportConfig,
@@ -10,6 +17,8 @@ from .calibrated2d import (
 
 __all__ = [
     "parse_header_values",
+    "parse_header_values_with_meta",
+    "extract_acquisition_timestamp",
     "read_external_1d_profile",
     "read_cansas1d_xml",
     "read_nxcansas_h5",

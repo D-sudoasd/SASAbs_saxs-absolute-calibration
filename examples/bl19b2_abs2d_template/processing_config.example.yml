@@ -3,7 +3,10 @@ description: Template for future SPring-8 BL19B2 SAXS absolute-corrected 2D batc
 
 # Replace these paths for each new beamtime.
 input_root: H:/path/to/BL19B2 DATA/datXXX
-poni_path: E:/path/to/BL19B2_SAXS_Califile.poni
+pydidas_cali_yaml: H:/path/to/BL19B2 DATA/datXXX/reference_saxs/Cali.yaml
+# Alternative when a pyFAI PONI already exists. Use either this or
+# pydidas_cali_yaml, not both.
+poni_path: null
 output_root: H:/path/to/BL19B2 DATA/datXXX_absolute_corrected_2D
 
 # Reference files are resolved under input_root/reference_saxs by the current CLI.
@@ -13,7 +16,7 @@ references:
   dark: reference_saxs/dark001.tif
   background: reference_saxs/BG001.tif
   standard: reference_saxs/GC001.tif
-  mask: reference_saxs/MASK_file.edf
+  mask: reference_saxs/Mask.edf
   direct_beam_qc: reference_saxs/drt001.tif
 
 calibration:
@@ -39,13 +42,13 @@ dry_run_command: >-
   py -3.11 -m saxsabs.cli bl19b2-abs2d
   --dry-run
   --input-root "<input_root>"
-  --poni "<poni_path>"
+  --pydidas-cali-yaml "<pydidas_cali_yaml>"
   --output-root "<output_root>"
 
 full_run_command: >-
   py -3.11 -m saxsabs.cli bl19b2-abs2d
   --input-root "<input_root>"
-  --poni "<poni_path>"
+  --pydidas-cali-yaml "<pydidas_cali_yaml>"
   --output-root "<output_root>"
   --mu 20.2
   --alpha 1.0

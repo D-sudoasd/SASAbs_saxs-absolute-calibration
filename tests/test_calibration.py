@@ -45,6 +45,21 @@ def test_estimate_k_factor_non_positive_signal_raises():
         estimate_k_factor_robust(q_meas=q, i_meas_per_cm=i)
 
 
+@pytest.mark.parametrize(
+    ("q_ref", "i_ref"),
+    [
+        (np.array([0.01, 0.02, 0.03], dtype=float), None),
+        (None, np.array([1.0, 2.0, 3.0], dtype=float)),
+    ],
+)
+def test_estimate_k_factor_requires_complete_reference_pair(q_ref, i_ref):
+    q = np.array([0.01, 0.02, 0.03], dtype=float)
+    i = np.array([1.0, 2.0, 3.0], dtype=float)
+
+    with pytest.raises(ValueError, match="q_ref.*i_ref|i_ref.*q_ref"):
+        estimate_k_factor_robust(q_meas=q, i_meas_per_cm=i, q_ref=q_ref, i_ref=i_ref)
+
+
 # ---------------------------------------------------------------------------
 # Multi-standard support tests
 # ---------------------------------------------------------------------------

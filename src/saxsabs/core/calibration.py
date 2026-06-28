@@ -121,7 +121,10 @@ def estimate_k_factor_robust(
     """
     q_m, i_m = _regularize_profile(q_meas, i_meas_per_cm, min_points=min_points)
 
-    if q_ref is None or i_ref is None:
+    if (q_ref is None) != (i_ref is None):
+        raise ValueError("q_ref and i_ref must be supplied together")
+
+    if q_ref is None and i_ref is None:
         q_ref_all = NIST_SRM3600_DATA[:, 0]
         i_ref_all = NIST_SRM3600_DATA[:, 1]
     else:

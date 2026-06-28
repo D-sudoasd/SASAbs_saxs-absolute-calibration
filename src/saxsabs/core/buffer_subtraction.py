@@ -155,6 +155,8 @@ def subtract_buffer(
     )
     if e_s.shape != i_s.shape:
         raise ValueError("err_sample shape mismatch")
+    if np.any(np.isfinite(e_s) & (e_s < 0)):
+        raise ValueError("err_sample contains negative values")
     e_s = np.where(np.isfinite(e_s), e_s, 0.0)
 
     q_b = _as_1d_float_array("q_buffer", q_buffer)
@@ -168,6 +170,8 @@ def subtract_buffer(
     )
     if e_b.shape != i_b.shape:
         raise ValueError("err_buffer shape mismatch")
+    if np.any(np.isfinite(e_b) & (e_b < 0)):
+        raise ValueError("err_buffer contains negative values")
     e_b = np.where(np.isfinite(e_b), e_b, 0.0)
 
     # Interpolate buffer onto sample q-grid if grids differ

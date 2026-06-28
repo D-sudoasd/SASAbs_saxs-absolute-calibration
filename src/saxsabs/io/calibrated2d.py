@@ -141,10 +141,13 @@ def _json_safe(value: Any) -> Any:
 def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2DExportResult:
     """Write one calibrated 2D image package for pyFAI/pydidas reintegration."""
     root = Path(config.root_dir)
-    sample_id = make_sample_id(config.sample_id, config.raw_sample_path)
+    raw_sample_id = str(config.sample_id)
+    sample_id = make_sample_id(raw_sample_id, config.raw_sample_path)
     # Keep caller-provided hashed ids stable; avoid double-hashing.
-    if re.search(r"_[0-9a-f]{8}$", str(config.sample_id)):
-        sample_id = str(config.sample_id)
+    if re.search(r"_[0-9a-f]{8}$", raw_sample_id):
+        if "/" in raw_sample_id or "\\" in raw_sample_id:
+            raise ValueError("sample_id must not contain path separators")
+        sample_id = raw_sample_id
 
     image = np.asarray(config.image)
     if image.ndim != 2:

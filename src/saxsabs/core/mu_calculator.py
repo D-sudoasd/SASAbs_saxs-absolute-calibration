@@ -143,6 +143,7 @@ def mu_rho_single(element: str, energy_keV: float) -> float:
     float
         μ/ρ in cm²/g.
     """
+    energy_keV = _coerce_positive_finite_scalar("Energy", energy_keV)
     energy_eV = energy_keV * 1000.0
     return float(xraydb.mu_elam(element, energy_eV))
 
@@ -230,12 +231,16 @@ def parse_composition_string(text: str) -> dict[str, float]:
     dict[str, float]
         Element → weight fraction (0–1 scale).
     """
-    pairs = _COMP_RE.findall(text)
-    if not pairs:
+    if not text or not text.strip():
         raise ValueError(f"Cannot parse composition string: {text!r}")
 
     comp: dict[str, float] = {}
-    for elem, val in pairs:
+    for part in text.split(","):
+        token = part.strip()
+        match = _COMP_RE.fullmatch(token)
+        if match is None:
+            raise ValueError(f"Cannot parse composition string: {text!r}")
+        elem, val = match.groups()
         if elem in comp:
             raise ValueError(f"Duplicate element in composition string: {elem}")
         value = float(val)
@@ -247,7 +252,7 @@ def parse_composition_string(text: str) -> dict[str, float]:
 
     # Auto-detect percent vs fraction
     vals = list(comp.values())
-    if all(v > 1 for v in vals) and abs(sum(vals) - 100.0) < 5.0:
+    if any(v > 1 for v in vals) and abs(sum(vals) - 100.0) < 5.0:
         comp = {k: v / 100.0 for k, v in comp.items()}
 
     return comp

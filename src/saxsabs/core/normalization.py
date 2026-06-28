@@ -54,6 +54,10 @@ def compute_norm_factor(exp: float | None, mon: float | None, trans: float | Non
     Raises:
         ValueError: If *mode* is not recognized.
     """
+    mode_n = str(mode).strip().lower()
+    if mode_n not in MONITOR_NORM_MODES:
+        raise ValueError(f"Unknown I0 normalization mode: {mode}")
+
     if mon is None or trans is None:
         return math.nan
     try:
@@ -67,7 +71,6 @@ def compute_norm_factor(exp: float | None, mon: float | None, trans: float | Non
     if mon_v <= 0 or trans_v <= 0 or trans_v > 1.0:
         return math.nan
 
-    mode_n = str(mode).strip().lower()
     if mode_n == "rate":
         if exp is None:
             return math.nan
@@ -81,5 +84,3 @@ def compute_norm_factor(exp: float | None, mon: float | None, trans: float | Non
 
     if mode_n == "integrated":
         return mon_v * trans_v
-
-    raise ValueError(f"Unknown I0 normalization mode: {mode}")

@@ -1,6 +1,7 @@
 """Tests for buffer / solvent subtraction."""
 
 import numpy as np
+import pytest
 
 from saxsabs.core.buffer_subtraction import (
     BufferSubtractionResult,
@@ -65,6 +66,23 @@ class TestSubtractBuffer:
             assert "outside buffer q range" in str(exc)
         else:
             raise AssertionError("Expected ValueError for non-overlapping q range")
+
+    @pytest.mark.parametrize(
+        ("err_sample", "err_buffer", "message"),
+        [
+            (np.array([0.1, -0.2, np.nan]), np.full(3, 0.05), "err_sample"),
+            (np.full(3, 0.1), np.array([0.05, -0.02, np.nan]), "err_buffer"),
+        ],
+    )
+    def test_negative_finite_errors_raise_before_non_finite_replacement(
+        self, err_sample, err_buffer, message
+    ):
+        q = np.array([0.01, 0.02, 0.03], dtype=float)
+        i_s = np.ones(3) * 10.0
+        i_b = np.ones(3) * 2.0
+
+        with pytest.raises(ValueError, match=message):
+            subtract_buffer(q, i_s, err_sample, q, i_b, err_buffer, alpha=1.0)
 
 
 class TestValidateAlpha:

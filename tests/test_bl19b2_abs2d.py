@@ -18,14 +18,43 @@ from saxsabs.workflows.bl19b2_abs2d import (
     build_rerun_command,
     classify_sample_frame,
     estimate_thickness_cm,
+    find_reference_paths,
     format_code_state_text,
     is_sample_tiff,
     parse_bl19b2_description,
+    parse_pydidas_cali_yaml,
     subtract_dark_for_exposure,
     validate_config,
     write_edf_image,
+    write_pydidas_poni,
     write_provenance_package,
 )
+
+
+def _write_pydidas_cali(path: Path, **overrides: str) -> None:
+    values = {
+        "detector_dist": "3.0481453478823366",
+        "detector_name": "Pilatus 2M",
+        "detector_poni1": "0.12616381951025174",
+        "detector_poni2": "0.12722516651641888",
+        "detector_pxsizex": "172.0",
+        "detector_pxsizey": "172.0",
+        "detector_rot1": "0.0",
+        "detector_rot2": "0.0",
+        "detector_rot3": "0.0",
+        "xray_wavelength": "0.413280661444",
+    }
+    values.update({key: str(value) for key, value in overrides.items()})
+    path.write_text(
+        "\n".join(f"{key}: {value}" for key, value in values.items()),
+        encoding="utf-8",
+    )
+
+
+def _write_required_reference_files(ref: Path) -> None:
+    ref.mkdir(parents=True)
+    for name in ("dark001.tif", "BG001.tif", "GC001.tif"):
+        (ref / name).write_bytes(b"placeholder")
 
 
 def test_parse_bl19b2_description_extracts_header_fields():
@@ -96,6 +125,190 @@ def test_build_output_paths_preserves_relative_folder_and_uses_abs2d_suffix(tmp_
     assert paths.edf.name == "frame_001_abs2d_cm-1.edf"
     assert paths.metadata.name == "frame_001_abs2d.json"
     assert paths.preview.name == "frame_001_preview.png"
+
+
+def test_parse_pydidas_cali_yaml_converts_geometry_units(tmp_path: Path):
+    mask = tmp_path / "Mask.edf"
+    cali = tmp_path / "Cali.yaml"
+    cali.write_text(
+        "\n".join(
+            [
+                "detector_dist: 3.0481453478823366",
+                f"detector_mask_file: {mask}",
+                "detector_name: Pilatus 2M",
+                "detector_poni1: 0.12616381951025174",
+                "detector_poni2: 0.12722516651641888",
+                "detector_pxsizex: 172.0",
+                "detector_pxsizey: 172.0",
+                "detector_rot1: 0.0",
+                "detector_rot2: 0.0",
+                "detector_rot3: 0.0",
+                "xray_wavelength: 0.413280661444",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    geometry = parse_pydidas_cali_yaml(cali)
+
+    assert geometry.distance_m == 3.0481453478823366
+    assert geometry.poni1_m == 0.12616381951025174
+    assert geometry.poni2_m == 0.12722516651641888
+    assert geometry.pixel1_m == 0.000172
+    assert geometry.pixel2_m == 0.000172
+    assert geometry.wavelength_m == 4.13280661444e-11
+    assert geometry.mask_path == mask
+
+
+@pytest.mark.parametrize("raw_mask", [".", "", "none", "null", "None", "NULL"])
+def test_parse_pydidas_cali_yaml_treats_mask_sentinels_as_no_yaml_mask(
+    tmp_path: Path,
+    raw_mask: str,
+):
+    cali = tmp_path / "Cali.yaml"
+    _write_pydidas_cali(cali, detector_mask_file=raw_mask)
+
+    geometry = parse_pydidas_cali_yaml(cali)
+
+    assert geometry.mask_path is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("detector_pxsizex", "0"),
+        ("detector_pxsizey", "-172.0"),
+        ("detector_dist", "0"),
+        ("xray_wavelength", "-0.413280661444"),
+    ],
+)
+def test_parse_pydidas_cali_yaml_rejects_nonpositive_required_geometry_values(
+    tmp_path: Path,
+    field: str,
+    value: str,
+):
+    cali = tmp_path / "Cali.yaml"
+    _write_pydidas_cali(cali, **{field: value})
+
+    with pytest.raises(ValueError, match=field):
+        parse_pydidas_cali_yaml(cali)
+
+
+def test_write_pydidas_poni_uses_pyfai_units(tmp_path: Path):
+    cali = tmp_path / "Cali.yaml"
+    cali.write_text(
+        "\n".join(
+            [
+                "detector_dist: 3.0481453478823366",
+                "detector_name: Pilatus 2M",
+                "detector_poni1: 0.12616381951025174",
+                "detector_poni2: 0.12722516651641888",
+                "detector_pxsizex: 172.0",
+                "detector_pxsizey: 172.0",
+                "detector_rot1: 0.0",
+                "detector_rot2: 0.0",
+                "detector_rot3: 0.0",
+                "xray_wavelength: 0.413280661444",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    poni = tmp_path / "BL19B2_SAXS_Califile.poni"
+
+    write_pydidas_poni(cali, poni)
+
+    text = poni.read_text(encoding="utf-8")
+    assert "Detector: Pilatus2M" in text
+    assert '"pixel1": 0.000172' in text
+    assert '"pixel2": 0.000172' in text
+    assert "Distance: 3.0481453478823366" in text
+    assert "Poni1: 0.12616381951025174" in text
+    assert "Poni2: 0.12722516651641888" in text
+    assert "Wavelength: 4.13280661444e-11" in text
+
+
+def test_find_reference_paths_uses_pydidas_mask_when_available(tmp_path: Path):
+    root = tmp_path / "dat001"
+    ref = root / "reference_saxs"
+    _write_required_reference_files(ref)
+    mask = ref / "Mask.edf"
+    mask.write_bytes(b"mask")
+    cali = ref / "Cali.yaml"
+    cali.write_text(f"detector_mask_file: {mask}\n", encoding="utf-8")
+
+    refs = find_reference_paths(root, pydidas_cali_yaml=cali)
+
+    assert refs.mask == mask
+
+
+def test_find_reference_paths_prefers_explicit_mask(tmp_path: Path):
+    root = tmp_path / "dat001"
+    ref = root / "reference_saxs"
+    _write_required_reference_files(ref)
+    mask_from_yaml = ref / "Mask.edf"
+    explicit_mask = ref / "explicit_mask.edf"
+    mask_from_yaml.write_bytes(b"mask")
+    explicit_mask.write_bytes(b"explicit")
+    cali = ref / "Cali.yaml"
+    cali.write_text(f"detector_mask_file: {mask_from_yaml}\n", encoding="utf-8")
+
+    refs = find_reference_paths(root, mask_path=explicit_mask, pydidas_cali_yaml=cali)
+
+    assert refs.mask == explicit_mask
+
+
+def test_find_reference_paths_treats_yaml_mask_sentinel_as_absent_and_falls_back(
+    tmp_path: Path,
+):
+    root = tmp_path / "dat001"
+    ref = root / "reference_saxs"
+    _write_required_reference_files(ref)
+    fallback_mask = ref / "Mask.edf"
+    fallback_mask.write_bytes(b"fallback")
+    cali = ref / "Cali.yaml"
+    _write_pydidas_cali(cali, detector_mask_file=".")
+
+    refs = find_reference_paths(root, pydidas_cali_yaml=cali)
+
+    assert refs.mask == fallback_mask
+
+
+def test_find_reference_paths_ignores_yaml_mask_directory_and_falls_back(tmp_path: Path):
+    root = tmp_path / "dat001"
+    ref = root / "reference_saxs"
+    _write_required_reference_files(ref)
+    yaml_mask_dir = ref / "mask_directory"
+    yaml_mask_dir.mkdir()
+    fallback_mask = ref / "Mask.edf"
+    fallback_mask.write_bytes(b"fallback")
+    cali = ref / "Cali.yaml"
+    _write_pydidas_cali(cali, detector_mask_file=str(yaml_mask_dir))
+
+    refs = find_reference_paths(root, pydidas_cali_yaml=cali)
+
+    assert refs.mask == fallback_mask
+
+
+def test_find_reference_paths_rejects_explicit_mask_directory(tmp_path: Path):
+    root = tmp_path / "dat001"
+    ref = root / "reference_saxs"
+    _write_required_reference_files(ref)
+    explicit_mask_dir = ref / "explicit_mask"
+    explicit_mask_dir.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="mask.*file"):
+        find_reference_paths(root, mask_path=explicit_mask_dir)
+
+
+def test_find_reference_paths_does_not_return_fallback_mask_directory(tmp_path: Path):
+    root = tmp_path / "dat001"
+    ref = root / "reference_saxs"
+    _write_required_reference_files(ref)
+    (ref / "MASK_file.edf").mkdir()
+
+    refs = find_reference_paths(root)
+
+    assert refs.mask is None
 
 
 def test_frame_qc_row_from_metadata_restores_existing_resume_summary(tmp_path: Path):
@@ -278,6 +491,23 @@ def test_build_rerun_command_records_cli_paths_and_parameters(tmp_path: Path):
     assert "--dark-hot-pixel-threshold 10" in command
 
 
+def test_build_rerun_command_records_pydidas_yaml_and_mask(tmp_path: Path):
+    cali = tmp_path / "Cali.yaml"
+    mask = tmp_path / "Mask.edf"
+    config = BL19B2Abs2DConfig(
+        input_root=tmp_path / "dat001",
+        pydidas_cali_yaml=cali,
+        mask_path=mask,
+        output_root=tmp_path / "dat001_absolute_corrected_2D_v2",
+    )
+
+    command = build_rerun_command(config, poni_path=tmp_path / "safe" / "BL19B2_SAXS_Califile.poni")
+
+    assert f"--pydidas-cali-yaml '{cali}'" in command
+    assert f"--mask '{mask}'" in command
+    assert "--poni " not in command
+
+
 def test_format_code_state_text_records_dirty_diff():
     text = format_code_state_text(
         {
@@ -391,10 +621,16 @@ def test_future_beamtime_template_is_parseable_and_contains_cli_fields():
 
     assert data["schema"] == "saxsabs.bl19b2_abs2d.config.v1"
     assert data["input_root"]
-    assert data["poni_path"]
+    active_geometry_sources = [
+        key for key in ("pydidas_cali_yaml", "poni_path") if data.get(key) not in (None, "")
+    ]
+    assert active_geometry_sources == ["pydidas_cali_yaml"]
     assert data["output_root"]
     assert data["references"]["dark"] == "reference_saxs/dark001.tif"
-    assert data["references"]["mask"] == "reference_saxs/MASK_file.edf"
+    assert data["references"]["mask"] in (
+        "reference_saxs/MASK_file.edf",
+        "reference_saxs/Mask.edf",
+    )
     assert data["calibration"]["mu_cm_inv"] == 20.2
     assert data["calibration"]["dark_hot_pixel_threshold"] == 10.0
     assert "bl19b2-abs2d" in data["full_run_command"]

@@ -40,6 +40,16 @@ def _relative_diff(a: Any, b: Any) -> float | None:
     return abs(fa - fb) / den
 
 
+def _positive_finite_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except Exception:
+        return None
+    if not np.isfinite(out) or out <= 0:
+        return None
+    return out
+
+
 def build_reference_library(
     paths: list[str | Path] | None,
     *,
@@ -131,24 +141,24 @@ def reference_score(
     st, rt = sample_meta.get("trans"), ref_meta.get("trans")
     stime, rtime = sample_meta.get("mtime"), ref_meta.get("mtime")
 
-    if se is not None and re is not None and se > 0 and re > 0:
-        d = _relative_diff(se, re)
+    se_v, re_v = _positive_finite_float(se), _positive_finite_float(re)
+    if se_v is not None and re_v is not None:
+        d = _relative_diff(se_v, re_v)
         if d is not None:
             score += d * 1.0
             used += 1.0
 
-    if sm is not None and rm is not None and sm > 0 and rm > 0:
-        d = _relative_diff(sm, rm)
+    sm_v, rm_v = _positive_finite_float(sm), _positive_finite_float(rm)
+    if sm_v is not None and rm_v is not None:
+        d = _relative_diff(sm_v, rm_v)
         if d is not None:
             score += d * 0.8
             used += 0.8
 
-    if kind == "bg" and st is not None and rt is not None and st > 0 and rt > 0:
-        try:
-            score += abs(float(st) - float(rt)) * 1.5
-            used += 1.5
-        except Exception:
-            pass
+    st_v, rt_v = _positive_finite_float(st), _positive_finite_float(rt)
+    if kind == "bg" and st_v is not None and rt_v is not None:
+        score += abs(st_v - rt_v) * 1.5
+        used += 1.5
 
     if stime is not None and rtime is not None:
         try:

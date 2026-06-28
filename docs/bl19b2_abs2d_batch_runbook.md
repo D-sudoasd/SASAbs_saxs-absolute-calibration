@@ -15,7 +15,8 @@ BL19B2 DATA/
       dark001.tif
       BG001.tif
       GC001.tif
-      MASK_file.edf
+      MASK_file.edf or Mask.edf
+      Cali.yaml
     <sample folders>/*.tif
 ```
 
@@ -28,7 +29,11 @@ Defaults:
 - `GC001.tif` is the formal glassy carbon standard.
 - `BG001.tif` is the empty/background frame. If `ABS > 1`, background
   transmission is clamped to `T_bg = 1.0` and a warning is recorded.
-- `MASK_file.edf` follows the silx/pyFAI convention: nonzero pixels are masked.
+- `MASK_file.edf`, `Mask.edf`, or an explicit `--mask` path follows the silx/pyFAI convention:
+  nonzero pixels are masked. Mask paths must be files, not directories.
+- `Cali.yaml` from pydidas can be used as the geometry source; SAXSAbs converts it to a
+  run-local PONI file under `config/geometry/`.
+- Use exactly one geometry source: `--pydidas-cali-yaml` or `--poni`.
 
 Ignored inputs:
 
@@ -70,6 +75,12 @@ The final mask is the union of:
 - user/beamline mask: `reference_saxs/MASK_file.edf`
 - pyFAI detector mask from the copied PONI detector model
 - dark hot pixels where `abs(dark001) > dark_hot_pixel_threshold`
+
+For pydidas calibration YAML, `detector_mask_file: .`, blank, `none`, or `null`
+means no YAML mask. If the YAML mask is absent, missing, or points to a
+directory, the workflow falls back to a real file named `MASK_file.edf`,
+`Mask.edf`, or `mask.edf` in `reference_saxs/` when present. An explicit
+`--mask` path must point to a file.
 
 The exported mask files are:
 
@@ -122,9 +133,9 @@ Template command:
 
 ```powershell
 $env:PYTHONPATH='src'
-py -3.11 -m saxsabs.cli bl19b2-abs2d `
+python -m saxsabs.cli bl19b2-abs2d `
   --input-root '<BL19B2 DATA>\datXXX' `
-  --poni '<path>\BL19B2_SAXS_Califile.poni' `
+  --pydidas-cali-yaml '<BL19B2 DATA>\datXXX\reference_saxs\Cali.yaml' `
   --output-root '<BL19B2 DATA>\datXXX_absolute_corrected_2D'
 ```
 

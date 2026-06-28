@@ -15,3 +15,11 @@ def test_core_reexports_recent_batch_helpers():
     assert callable(build_reference_library)
     assert callable(reference_score)
     assert callable(select_best_reference)
+
+
+def test_io_reexports_header_meta_helpers():
+    import saxsabs.io as io
+    from saxsabs.io.parsers import extract_acquisition_timestamp, parse_header_values_with_meta
+
+    assert io.parse_header_values_with_meta is parse_header_values_with_meta
+    assert io.extract_acquisition_timestamp is extract_acquisition_timestamp

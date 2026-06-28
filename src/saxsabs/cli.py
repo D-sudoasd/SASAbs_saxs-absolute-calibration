@@ -50,7 +50,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Process BL19B2 dat001 TIFFs into absolute corrected 2D HDF5/EDF outputs",
     )
     p_bl.add_argument("--input-root", required=True, type=Path)
-    p_bl.add_argument("--poni", required=True, type=Path)
+    geometry = p_bl.add_mutually_exclusive_group(required=True)
+    geometry.add_argument("--poni", type=Path)
+    geometry.add_argument("--pydidas-cali-yaml", type=Path)
+    p_bl.add_argument("--mask", type=Path, default=None)
     p_bl.add_argument("--output-root", type=Path, default=None)
     p_bl.add_argument("--mu", type=float, default=20.2, help="mu in cm^-1 for thickness")
     p_bl.add_argument("--alpha", type=float, default=1.0, help="background scaling factor")
@@ -129,6 +132,8 @@ def main() -> None:
             BL19B2Abs2DConfig(
                 input_root=args.input_root,
                 poni_path=args.poni,
+                pydidas_cali_yaml=args.pydidas_cali_yaml,
+                mask_path=args.mask,
                 output_root=args.output_root,
                 mu_cm_inv=args.mu,
                 alpha=args.alpha,

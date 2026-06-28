@@ -29,6 +29,12 @@ class TestParseCompositionString:
         assert np.isclose(total, 1.0, atol=0.02)
         assert np.isclose(comp["Fe"], 0.69, atol=0.01)
 
+    def test_mixed_percent_format_auto_normalised(self):
+        comp = parse_composition_string("Fe:99, C:1")
+        assert np.isclose(sum(comp.values()), 1.0)
+        assert np.isclose(comp["Fe"], 0.99)
+        assert np.isclose(comp["C"], 0.01)
+
     def test_scientific_notation_format(self):
         comp = parse_composition_string("Fe:6.9e-1, Cr:1.9e-1, Ni:1.2e-1")
         assert np.isclose(comp["Fe"], 0.69)
@@ -42,6 +48,11 @@ class TestParseCompositionString:
     def test_bad_format_raises(self):
         with pytest.raises(ValueError):
             parse_composition_string("Fe-0.5-Cr-0.5")
+
+    @pytest.mark.parametrize("text", ["Fe:0.5 garbage", "Fe:0.5, XX"])
+    def test_unmatched_garbage_raises(self, text):
+        with pytest.raises(ValueError):
+            parse_composition_string(text)
 
     def test_duplicate_element_raises(self):
         with pytest.raises(ValueError, match="Duplicate element"):
@@ -64,6 +75,11 @@ class TestMuRhoSingle:
     def test_unknown_element_raises(self):
         with pytest.raises(Exception):
             mu_rho_single("Xx", 10.0)
+
+    @pytest.mark.parametrize("bad_energy", [0.0, -1.0, float("nan"), float("inf")])
+    def test_non_positive_or_non_finite_energy_raises(self, bad_energy):
+        with pytest.raises(ValueError, match="(?i)energy"):
+            mu_rho_single("Fe", bad_energy)
 
 
 # ---------------------------------------------------------------------------

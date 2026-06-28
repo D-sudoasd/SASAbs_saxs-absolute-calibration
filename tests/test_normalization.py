@@ -1,5 +1,7 @@
 import math
 
+import pytest
+
 from saxsabs.core.normalization import compute_norm_factor, monitor_norm_formula
 
 
@@ -27,3 +29,8 @@ def test_compute_norm_factor_invalid_inputs_return_nan():
     assert math.isnan(out2)
     assert math.isnan(out3)
     assert math.isnan(out4)
+
+
+def test_compute_norm_factor_unknown_mode_raises_before_missing_inputs():
+    with pytest.raises(ValueError, match="Unknown I0 normalization mode"):
+        compute_norm_factor(exp=None, mon=None, trans=None, mode="unsupported")

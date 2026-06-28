@@ -2,7 +2,17 @@ from pathlib import Path
 
 import numpy as np
 
-from saxsabs.io.parsers import parse_header_values, read_external_1d_profile
+from saxsabs.io.parsers import (
+    extract_float,
+    normalize_transmission,
+    parse_header_values,
+    read_external_1d_profile,
+)
+
+
+def test_extract_float_accepts_thousands_and_decimal_commas():
+    assert np.isclose(extract_float("1,200,000"), 1200000.0)
+    assert np.isclose(extract_float("0,85"), 0.85)
 
 
 def test_parse_header_values_ms_and_percent():
@@ -29,6 +39,15 @@ def test_parse_header_values_us_and_plain_percent_number():
     assert np.isclose(exp, 0.0005)
     assert np.isclose(mon, 10000.0)
     assert np.isclose(trans, 0.72)
+
+
+def test_normalize_transmission_treats_plain_two_as_percent_value():
+    assert np.isclose(normalize_transmission(2.0, raw="2", key="Transmission"), 0.02)
+    assert np.isclose(normalize_transmission(0.85, raw="0.85", key="Transmission"), 0.85)
+
+
+def test_normalize_transmission_rejects_unhinted_near_one_ratio():
+    assert normalize_transmission(1.2, raw="1.2", key="Transmission") is None
 
 
 def test_parse_header_values_invalid_transmission_returns_none():
@@ -75,6 +94,23 @@ def test_read_external_1d_profile_space_delimited(tmp_path: Path):
     assert out["x"].size == 3
     assert np.isfinite(out["err_rel"]).all()
     assert out["err_col"].lower() == "sigma"
+
+
+def test_read_external_1d_profile_uses_real_comment_header_after_description(tmp_path: Path):
+    f = tmp_path / "profile_with_description.dat"
+    f.write_text(
+        "# Integrated SAXS profile\n"
+        "# q I sigma\n"
+        "0.10 10 1\n"
+        "0.20 20 2\n"
+        "0.30 30 3\n",
+        encoding="utf-8",
+    )
+
+    out = read_external_1d_profile(f)
+    assert out["x_col"] == "q"
+    assert out["i_col"] == "I"
+    assert out["err_col"] == "sigma"
 
 
 def test_read_external_1d_profile_prefers_q_over_index_column(tmp_path: Path):

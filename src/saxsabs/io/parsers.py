@@ -29,6 +29,7 @@ import pandas as pd
 
 
 FLOAT_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+COMMA_THOUSANDS_PATTERN = re.compile(r"(?<!\d)[-+]?\d{1,3}(?:,\d{3})+(?:[eE][-+]?\d+)?(?!\d)")
 
 
 def _clean_column_name(name: Any) -> str:
@@ -76,14 +77,38 @@ def _pick_named_column(
     return best, best_score > 0
 
 
+def _comment_header_score(tokens: list[str]) -> int:
+    score = 0
+    for token in tokens:
+        name = _clean_column_name(token)
+        score += _match_column_score(
+            name,
+            exact={"q", "chi", "radial", "2theta", "twotheta", "s", "x"},
+            prefixes=("q", "chi", "radial", "twotheta"),
+            suffixes=("q",),
+        )
+        score += _match_column_score(
+            name,
+            exact={"i", "intensity", "irel", "iabs", "signal", "count", "counts", "y"},
+            prefixes=("intensity", "signal", "count", "irel", "iabs"),
+            suffixes=("intensity",),
+        )
+        score += _match_column_score(
+            name,
+            exact={"err", "error", "errors", "sigma", "std", "stdev", "unc", "uncertainty", "idev"},
+            prefixes=("err", "error", "sigma", "std", "unc", "idev"),
+            suffixes=("error", "sigma", "uncertainty"),
+        )
+    return score
+
+
 def _read_comment_header_dataframe(path: str | Path) -> pd.DataFrame | None:
     try:
         lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
     except Exception:
         return None
 
-    header_tokens: list[str] | None = None
-    data_lines: list[str] = []
+    header_candidates: list[tuple[int, list[str], int]] = []
     for idx, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
@@ -94,13 +119,19 @@ def _read_comment_header_dataframe(path: str | Path) -> pd.DataFrame | None:
                 continue
             tokens = [token for token in re.split(r"[,\s;]+", candidate) if token]
             if len(tokens) >= 2 and any(FLOAT_PATTERN.fullmatch(token) is None for token in tokens):
-                header_tokens = tokens
-                data_lines = lines[idx + 1 :]
-                break
+                header_candidates.append((idx, tokens, _comment_header_score(tokens)))
             continue
         break
 
-    if header_tokens is None or not data_lines:
+    if not header_candidates:
+        return None
+
+    header_idx, header_tokens, _ = max(
+        header_candidates,
+        key=lambda candidate: (candidate[2], candidate[0]),
+    )
+    data_lines = lines[header_idx + 1 :]
+    if not data_lines:
         return None
 
     text = "\n".join(data_lines).strip()
@@ -140,7 +171,11 @@ def extract_float(raw: Any) -> float | None:
         return None
 
     if "," in s and "." not in s:
-        s = s.replace(",", ".")
+        grouped = COMMA_THOUSANDS_PATTERN.search(s)
+        if grouped:
+            s = grouped.group(0).replace(",", "")
+        else:
+            s = s.replace(",", ".")
     else:
         s = s.replace(",", "")
 
@@ -175,7 +210,7 @@ def normalize_transmission(trans: float | None, raw: Any = None, key: Any = None
 
     if has_pct_hint:
         t /= 100.0
-    elif 2.0 < t <= 100.0:
+    elif 2.0 <= t <= 100.0:
         t /= 100.0
 
     if not np.isfinite(t) or t <= 0 or t > 1.0:

@@ -1,5 +1,4 @@
 import json
-import importlib.util
 from pathlib import Path
 
 import numpy as np
@@ -10,11 +9,6 @@ from saxsabs.io.calibrated2d import (
     build_absolute_detector_image,
     make_sample_id,
     write_calibrated2d_package,
-)
-
-pytestmark = pytest.mark.skipif(
-    importlib.util.find_spec("fabio") is None,
-    reason="fabio is required for EDF calibrated 2D export tests",
 )
 
 
@@ -41,8 +35,29 @@ def test_calibrated2d_helpers_are_available_from_top_level_package():
     assert saxsabs.write_calibrated2d_package is write_calibrated2d_package
 
 
+def test_write_calibrated2d_package_rejects_unsafe_hashed_sample_id(tmp_path: Path):
+    poni = tmp_path / "geometry.poni"
+    poni.write_text("poni_version: 2\nDetector: Detector\n", encoding="utf-8")
+    raw = tmp_path / "raw.tif"
+    raw.write_text("placeholder", encoding="utf-8")
+    root = tmp_path / "processed_calibrated_2d"
+
+    config = Calibrated2DExportConfig(
+        root_dir=root,
+        sample_id="../unsafe_12345678",
+        raw_sample_path=raw,
+        poni_path=poni,
+        image=np.ones((2, 2), dtype=float),
+    )
+
+    with pytest.raises(ValueError, match="sample_id"):
+        write_calibrated2d_package(config)
+
+    assert not root.exists()
+
+
 def test_write_calibrated2d_package_writes_edf_mask_poni_and_metadata(tmp_path: Path):
-    import fabio
+    fabio = pytest.importorskip("fabio", reason="fabio is required for EDF calibrated 2D export")
 
     src_a = tmp_path / "run_a" / "sample001.tif"
     src_b = tmp_path / "run_b" / "sample001.tif"
