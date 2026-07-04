@@ -94,6 +94,10 @@ class BL19B2Abs2DConfig:
     poni_path: Path | None = None
     pydidas_cali_yaml: Path | None = None
     mask_path: Path | None = None
+    dark_path: Path | None = None
+    background_path: Path | None = None
+    standard_path: Path | None = None
+    direct_path: Path | None = None
     output_root: Path | None = None
     mu_cm_inv: float = 20.2
     alpha: float = 1.0
@@ -503,18 +507,51 @@ def _resolve_mask_path(
     return None
 
 
+def _resolve_reference_file(
+    input_root: Path,
+    default_path: Path,
+    explicit_path: str | Path | None,
+    label: str,
+    *,
+    required: bool,
+) -> Path | None:
+    if explicit_path is None:
+        path = default_path
+    else:
+        path = Path(explicit_path)
+        if not path.is_absolute():
+            path = input_root / path
+
+    if path.is_file():
+        return path
+    if required or explicit_path is not None:
+        raise FileNotFoundError(f"Missing BL19B2 {label} reference file: {path}")
+    return path
+
+
 def find_reference_paths(
     input_root: str | Path,
     *,
     mask_path: str | Path | None = None,
     pydidas_cali_yaml: str | Path | None = None,
+    dark_path: str | Path | None = None,
+    background_path: str | Path | None = None,
+    standard_path: str | Path | None = None,
+    direct_path: str | Path | None = None,
 ) -> ReferencePaths:
-    ref = Path(input_root) / "reference_saxs"
+    root = Path(input_root)
+    ref = root / "reference_saxs"
     paths = ReferencePaths(
-        dark=ref / "dark001.tif",
-        background=ref / "BG001.tif",
-        standard=ref / "GC001.tif",
-        direct=ref / "drt001.tif",
+        dark=_resolve_reference_file(root, ref / "dark001.tif", dark_path, "dark", required=True),
+        background=_resolve_reference_file(
+            root,
+            ref / "BG001.tif",
+            background_path,
+            "background",
+            required=True,
+        ),
+        standard=_resolve_reference_file(root, ref / "GC001.tif", standard_path, "standard", required=True),
+        direct=_resolve_reference_file(root, ref / "drt001.tif", direct_path, "direct-beam", required=False),
         mask=_resolve_mask_path(ref, mask_path=mask_path, pydidas_cali_yaml=pydidas_cali_yaml),
     )
     missing = [
@@ -655,7 +692,25 @@ def build_processing_signature(
     mask_info: MaskInfo,
     standard_thickness_source: str,
     safe_poni_path: Path,
+    reference_paths: ReferencePaths,
 ) -> tuple[str, dict[str, Any]]:
+    reference_payload = {
+        "dark": {"path": str(reference_paths.dark), "sha256": _file_sha256(reference_paths.dark)},
+        "background": {
+            "path": str(reference_paths.background),
+            "sha256": _file_sha256(reference_paths.background),
+        },
+        "standard": {
+            "path": str(reference_paths.standard),
+            "sha256": _file_sha256(reference_paths.standard),
+        },
+        "direct": {
+            "path": str(reference_paths.direct or ""),
+            "sha256": _file_sha256(reference_paths.direct)
+            if reference_paths.direct is not None and reference_paths.direct.is_file()
+            else "",
+        },
+    }
     payload = {
         "schema": SCHEMA_VERSION,
         "formula_version": FORMULA_VERSION,
@@ -673,6 +728,7 @@ def build_processing_signature(
         "polarization_factor": config.polarization_factor,
         "mask_checksum_sha256": mask_info.checksum_sha256,
         "dark_hot_pixel_threshold": float(config.dark_hot_pixel_threshold),
+        "reference_files": reference_payload,
     }
     text = json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest(), payload
@@ -844,6 +900,14 @@ def build_rerun_command(config: BL19B2Abs2DConfig, *, poni_path: Path | None = N
     else:
         source_poni = Path(poni_path) if poni_path is not None else Path(config.poni_path)
         lines.append(f"  --poni {_ps_single_quote(source_poni)} `")
+    if config.dark_path is not None:
+        lines.append(f"  --dark {_ps_single_quote(Path(config.dark_path))} `")
+    if config.background_path is not None:
+        lines.append(f"  --background {_ps_single_quote(Path(config.background_path))} `")
+    if config.standard_path is not None:
+        lines.append(f"  --standard {_ps_single_quote(Path(config.standard_path))} `")
+    if config.direct_path is not None:
+        lines.append(f"  --direct-beam {_ps_single_quote(Path(config.direct_path))} `")
     lines.extend(
         [
             f"  --output-root {_ps_single_quote(config.resolved_output_root())} `",
@@ -1029,6 +1093,10 @@ def _write_processing_config(
         f"source_poni_path: {_optional_path_text(config.poni_path)}",
         f"pydidas_cali_yaml: {_optional_path_text(config.pydidas_cali_yaml)}",
         f"configured_mask_path: {_optional_path_text(config.mask_path)}",
+        f"configured_dark_path: {_optional_path_text(config.dark_path)}",
+        f"configured_background_path: {_optional_path_text(config.background_path)}",
+        f"configured_standard_path: {_optional_path_text(config.standard_path)}",
+        f"configured_direct_path: {_optional_path_text(config.direct_path)}",
         f"safe_poni_path: {safe_poni}",
         f"mu_cm_inv: {config.mu_cm_inv}",
         f"alpha: {config.alpha}",
@@ -1080,6 +1148,10 @@ def scan_inputs(config: BL19B2Abs2DConfig) -> tuple[list[dict[str, Any]], list[P
         root,
         mask_path=config.mask_path,
         pydidas_cali_yaml=config.pydidas_cali_yaml,
+        dark_path=config.dark_path,
+        background_path=config.background_path,
+        standard_path=config.standard_path,
+        direct_path=config.direct_path,
     )
     reference_set = {refs.dark.resolve(), refs.background.resolve(), refs.standard.resolve()}
     if refs.direct is not None and refs.direct.exists():
@@ -1397,12 +1469,23 @@ def _frame_qc_row_from_metadata(
     rel: Path,
     paths: OutputPaths,
     expected_signature: str | None = None,
-) -> dict[str, Any] | None:
-    metadata = json.loads(paths.metadata.read_text(encoding="utf-8"))
+) -> dict[str, Any]:
+    try:
+        metadata = json.loads(paths.metadata.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"existing BL19B2 output metadata is unreadable for {rel}: {paths.metadata}"
+        ) from exc
     if metadata.get("schema") != SCHEMA_VERSION:
-        return None
+        raise ValueError(
+            "existing BL19B2 output metadata schema mismatch for "
+            f"{rel}: expected {SCHEMA_VERSION}, got {metadata.get('schema')!r}"
+        )
     if expected_signature is not None and metadata.get("processing_signature") != expected_signature:
-        return None
+        raise ValueError(
+            "existing BL19B2 output processing_signature mismatch for "
+            f"{rel}: expected {expected_signature}, got {metadata.get('processing_signature')!r}"
+        )
     outputs = metadata.get("outputs", {})
     qc = metadata.get("qc", {})
     normalization = metadata.get("normalization", {})
@@ -1626,6 +1709,10 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
         input_root,
         mask_path=config.mask_path,
         pydidas_cali_yaml=config.pydidas_cali_yaml,
+        dark_path=config.dark_path,
+        background_path=config.background_path,
+        standard_path=config.standard_path,
+        direct_path=config.direct_path,
     )
     inventory_rows, sample_paths = scan_inputs(config)
     _write_csv(out_root / "manifests" / "input_inventory.csv", inventory_rows)
@@ -1685,6 +1772,7 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
         mask_info=mask_info,
         standard_thickness_source=calibration.standard_thickness_source,
         safe_poni_path=safe_poni,
+        reference_paths=reference_paths,
     )
     _write_processing_config(
         config,
@@ -1737,38 +1825,42 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
             and paths.metadata.exists()
             and not config.overwrite
         ):
-            try:
-                row = _frame_qc_row_from_metadata(
+            row = _frame_qc_row_from_metadata(
+                source=source,
+                rel=rel,
+                paths=paths,
+                expected_signature=processing_signature,
+            )
+            update_metadata_provenance(
+                paths.metadata,
+                provenance_paths=provenance_paths,
+                software_versions=software_versions,
+                code_state=code_state,
+            )
+            skipped += 1
+            frame_qc_rows.append(row)
+            manifest_row = {"raw_sample": str(source), **row}
+            manifest_row["status"] = "skipped_existing"
+            manifest_rows.append(manifest_row)
+            pydidas_rows.append(
+                _pydidas_index_row(
                     source=source,
-                    rel=rel,
                     paths=paths,
-                    expected_signature=processing_signature,
+                    safe_poni_path=safe_poni,
+                    mask_info=mask_info,
                 )
-            except Exception:
-                row = None
-            if row is not None:
-                update_metadata_provenance(
-                    paths.metadata,
-                    provenance_paths=provenance_paths,
-                    software_versions=software_versions,
-                    code_state=code_state,
+            )
+            if row.get("warnings"):
+                warning_rows.append(row)
+            continue
+        if not config.overwrite:
+            existing_targets = [path for path in (paths.h5, paths.edf, paths.metadata) if path.exists()]
+            if existing_targets:
+                existing_text = "; ".join(str(path) for path in existing_targets)
+                raise ValueError(
+                    "incomplete existing BL19B2 output set with overwrite=False for "
+                    f"{rel}: {existing_text}"
                 )
-                skipped += 1
-                frame_qc_rows.append(row)
-                manifest_row = {"raw_sample": str(source), **row}
-                manifest_row["status"] = "skipped_existing"
-                manifest_rows.append(manifest_row)
-                pydidas_rows.append(
-                    _pydidas_index_row(
-                        source=source,
-                        paths=paths,
-                        safe_poni_path=safe_poni,
-                        mask_info=mask_info,
-                    )
-                )
-                if row.get("warnings"):
-                    warning_rows.append(row)
-                continue
 
         try:
             header = read_tiff_header(source)

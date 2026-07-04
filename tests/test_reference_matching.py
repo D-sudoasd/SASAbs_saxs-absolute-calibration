@@ -5,9 +5,9 @@ from types import SimpleNamespace
 import numpy as np
 
 from saxsabs.core.reference_matching import (
+    build_reference_library,
     reference_score,
     select_best_reference,
-    build_reference_library,
 )
 
 
@@ -55,3 +55,85 @@ def test_build_reference_library_default_parser_accepts_header_keyword():
     assert refs[0]["path"] == "synthetic_ref.tif"
     assert refs[0]["shape"] == (2, 2)
     assert refs[0]["exp"] is None
+
+
+def test_select_best_reference_rejects_candidate_without_matched_header_fields():
+    sample = {"exp": 1.0, "mon": 1000, "trans": 0.8, "shape": (2, 2)}
+    refs = [
+        {
+            "path": "no_header.tif",
+            "shape": (2, 2),
+            "exp": None,
+            "mon": None,
+            "trans": None,
+            "mtime": None,
+        }
+    ]
+
+    best, score, rejected = select_best_reference(
+        sample,
+        refs,
+        kind="bg",
+        return_rejections=True,
+    )
+
+    assert best is None
+    assert score is None
+    assert rejected[0]["path"] == "no_header.tif"
+    assert "insufficient_matched_fields" in rejected[0]["reasons"]
+    assert "no_usable_score" in rejected[0]["reasons"]
+
+
+def test_select_best_reference_requires_same_shape_by_default():
+    sample = {"exp": 1.0, "mon": 1000, "trans": 0.8, "shape": (2, 2)}
+    refs = [
+        {"path": "wrong_shape.tif", "shape": (4, 4), "exp": 1.0, "mon": 1000, "trans": 0.8}
+    ]
+
+    best, score, rejected = select_best_reference(
+        sample,
+        refs,
+        kind="bg",
+        return_rejections=True,
+    )
+
+    assert best is None
+    assert score is None
+    assert rejected[0]["path"] == "wrong_shape.tif"
+    assert "shape_mismatch" in rejected[0]["reasons"]
+
+
+def test_build_reference_library_reports_unreadable_candidates_when_requested():
+    def fake_open_image(path):
+        raise OSError(f"damaged image: {path}")
+
+    refs, rejected = build_reference_library(
+        ["damaged_ref.tif"],
+        open_image_fn=fake_open_image,
+        return_rejections=True,
+    )
+
+    assert refs == []
+    assert rejected[0]["path"] == "damaged_ref.tif"
+    assert rejected[0]["reason"] == "unreadable_reference"
+
+
+def test_select_best_reference_rejects_candidates_above_score_threshold():
+    sample = {"exp": 1.0, "mon": 1000, "trans": 0.9, "shape": (2, 2)}
+    refs = [
+        {"path": "too_far.tif", "shape": (2, 2), "exp": 100.0, "mon": 1, "trans": 0.1}
+    ]
+
+    best, score, rejected = select_best_reference(
+        sample,
+        refs,
+        kind="bg",
+        max_score_threshold=0.2,
+        return_rejections=True,
+    )
+
+    assert best is None
+    assert score is None
+    assert rejected[0]["path"] == "too_far.tif"
+    assert rejected[0]["score"] > 0.2
+    assert "score_above_threshold" in rejected[0]["reasons"]

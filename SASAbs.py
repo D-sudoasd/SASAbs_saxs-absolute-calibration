@@ -231,7 +231,7 @@ I18N = {
         "tip_t2_chi_preview": "Open 2D preview of I-chi q-ring band range.",
         "tip_t2_solid_angle": "Must match Tab1 calibration. Mismatch will block batch.",
         "tip_t2_error_model": "azimuthal: azimuthal scatter; poisson: counting stats; none: no errors.",
-        "tip_t2_polarization": "Polarisation factor, usually −1 to 1. 0 = unpolarised.",
+        "tip_t2_polarization": "Enable only when the beam polarization factor is known. Disabled passes None; enabled values must be -1 to 1.",
         "tip_t2_mask": "Mask image: non-zero pixels are excluded.",
         "tip_t2_flat": "Flat-field correction image (optional).",
         "tip_t2_ref_fixed": "All samples use Tab1 BG/Dark.",
@@ -618,7 +618,7 @@ I18N = {
         "tip_t2_chi_preview": "弹出2D窗口预览 I-chi 使用的 q 环带范围。",
         "tip_t2_solid_angle": "必须与 Tab1 标定时保持一致。若不一致程序会阻断批处理。",
         "tip_t2_error_model": "azimuthal: 方位离散；poisson: 计数统计；none: 不计算误差。",
-        "tip_t2_polarization": "偏振因子，通常在 -1 到 1。0 表示不偏振。",
+        "tip_t2_polarization": "仅在已知束线偏振因子时启用。未启用时传入 None；启用后数值必须在 -1 到 1。",
         "tip_t2_mask": "掩膜图：非零像素视为无效区域。",
         "tip_t2_flat": "平场校正图（可选）。",
         "tip_t2_ref_fixed": "全批次统一使用 Tab1 指定的 BG/Dark。",
@@ -1059,9 +1059,14 @@ except Exception:
     subtract_buffer = None
 
 try:
-    from saxsabs.core.execution_policy import parse_run_policy, should_skip_all_existing
+    from saxsabs.core.execution_policy import (
+        parse_run_policy,
+        resolve_output_path_for_write,
+        should_skip_all_existing,
+    )
 except Exception:
     parse_run_policy = None
+    resolve_output_path_for_write = None
 
     def should_skip_all_existing(existing_flags, policy):
         if not existing_flags:
@@ -2533,10 +2538,24 @@ class SAXSAbsWorkbenchApp:
                     ))
         return targets
 
-    def save_profile_table(self, out_path, x, i_abs, i_err, x_label, output_format="tsv"):
+    def save_profile_table(
+        self,
+        out_path,
+        x,
+        i_abs,
+        i_err,
+        x_label,
+        output_format="tsv",
+        run_policy=None,
+    ):
         # Origin-friendly text table: first row is column names, tab-separated.
         out_path = Path(out_path)
         final_path = self.resolve_profile_output_path(out_path, output_format)
+        if run_policy is not None:
+            if resolve_output_path_for_write is not None:
+                final_path = resolve_output_path_for_write(final_path, run_policy)
+            elif final_path.exists() and getattr(run_policy, "overwrite_existing", False) is False:
+                raise FileExistsError(f"existing output is not safe to overwrite: {final_path}")
         x_arr = np.asarray(x, dtype=np.float64)
         i_arr = np.asarray(i_abs, dtype=np.float64)
         e_arr = np.asarray(i_err, dtype=np.float64)
@@ -2599,19 +2618,21 @@ class SAXSAbsWorkbenchApp:
             )
         return None
 
-    def build_reference_library(self, paths):
+    def build_reference_library(self, paths, *, return_rejections=False):
         if _core_build_reference_library is not None:
             try:
                 # Pass our (still working) parse_header as the header reader
                 return _core_build_reference_library(
                     paths,
                     parse_header_fn=self.parse_header,
+                    return_rejections=return_rejections,
                 )
             except Exception:
                 pass
 
         # legacy fallback
         refs = []
+        rejected = []
         for p in list(dict.fromkeys(paths or [])):
             try:
                 img = fabio.open(p)
@@ -2626,8 +2647,9 @@ class SAXSAbsWorkbenchApp:
                     "mtime": Path(p).stat().st_mtime if Path(p).exists() else None,
                 })
             except Exception:
+                rejected.append({"path": str(p), "reason": "unreadable_reference"})
                 continue
-        return refs
+        return (refs, rejected) if return_rejections else refs
 
     def reference_score(self, sample_meta, ref_meta, kind="bg"):
         if _core_reference_score is not None:
@@ -2663,22 +2685,96 @@ class SAXSAbsWorkbenchApp:
             return 1e9
         return score / used
 
-    def select_best_reference(self, sample_meta, refs, kind="bg"):
+    def select_best_reference(self, sample_meta, refs, kind="bg", **kwargs):
         if _core_select_best_reference is not None:
             try:
-                return _core_select_best_reference(sample_meta, refs, kind=kind)
+                return _core_select_best_reference(sample_meta, refs, kind=kind, **kwargs)
             except Exception:
                 pass
 
+        return_rejections = bool(kwargs.get("return_rejections", False))
+        max_score_threshold = kwargs.get("max_score_threshold", 0.5)
+        require_same_shape = bool(kwargs.get("require_same_shape", True))
+        min_matched_fields = int(kwargs.get("min_matched_fields", 2))
         if not refs:
-            return None, None
-        same_shape = [r for r in refs if r.get("shape") == sample_meta.get("shape")]
-        pool = same_shape if same_shape else refs
+            return (None, None, []) if return_rejections else (None, None)
         scored = []
-        for r in pool:
-            scored.append((self.reference_score(sample_meta, r, kind=kind), r))
+        rejected = []
+        fields = ["exp", "mon"] + (["trans"] if kind == "bg" else [])
+        for r in refs:
+            score = self.reference_score(sample_meta, r, kind=kind)
+            reasons = []
+            if (
+                require_same_shape
+                and sample_meta.get("shape") is not None
+                and r.get("shape") != sample_meta.get("shape")
+            ):
+                reasons.append("shape_mismatch")
+            matched = []
+            for field in fields:
+                try:
+                    sv = float(sample_meta.get(field))
+                    rv = float(r.get(field))
+                    if np.isfinite(sv) and np.isfinite(rv) and sv > 0 and rv > 0:
+                        matched.append(field)
+                except Exception:
+                    pass
+            if len(matched) < min_matched_fields:
+                reasons.append("insufficient_matched_fields")
+            if (not np.isfinite(score)) or score >= 1e9:
+                reasons.append("no_usable_score")
+            elif max_score_threshold is not None and score > float(max_score_threshold):
+                reasons.append("score_above_threshold")
+            if reasons:
+                rejected.append({
+                    "path": str(r.get("path", "")),
+                    "score": score,
+                    "matched_fields": matched,
+                    "matched_field_count": len(matched),
+                    "reasons": reasons,
+                })
+                continue
+            scored.append((score, r))
+        if not scored:
+            return (None, None, rejected) if return_rejections else (None, None)
         scored.sort(key=lambda x: x[0])
+        if return_rejections:
+            return scored[0][1], scored[0][0], rejected
         return scored[0][1], scored[0][0]
+
+    def summarize_reference_rejections(self, rejected, limit=3):
+        if not rejected:
+            return ""
+        parts = []
+        for item in list(rejected)[:limit]:
+            path = str(item.get("path", ""))
+            name = Path(path).name if path else "<unknown>"
+            reasons = item.get("reasons") or [item.get("reason", "rejected")]
+            reason_text = ",".join(str(r) for r in reasons)
+            score = item.get("score")
+            score_text = ""
+            try:
+                if score is not None and np.isfinite(float(score)):
+                    score_text = f" score={float(score):.3g}"
+            except Exception:
+                pass
+            matched = item.get("matched_field_count")
+            matched_text = f" matched={matched}" if matched is not None else ""
+            parts.append(f"{name}: {reason_text}{score_text}{matched_text}")
+        if len(rejected) > limit:
+            parts.append(f"... {len(rejected) - limit} more")
+        return " | ".join(parts)
+
+    def resolve_t2_polarization(self):
+        enabled_var = getattr(self, "t2_polarization_enabled", None)
+        enabled = bool(enabled_var.get()) if enabled_var is not None else False
+        if not enabled:
+            return False, None
+
+        pol = float(self.t2_polarization.get())
+        if not np.isfinite(pol) or pol < -1.0 or pol > 1.0:
+            raise ValueError("Polarization factor must be in [-1, 1].")
+        return True, pol
 
     # =========================================================================
     # TAB 1: K-Factor Calibration
@@ -2902,6 +2998,7 @@ class SAXSAbsWorkbenchApp:
         self.t2_ref_mode = tk.StringVar(value="fixed")
         self.t2_error_model = tk.StringVar(value="azimuthal")
         self.t2_apply_solid_angle = self.global_vars["apply_solid_angle"]
+        self.t2_polarization_enabled = tk.BooleanVar(value=False)
         self.t2_polarization = tk.DoubleVar(value=0.0)
         self.t2_output_root = tk.StringVar(value="")
         self.t2_mask_path = tk.StringVar()
@@ -3132,15 +3229,24 @@ class SAXSAbsWorkbenchApp:
         cb_err = ttk.Combobox(c4_row1, textvariable=self.t2_error_model, width=10, state="readonly")
         cb_err["values"] = ("azimuthal", "poisson", "none")
         cb_err.pack(side="left")
-        ttk.Label(c4_row1, text="Polarization(-1~1):").pack(side="left", padx=(8, 2))
+        cb_pol = ttk.Checkbutton(c4_row1, text="Polarization", variable=self.t2_polarization_enabled)
+        cb_pol.pack(side="left", padx=(8, 2))
+        ttk.Label(c4_row1, text="factor:").pack(side="left", padx=(2, 2))
         e_pol = ttk.Entry(c4_row1, textvariable=self.t2_polarization, width=6)
         e_pol.pack(side="left")
+
+        def _sync_pol_entry_state():
+            e_pol.configure(state="normal" if self.t2_polarization_enabled.get() else "disabled")
+
+        cb_pol.configure(command=_sync_pol_entry_state)
+        _sync_pol_entry_state()
 
         row_mask = self.add_file_row(c4, self.tr("lbl_t2_mask"), self.t2_mask_path, "*.tif *.tiff *.edf *.npy")
         row_flat = self.add_file_row(c4, self.tr("lbl_t2_flat"), self.t2_flat_path, "*.tif *.tiff *.edf *.npy")
 
         self.add_tooltip(cb_solid, "tip_t2_solid_angle")
         self.add_tooltip(cb_err, "tip_t2_error_model")
+        self.add_tooltip(cb_pol, "tip_t2_polarization")
         self.add_tooltip(e_pol, "tip_t2_polarization")
         self.add_tooltip(row_mask["entry"], "tip_t2_mask")
         self.add_tooltip(row_flat["entry"], "tip_t2_flat")
@@ -4727,6 +4833,7 @@ class SAXSAbsWorkbenchApp:
                             err_abs,
                             x_label,
                             output_format=output_format,
+                            run_policy=run_policy,
                         )
                         status = "成功"
                         outputs = written_path.name
@@ -4998,8 +5105,8 @@ A7：
 [六] 输出文件说明
 ----------------------------------------
 1) Tab1 输出
-   - calibration_check.csv：标定后的参考曲线（含误差列）
-   - k_factor_history.csv：K 历史与关键参数
+   - saxsabs_calibration_outputs/calibration_check_<run_id>.csv：标定后的参考曲线（含误差列）
+   - saxsabs_calibration_outputs/k_factor_history.csv：K 历史与关键参数
 
 2) Tab2 输出
    （根目录默认在样品目录，也可在 Tab2 底部自定义）
@@ -5067,7 +5174,7 @@ SAXSAbs Workbench User Guide
 - Monitor mode matches beamline data semantics.
 
 [4] Outputs
-- Tab1: calibration_check.csv, k_factor_history.csv
+- Tab1: saxsabs_calibration_outputs/calibration_check_<run_id>.csv and k_factor_history.csv
 - Tab2: processed_robust_* and batch_report/metadata/run_meta
 - Tab3: processed_external_1d_abs and external1d_report/meta
 
@@ -5121,7 +5228,7 @@ SAXSAbs Workbench User Guide
 - Monitor mode matches beamline data semantics.
 
 [4] Outputs
-- Tab1: calibration_check.csv, k_factor_history.csv
+- Tab1: saxsabs_calibration_outputs/calibration_check_<run_id>.csv and k_factor_history.csv
 - Tab2: processed_robust_* and batch_report/metadata/run_meta
 - Tab3: processed_external_1d_abs and external1d_report/meta
 
@@ -5347,8 +5454,11 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             self.ax1.set_title(f"K={k_val:.2f}")
             self.canvas1.draw()
             
-            # Save Check File with Error
-            save_path = Path(files["std"]).parent / "calibration_check.csv"
+            # Save check file with error bars using a run id to avoid overwriting
+            # previous calibration evidence.
+            run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            calibration_output_dir = self.get_calibration_output_dir(files["std"])
+            save_path = calibration_output_dir / f"calibration_check_{run_id}.csv"
             # We save the full profile with error bars
             df = pd.DataFrame({
                 "Q": q,
@@ -5368,6 +5478,9 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 points_used=len(ratios_used),
                 q_min=q_min,
                 q_max=q_max,
+                output_dir=calibration_output_dir,
+                run_id=run_id,
+                calibration_check_path=save_path,
             )
             self.report("K history updated.")
             
@@ -5375,8 +5488,55 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             self.show_error("msg_calib_error_title", str(e))
             self.report(f"[ERROR] {str(e)}")
 
-    def append_k_history(self, files, params, monitor_mode, apply_solid_angle, k_val, k_std, points_used, q_min, q_max):
-        hist_path = Path(__file__).resolve().parent / "k_factor_history.csv"
+    def get_calibration_output_dir(self, standard_path=None):
+        standard_text = str(standard_path or "").strip()
+        if standard_text:
+            base = Path(standard_text).expanduser().parent
+        else:
+            base = Path.cwd()
+        out_dir = base / "saxsabs_calibration_outputs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir
+
+    def get_k_history_path(self, standard_path=None):
+        current = getattr(self, "_last_k_history_path", None)
+        if current:
+            return Path(current)
+        standard_text = str(standard_path or "").strip()
+        if not standard_text and hasattr(self, "t1_files"):
+            try:
+                standard_text = self.t1_files["std"].get()
+            except Exception:
+                standard_text = ""
+        if standard_text:
+            return self.get_calibration_output_dir(standard_text) / "k_factor_history.csv"
+        legacy = Path(__file__).resolve().parent / "k_factor_history.csv"
+        if legacy.exists():
+            return legacy
+        return self.get_calibration_output_dir() / "k_factor_history.csv"
+
+    def append_k_history(
+        self,
+        files,
+        params,
+        monitor_mode,
+        apply_solid_angle,
+        k_val,
+        k_std,
+        points_used,
+        q_min,
+        q_max,
+        output_dir=None,
+        run_id=None,
+        calibration_check_path=None,
+    ):
+        if output_dir is None:
+            output_dir = self.get_calibration_output_dir(files.get("std", ""))
+        else:
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+        hist_path = output_dir / "k_factor_history.csv"
+        self._last_k_history_path = hist_path
         std_norm = self.compute_norm_factor(
             params.get("std_exp", np.nan),
             params.get("std_i0", np.nan),
@@ -5391,6 +5551,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         )
         row = {
             "Timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+            "Run_ID": run_id or datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
             "Norm_Mode": monitor_mode,
             "Norm_Formula": self.monitor_norm_formula(monitor_mode),
             "SolidAngle_On": bool(apply_solid_angle),
@@ -5407,6 +5568,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             "Std_Thk_mm": float(params.get("std_thk", np.nan)),
             "Std_Norm": float(std_norm) if np.isfinite(std_norm) else np.nan,
             "BG_Norm": float(bg_norm) if np.isfinite(bg_norm) else np.nan,
+            "Calibration_Check": str(calibration_check_path or ""),
         }
         df_row = pd.DataFrame([row])
         if hist_path.exists():
@@ -5420,7 +5582,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         out.to_csv(hist_path, index=False, encoding="utf-8-sig")
 
     def open_k_history(self):
-        hist_path = Path(__file__).resolve().parent / "k_factor_history.csv"
+        hist_path = self.get_k_history_path()
         if not hist_path.exists():
             self.show_info("msg_k_history_title", self.tr("msg_k_history_empty"))
             return
@@ -5623,6 +5785,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         dark_path_used = ""
         bg_score = np.nan
         dark_score = np.nan
+        bg_reject_reason = ""
+        dark_reject_reason = ""
         outputs = []
         mode_errors = []
         cal2d_status = "未启用"
@@ -5673,6 +5837,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         "Reason": reason,
                         "K_Factor": context.get("k_factor", ""),
                         "SolidAngle": "ON" if context.get("apply_solid_angle") else "OFF",
+                        "Polarization_Applied": bool(context.get("polarization_applied")),
+                        "Polarization_Factor": context.get("polarization"),
                         "Norm_Mode": context["monitor_mode"],
                         "Exposure_s": exp,
                         "Monitor": mon,
@@ -5685,6 +5851,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         "Dark_Used": dark_path_used,
                         "BG_Score": bg_score,
                         "Dark_Score": dark_score,
+                        "BG_Reject_Reason": bg_reject_reason,
+                        "Dark_Reject_Reason": dark_reject_reason,
                         "ModesSelected": ",".join(context["selected_modes"]),
                         "Outputs": " | ".join(outputs),
                         "OutputDir": "",
@@ -5742,8 +5910,20 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 bg_path_used = context["fixed_bg_path"]
                 dark_path_used = context["fixed_dark_path"]
             else:
-                bg_ref, bg_score = self.select_best_reference(sample_meta, context["bg_library"], kind="bg")
-                dark_ref, dark_score = self.select_best_reference(sample_meta, context["dark_library"], kind="dark")
+                bg_ref, bg_score, bg_rejected = self.select_best_reference(
+                    sample_meta,
+                    context["bg_library"],
+                    kind="bg",
+                    return_rejections=True,
+                )
+                dark_ref, dark_score, dark_rejected = self.select_best_reference(
+                    sample_meta,
+                    context["dark_library"],
+                    kind="dark",
+                    return_rejections=True,
+                )
+                bg_reject_reason = self.summarize_reference_rejections(bg_rejected)
+                dark_reject_reason = self.summarize_reference_rejections(dark_rejected)
                 if bg_ref is None or dark_ref is None:
                     raise ValueError("自动匹配失败：BG/Dark 库为空或不兼容")
 
@@ -5798,7 +5978,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 integ_kwargs_common["mask"] = mask_arr
             if flat_arr is not None:
                 integ_kwargs_common["flat"] = flat_arr
-            if context["polarization"] is not None:
+            if context.get("polarization_applied") and context["polarization"] is not None:
                 integ_kwargs_common["polarization_factor"] = context["polarization"]
 
             mode_success = 0
@@ -5855,6 +6035,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                             },
                             "integration_policy": {
                                 "correctSolidAngle": bool(context.get("apply_solid_angle")),
+                                "polarization_applied": bool(context.get("polarization_applied")),
                                 "polarization_factor": context.get("polarization"),
                                 "flat_applied_in_image": bool(context.get("cal2d_apply_flat")) and flat_arr is not None,
                                 "mask_convention": "pyFAI: 0=valid, 1=masked",
@@ -5885,8 +6066,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                                 image=cal2d_img,
                                 mask=mask_arr,
                                 dtype=context.get("cal2d_dtype", "float32"),
-                                overwrite=bool(context.get("overwrite", False))
-                                or not bool(context.get("resume", False)),
+                                overwrite=run_policy.overwrite_existing,
                                 metadata=cal2d_meta,
                             )
                         )
@@ -5942,6 +6122,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                             i_err,
                             "Q_A^-1",
                             output_format=output_format,
+                            run_policy=run_policy,
                         )
                         outputs.append(f"{mode}:{written_path.name}")
                         mode_stats[mode]["ok"] += 1
@@ -6024,6 +6205,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                                         i_err,
                                         "Q_A^-1",
                                         output_format=output_format,
+                                        run_policy=run_policy,
                                     )
                                     written_disp = (
                                         f"{written_path.parent.name}/{written_path.name}"
@@ -6070,6 +6252,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                                         i_err,
                                         "Q_A^-1",
                                         output_format=output_format,
+                                        run_policy=run_policy,
                                     )
                                     outputs.append(f"1d_sector_sum:{written_path.name}")
                                     mode_stats[mode]["ok"] += 1
@@ -6117,6 +6300,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                             i_err,
                             "Chi_deg",
                             output_format=output_format,
+                            run_policy=run_policy,
                         )
                         outputs.append(f"{mode}:{written_path.name}")
                         mode_stats[mode]["ok"] += 1
@@ -6164,6 +6348,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             "Reason": reason,
             "K_Factor": context.get("k_factor", ""),
             "SolidAngle": "ON" if context.get("apply_solid_angle") else "OFF",
+            "Polarization_Applied": bool(context.get("polarization_applied")),
+            "Polarization_Factor": context.get("polarization"),
             "Norm_Mode": context["monitor_mode"],
             "Exposure_s": exp,
             "Monitor": mon,
@@ -6176,6 +6362,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             "Dark_Used": dark_path_used,
             "BG_Score": bg_score,
             "Dark_Score": dark_score,
+            "BG_Reject_Reason": bg_reject_reason,
+            "Dark_Reject_Reason": dark_reject_reason,
             "ModesSelected": ",".join(context["selected_modes"]),
             "Outputs": " | ".join(outputs),
             "OutputDir": str(context.get("save_dirs", {}).get("1d_full", "")) if "1d_full" in context.get("selected_modes", []) else "",
@@ -6325,8 +6513,13 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             if flat_arr is not None:
                 flat_arr = np.asarray(flat_arr, dtype=np.float64)
 
-            pol = self.t2_polarization.get()
-            if not np.isfinite(pol) or pol < -1.0 or pol > 1.0:
+            polarization_applied, pol = self.resolve_t2_polarization()
+            pol_for_validation = 0.0 if pol is None else pol
+            if (
+                not np.isfinite(pol_for_validation)
+                or pol_for_validation < -1.0
+                or pol_for_validation > 1.0
+            ):
                 raise ValueError("Polarization 因子必须在 [-1, 1]。")
             error_model = self.t2_error_model.get().strip().lower()
             if error_model not in ("azimuthal", "poisson", "none"):
@@ -6422,7 +6615,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 "flat_arr": flat_arr,
                 "error_model": error_model,
                 "apply_solid_angle": bool(self.t2_apply_solid_angle.get()),
-                "polarization": float(pol),
+                "polarization_applied": polarization_applied,
+                "polarization": pol,
                 "sector_specs": sector_specs,
                 "sector_save_each": sector_save_each,
                 "sector_save_combined": sector_save_combined,
@@ -6559,6 +6753,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     "global_settings": {
                         "k_factor": k,
                         "solid_angle": "ON" if apply_solid_angle else "OFF",
+                        "polarization_applied": polarization_applied,
+                        "polarization_factor": pol,
                         "monitor_mode": monitor_mode,
                         "ref_mode": ref_mode,
                         "calc_mode": self.t2_calc_mode.get(),
@@ -6657,6 +6853,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 "error_model": error_model,
                 "correct_solid_angle": bool(self.t2_apply_solid_angle.get()),
                 "k_solid_angle_state": str(self.global_vars["k_solid_angle"].get()),
+                "polarization_applied": polarization_applied,
                 "polarization_factor": pol,
                 "mask_path": self.t2_mask_path.get().strip(),
                 "flat_path": self.t2_flat_path.get().strip(),
@@ -6877,8 +7074,24 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             if inst_issues:
                 warnings.append(self.tr("warn_inst_issues").format(n=len(inst_issues)))
 
-        bg_library = self.build_reference_library(self.t2_bg_candidates) if self.t2_ref_mode.get() == "auto" else []
-        dark_library = self.build_reference_library(self.t2_dark_candidates) if self.t2_ref_mode.get() == "auto" else []
+        bg_build_rejected = []
+        dark_build_rejected = []
+        if self.t2_ref_mode.get() == "auto":
+            bg_library, bg_build_rejected = self.build_reference_library(
+                self.t2_bg_candidates,
+                return_rejections=True,
+            )
+            dark_library, dark_build_rejected = self.build_reference_library(
+                self.t2_dark_candidates,
+                return_rejections=True,
+            )
+            if bg_build_rejected:
+                warnings.append("BG reference candidates skipped: " + self.summarize_reference_rejections(bg_build_rejected))
+            if dark_build_rejected:
+                warnings.append("Dark reference candidates skipped: " + self.summarize_reference_rejections(dark_build_rejected))
+        else:
+            bg_library = []
+            dark_library = []
 
         for fp in files:
             e, m, t = self.parse_header(fp)
@@ -6886,6 +7099,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             d_mm = np.nan
             bg_match = "-"
             dark_match = "-"
+            bg_reject_reason = ""
+            dark_reject_reason = ""
 
             missing = []
             if m is None:
@@ -6931,8 +7146,20 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         "mtime": Path(fp).stat().st_mtime if Path(fp).exists() else None,
                         "shape": tuple(img.data.shape),
                     }
-                    bg_ref, _ = self.select_best_reference(smeta, bg_library, kind="bg")
-                    dk_ref, _ = self.select_best_reference(smeta, dark_library, kind="dark")
+                    bg_ref, _, bg_rejected = self.select_best_reference(
+                        smeta,
+                        bg_library,
+                        kind="bg",
+                        return_rejections=True,
+                    )
+                    dk_ref, _, dark_rejected = self.select_best_reference(
+                        smeta,
+                        dark_library,
+                        kind="dark",
+                        return_rejections=True,
+                    )
+                    bg_reject_reason = self.summarize_reference_rejections(bg_rejected)
+                    dark_reject_reason = self.summarize_reference_rejections(dark_rejected)
                     bg_match = Path(bg_ref["path"]).name if bg_ref else self.tr("status_no_match")
                     dark_match = Path(dk_ref["path"]).name if dk_ref else self.tr("status_no_match")
                     if bg_ref is None or dk_ref is None:
@@ -6953,6 +7180,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 "CalcThk_mm": round(d_mm, 4) if np.isfinite(d_mm) else np.nan,
                 "BG_Match": bg_match,
                 "Dark_Match": dark_match,
+                "BG_Reject_Reason": bg_reject_reason,
+                "Dark_Reject_Reason": dark_reject_reason,
                 "Status": stat,
             })
 

@@ -5,6 +5,7 @@ import sys
 import numpy as np
 import pytest
 
+import saxsabs.workflows.bl19b2_abs2d as bl19b2
 from saxsabs.workflows.bl19b2_abs2d import (
     BL19B2Header,
     BL19B2Abs2DConfig,
@@ -23,6 +24,7 @@ from saxsabs.workflows.bl19b2_abs2d import (
     is_sample_tiff,
     parse_bl19b2_description,
     parse_pydidas_cali_yaml,
+    run_bl19b2_abs2d,
     subtract_dark_for_exposure,
     validate_config,
     write_edf_image,
@@ -257,6 +259,31 @@ def test_find_reference_paths_prefers_explicit_mask(tmp_path: Path):
     assert refs.mask == explicit_mask
 
 
+def test_find_reference_paths_accepts_explicit_reference_files(tmp_path: Path):
+    root = tmp_path / "dat001"
+    ref = root / "reference_saxs"
+    ref.mkdir(parents=True)
+    dark = ref / "dark_run42.tif"
+    background = ref / "empty_cell_run42.tif"
+    standard = ref / "glassy_carbon_run42.tif"
+    direct = ref / "direct_beam_run42.tif"
+    for path in (dark, background, standard, direct):
+        path.write_bytes(b"placeholder")
+
+    refs = find_reference_paths(
+        root,
+        dark_path="reference_saxs/dark_run42.tif",
+        background_path=background,
+        standard_path=standard,
+        direct_path=direct,
+    )
+
+    assert refs.dark == dark
+    assert refs.background == background
+    assert refs.standard == standard
+    assert refs.direct == direct
+
+
 def test_find_reference_paths_treats_yaml_mask_sentinel_as_absent_and_falls_back(
     tmp_path: Path,
 ):
@@ -404,7 +431,7 @@ def test_build_combined_mask_unions_user_detector_and_dark_hot_pixels():
     assert counts["combined_mask_pixels"] == 3
 
 
-def test_frame_qc_row_rejects_v1_or_signature_mismatch(tmp_path: Path):
+def test_frame_qc_row_blocks_v1_or_signature_mismatch(tmp_path: Path):
     root = tmp_path / "dat001"
     out_root = tmp_path / "dat001_absolute_corrected_2D"
     source = root / "3#_sample" / "frame_001.tif"
@@ -415,14 +442,109 @@ def test_frame_qc_row_rejects_v1_or_signature_mismatch(tmp_path: Path):
         encoding="utf-8",
     )
 
-    row = _frame_qc_row_from_metadata(
-        source=source,
-        rel=source.relative_to(root),
-        paths=paths,
-        expected_signature="new",
+    with pytest.raises(ValueError, match="schema mismatch"):
+        _frame_qc_row_from_metadata(
+            source=source,
+            rel=source.relative_to(root),
+            paths=paths,
+            expected_signature="new",
+        )
+
+
+@pytest.mark.parametrize(
+    ("metadata_payload", "error_match"),
+    [
+        (
+            {"schema": SCHEMA_VERSION, "processing_signature": "old-signature"},
+            "processing_signature",
+        ),
+        ("{not valid json", "metadata"),
+    ],
+)
+def test_run_bl19b2_abs2d_blocks_existing_outputs_that_cannot_be_safely_resumed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    metadata_payload: dict[str, str] | str,
+    error_match: str,
+):
+    input_root = tmp_path / "dat001"
+    ref = input_root / "reference_saxs"
+    sample = input_root / "3#_sample" / "frame_001.tif"
+    sample.parent.mkdir(parents=True)
+    _write_required_reference_files(ref)
+    sample.write_bytes(b"sample")
+    poni = tmp_path / "source.poni"
+    poni.write_text("poni_version: 2\nDetector: Detector\n", encoding="utf-8")
+    output_root = tmp_path / "dat001_absolute_corrected_2D"
+    paths = build_output_paths(sample, input_root=input_root, output_root=output_root)
+    for target in (paths.h5, paths.edf, paths.metadata):
+        target.parent.mkdir(parents=True, exist_ok=True)
+    paths.h5.write_bytes(b"existing h5")
+    paths.edf.write_bytes(b"existing edf")
+    if isinstance(metadata_payload, dict):
+        paths.metadata.write_text(json.dumps(metadata_payload), encoding="utf-8")
+    else:
+        paths.metadata.write_text(metadata_payload, encoding="utf-8")
+
+    def fake_header(path: Path) -> BL19B2Header:
+        name = Path(path).name
+        if name == "dark001.tif":
+            return BL19B2Header(exposure_s=10.0, monitor=100.0, transmission=1.0)
+        return BL19B2Header(exposure_s=10.0, monitor=100.0, transmission=0.5)
+
+    mask_info = MaskInfo(
+        mask=np.zeros((2, 2), dtype=np.uint8),
+        npy_path=output_root / "masks" / "bl19b2_mask.npy",
+        edf_path=output_root / "masks" / "bl19b2_mask.edf",
+        checksum_sha256="mask-sha",
+        user_mask_path=None,
+        user_mask_pixels=0,
+        detector_mask_pixels=0,
+        dark_hot_pixels=0,
+        combined_mask_pixels=0,
+        dark_hot_pixel_threshold=10.0,
+    )
+    calibration = StandardCalibration(
+        k_factor=1.0,
+        k_std=0.0,
+        q_min_overlap=0.01,
+        q_max_overlap=0.2,
+        points_used=2,
+        points_total=2,
+        standard_thickness_cm=0.01,
+        norm_standard=1.0,
+        norm_background=1.0,
+        bg_transmission_used=1.0,
+        standard_thickness_source="test",
+    )
+    writer_calls: list[Path] = []
+
+    monkeypatch.setattr(bl19b2, "read_tiff_header", fake_header)
+    monkeypatch.setattr(bl19b2, "read_detector_image", lambda path: np.ones((2, 2), dtype=float))
+    monkeypatch.setattr(bl19b2, "load_and_write_mask", lambda **kwargs: mask_info)
+    monkeypatch.setattr(bl19b2, "calibrate_standard", lambda *args, **kwargs: (calibration, np.zeros((2, 2))))
+    monkeypatch.setattr(
+        bl19b2,
+        "build_processing_signature",
+        lambda *args, **kwargs: ("expected-signature", {"formula_version": "test"}),
+    )
+    monkeypatch.setattr(bl19b2, "write_hdf5_image", lambda path, image, metadata: writer_calls.append(Path(path)))
+    monkeypatch.setattr(bl19b2, "write_edf_image", lambda path, image, metadata: writer_calls.append(Path(path)))
+
+    config = BL19B2Abs2DConfig(
+        input_root=input_root,
+        poni_path=poni,
+        output_root=output_root,
+        overwrite=False,
+        write_preview=False,
     )
 
-    assert row is None
+    with pytest.raises(ValueError, match=error_match):
+        run_bl19b2_abs2d(config)
+
+    assert writer_calls == []
+    assert paths.h5.read_bytes() == b"existing h5"
+    assert paths.edf.read_bytes() == b"existing edf"
 
 
 def test_write_edf_image_uses_nested_metadata_for_header(tmp_path: Path):
@@ -506,6 +628,25 @@ def test_build_rerun_command_records_pydidas_yaml_and_mask(tmp_path: Path):
     assert f"--pydidas-cali-yaml '{cali}'" in command
     assert f"--mask '{mask}'" in command
     assert "--poni " not in command
+
+
+def test_build_rerun_command_records_explicit_reference_paths(tmp_path: Path):
+    config = BL19B2Abs2DConfig(
+        input_root=tmp_path / "dat001",
+        poni_path=tmp_path / "BL19B2_SAXS_Califile.poni",
+        output_root=tmp_path / "dat001_absolute_corrected_2D_v2",
+        dark_path=tmp_path / "refs" / "dark_run42.tif",
+        background_path=tmp_path / "refs" / "empty_run42.tif",
+        standard_path=tmp_path / "refs" / "gc_run42.tif",
+        direct_path=tmp_path / "refs" / "direct_run42.tif",
+    )
+
+    command = build_rerun_command(config, poni_path=tmp_path / "safe" / "BL19B2_SAXS_Califile.poni")
+
+    assert f"--dark '{tmp_path / 'refs' / 'dark_run42.tif'}'" in command
+    assert f"--background '{tmp_path / 'refs' / 'empty_run42.tif'}'" in command
+    assert f"--standard '{tmp_path / 'refs' / 'gc_run42.tif'}'" in command
+    assert f"--direct-beam '{tmp_path / 'refs' / 'direct_run42.tif'}'" in command
 
 
 def test_format_code_state_text_records_dirty_diff():

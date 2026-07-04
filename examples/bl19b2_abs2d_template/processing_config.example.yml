@@ -9,9 +9,9 @@ pydidas_cali_yaml: H:/path/to/BL19B2 DATA/datXXX/reference_saxs/Cali.yaml
 poni_path: null
 output_root: H:/path/to/BL19B2 DATA/datXXX_absolute_corrected_2D
 
-# Reference files are resolved under input_root/reference_saxs by the current CLI.
-# Keep these names when possible; if a beamtime uses different names, rename/copy
-# the selected references into reference_saxs or update the workflow before running.
+# Reference files default to input_root/reference_saxs when omitted. If a
+# beamtime uses different names, pass the matching CLI options shown below
+# instead of renaming raw data files.
 references:
   dark: reference_saxs/dark001.tif
   background: reference_saxs/BG001.tif
@@ -44,12 +44,20 @@ dry_run_command: >-
   --input-root "<input_root>"
   --pydidas-cali-yaml "<pydidas_cali_yaml>"
   --output-root "<output_root>"
+  --dark "<references.dark>"
+  --background "<references.background>"
+  --standard "<references.standard>"
+  --direct-beam "<references.direct_beam_qc>"
 
 full_run_command: >-
   py -3.11 -m saxsabs.cli bl19b2-abs2d
   --input-root "<input_root>"
   --pydidas-cali-yaml "<pydidas_cali_yaml>"
   --output-root "<output_root>"
+  --dark "<references.dark>"
+  --background "<references.background>"
+  --standard "<references.standard>"
+  --direct-beam "<references.direct_beam_qc>"
   --mu 20.2
   --alpha 1.0
   --qmin 0.01

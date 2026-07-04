@@ -1,4 +1,11 @@
-from saxsabs.core.execution_policy import RunPolicy, parse_run_policy, should_skip_all_existing
+import pytest
+
+from saxsabs.core.execution_policy import (
+    RunPolicy,
+    parse_run_policy,
+    resolve_output_path_for_write,
+    should_skip_all_existing,
+)
 
 
 def test_run_policy_mode_resolution():
@@ -29,3 +36,51 @@ def test_parse_run_policy_casts_flags():
     assert policy.resume_enabled is True
     assert policy.overwrite_existing is False
     assert policy.mode == "resume-skip"
+
+
+def test_resolve_output_path_for_write_adds_rerun_suffix_for_always_run(tmp_path):
+    target = tmp_path / "sample.dat"
+    target.write_text("old", encoding="utf-8")
+
+    resolved = resolve_output_path_for_write(
+        target,
+        RunPolicy(resume_enabled=False, overwrite_existing=False),
+    )
+
+    assert resolved == tmp_path / "sample_rerun1.dat"
+    assert target.read_text(encoding="utf-8") == "old"
+
+
+def test_resolve_output_path_for_write_increments_rerun_suffix(tmp_path):
+    (tmp_path / "sample.dat").write_text("old", encoding="utf-8")
+    (tmp_path / "sample_rerun1.dat").write_text("rerun1", encoding="utf-8")
+
+    resolved = resolve_output_path_for_write(
+        tmp_path / "sample.dat",
+        RunPolicy(resume_enabled=False, overwrite_existing=False),
+    )
+
+    assert resolved == tmp_path / "sample_rerun2.dat"
+
+
+def test_resolve_output_path_for_write_resume_policy_blocks_direct_write(tmp_path):
+    target = tmp_path / "sample.dat"
+    target.write_text("old", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="resume-skip"):
+        resolve_output_path_for_write(
+            target,
+            RunPolicy(resume_enabled=True, overwrite_existing=False),
+        )
+
+
+def test_resolve_output_path_for_write_overwrite_policy_keeps_existing_path(tmp_path):
+    target = tmp_path / "sample.dat"
+    target.write_text("old", encoding="utf-8")
+
+    resolved = resolve_output_path_for_write(
+        target,
+        RunPolicy(resume_enabled=False, overwrite_existing=True),
+    )
+
+    assert resolved == target
