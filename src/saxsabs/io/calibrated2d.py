@@ -32,6 +32,8 @@ class Calibrated2DExportConfig:
     dtype: str = "float32"
     overwrite: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    raw_sample_path_mode: str = "basename_hash"
+    min_finite_fraction: float = 0.99
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,21 @@ def _pyfai_mask(mask: np.ndarray | None, shape: tuple[int, ...]) -> np.ndarray:
     return np.where(mask_arr != 0, 1, 0).astype(np.uint8)
 
 
+def _validate_calibrated_image(image: np.ndarray, min_finite_fraction: float = 0.99) -> None:
+    if image.ndim != 2 or image.size == 0 or any(dim == 0 for dim in image.shape):
+        raise ValueError("calibrated image must be a non-empty 2-D array")
+    min_fraction = float(min_finite_fraction)
+    if not np.isfinite(min_fraction) or min_fraction <= 0 or min_fraction > 1:
+        raise ValueError("min_finite_fraction must be finite and satisfy 0 < value <= 1")
+    finite_count = int(np.isfinite(image).sum())
+    finite_fraction = finite_count / image.size
+    if finite_count == 0 or finite_fraction < min_fraction:
+        raise ValueError(
+            "calibrated image has too many non-finite values; "
+            f"finite_fraction={finite_fraction:.6g}, min_finite_fraction={min_fraction:.6g}"
+        )
+
+
 def _write_edf(path: Path, data: np.ndarray, header: dict[str, str] | None = None) -> None:
     try:
         from fabio.edfimage import EdfImage
@@ -138,6 +155,23 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _stable_path_key(path: Path) -> str:
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path)
+
+
+def _raw_sample_reference(path: Path, mode: str) -> str:
+    mode_normalized = str(mode).strip().lower().replace("-", "_")
+    if mode_normalized in {"basename_hash", "basename_hash_private", "private"}:
+        digest = hashlib.sha1(_stable_path_key(path).encode("utf-8", errors="replace")).hexdigest()
+        return f"{path.name or 'raw_sample'}#{digest[:8]}"
+    if mode_normalized in {"absolute", "absolute_path"}:
+        return _stable_path_key(path)
+    raise ValueError("raw_sample_path_mode must be 'basename_hash' or 'absolute'")
+
+
 def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2DExportResult:
     """Write one calibrated 2D image package for pyFAI/pydidas reintegration."""
     root = Path(config.root_dir)
@@ -152,6 +186,7 @@ def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2D
     image = np.asarray(config.image)
     if image.ndim != 2:
         raise ValueError("calibrated image must be a 2-D array")
+    _validate_calibrated_image(image, config.min_finite_fraction)
     out_dtype = _coerce_dtype(config.dtype)
     image_out = image.astype(out_dtype, copy=False)
     mask_out = _pyfai_mask(config.mask, image.shape)
@@ -178,6 +213,7 @@ def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2D
             raise FileExistsError(f"calibrated 2D export target exists: {existing[0]}")
 
     raw_sample = Path(config.raw_sample_path)
+    raw_sample_ref = _raw_sample_reference(raw_sample, config.raw_sample_path_mode)
     poni_src = Path(config.poni_path)
     if not poni_src.exists():
         raise FileNotFoundError(f"PONI file not found: {poni_src}")
@@ -205,7 +241,7 @@ def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2D
         "image_type": IMAGE_TYPE,
         "intensity_unit": "cm^-1",
         "files": {
-            "raw_sample": str(raw_sample),
+            "raw_sample": raw_sample_ref,
             "calibrated_image": _relpath(image_path, metadata_dir),
             "poni": _relpath(poni_out_path, metadata_dir),
             "mask_npy": _relpath(mask_npy_path, metadata_dir),
@@ -256,7 +292,7 @@ def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2D
 
     manifest_row = {
         "sample_id": sample_id,
-        "raw_sample": str(raw_sample),
+        "raw_sample": raw_sample_ref,
         "calibrated_image": str(image_path),
         "poni": str(poni_out_path),
         "mask_npy": str(mask_npy_path),

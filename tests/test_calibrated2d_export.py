@@ -56,6 +56,38 @@ def test_write_calibrated2d_package_rejects_unsafe_hashed_sample_id(tmp_path: Pa
     assert not root.exists()
 
 
+@pytest.mark.parametrize(
+    ("image", "error_match"),
+    [
+        (np.empty((0, 2), dtype=float), "non-empty 2-D"),
+        (np.array([[np.nan, np.inf], [np.nan, 1.0]], dtype=float), "non-finite"),
+    ],
+)
+def test_write_calibrated2d_package_rejects_scientifically_unsafe_image_data(
+    tmp_path: Path,
+    image: np.ndarray,
+    error_match: str,
+):
+    poni = tmp_path / "geometry.poni"
+    poni.write_text("poni_version: 2\nDetector: Detector\n", encoding="utf-8")
+    raw = tmp_path / "raw.tif"
+    raw.write_text("placeholder", encoding="utf-8")
+    root = tmp_path / "processed_calibrated_2d"
+
+    config = Calibrated2DExportConfig(
+        root_dir=root,
+        sample_id="sample001",
+        raw_sample_path=raw,
+        poni_path=poni,
+        image=image,
+    )
+
+    with pytest.raises(ValueError, match=error_match):
+        write_calibrated2d_package(config)
+
+    assert not root.exists()
+
+
 def test_write_calibrated2d_package_writes_edf_mask_poni_and_metadata(tmp_path: Path):
     fabio = pytest.importorskip("fabio", reason="fabio is required for EDF calibrated 2D export")
 
@@ -116,9 +148,60 @@ def test_write_calibrated2d_package_writes_edf_mask_poni_and_metadata(tmp_path: 
     assert meta["schema"] == "saxsabs.calibrated2d.v1"
     assert meta["image_type"] == "detector_space_absolute_calibrated_net_image"
     assert meta["intensity_unit"] == "cm^-1"
-    assert meta["files"]["raw_sample"] == str(src_a)
+    assert meta["files"]["raw_sample"].startswith(f"{src_a.name}#")
+    assert str(src_a) not in meta["files"]["raw_sample"]
+    assert result.manifest_row["raw_sample"] == meta["files"]["raw_sample"]
     assert meta["files"]["calibrated_image"].startswith("../images/")
     assert meta["files"]["poni"].startswith("../geometry/")
     assert meta["files"]["mask_npy"].startswith("../masks/")
     assert meta["corrections_applied_in_image"]["absolute_k"] is True
     assert meta["recommended_pyfai_reintegration"]["normalization_factor"] == 1.0
+
+
+def test_write_calibrated2d_package_allows_absolute_raw_sample_path_opt_in(tmp_path: Path):
+    pytest.importorskip("fabio", reason="fabio is required for EDF calibrated 2D export")
+
+    raw = tmp_path / "run_a" / "sample001.tif"
+    raw.parent.mkdir()
+    raw.write_text("placeholder", encoding="utf-8")
+    poni = tmp_path / "geometry.poni"
+    poni.write_text("poni_version: 2\nDetector: Detector\n", encoding="utf-8")
+
+    config = Calibrated2DExportConfig(
+        root_dir=tmp_path / "processed_calibrated_2d",
+        sample_id="sample001",
+        raw_sample_path=raw,
+        poni_path=poni,
+        image=np.ones((2, 2), dtype=float),
+        raw_sample_path_mode="absolute",
+    )
+
+    result = write_calibrated2d_package(config)
+    meta = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+
+    assert meta["files"]["raw_sample"] == str(raw)
+    assert result.manifest_row["raw_sample"] == str(raw)
+
+
+def test_write_calibrated2d_package_allows_configured_finite_fraction_threshold(tmp_path: Path):
+    pytest.importorskip("fabio", reason="fabio is required for EDF calibrated 2D export")
+
+    raw = tmp_path / "run_a" / "sample001.tif"
+    raw.parent.mkdir()
+    raw.write_text("placeholder", encoding="utf-8")
+    poni = tmp_path / "geometry.poni"
+    poni.write_text("poni_version: 2\nDetector: Detector\n", encoding="utf-8")
+
+    config = Calibrated2DExportConfig(
+        root_dir=tmp_path / "processed_calibrated_2d",
+        sample_id="sample001",
+        raw_sample_path=raw,
+        poni_path=poni,
+        image=np.array([[1.0, 2.0], [3.0, np.nan]], dtype=float),
+        min_finite_fraction=0.75,
+    )
+
+    result = write_calibrated2d_package(config)
+    meta = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+
+    assert meta["qc"]["finite_fraction"] == pytest.approx(0.75)

@@ -13,6 +13,11 @@ from typing import Any, Callable
 import numpy as np
 
 
+NO_USABLE_REFERENCE_SCORE = 1e9
+DEFAULT_MAX_SCORE_THRESHOLD = 0.5
+DEFAULT_MIN_MATCHED_FIELDS = 2
+
+
 @dataclass(frozen=True)
 class ReferenceEntry:
     """Normalized entry in a BG or Dark reference library."""
@@ -50,12 +55,36 @@ def _positive_finite_float(value: Any) -> float | None:
     return out
 
 
+def _matched_scientific_fields(
+    sample_meta: dict[str, Any], ref_meta: dict[str, Any], kind: str = "bg"
+) -> list[str]:
+    """Return sample/ref header fields that are positive finite in both records.
+
+    File modification time is intentionally excluded here. It is useful as a
+    tie-breaker in the score, but it is not enough scientific evidence to
+    auto-select a BG/Dark reference when headers are missing.
+    """
+    fields = ["exp", "mon"]
+    if kind == "bg":
+        fields.append("trans")
+
+    matched = []
+    for field in fields:
+        if (
+            _positive_finite_float(sample_meta.get(field)) is not None
+            and _positive_finite_float(ref_meta.get(field)) is not None
+        ):
+            matched.append(field)
+    return matched
+
+
 def build_reference_library(
     paths: list[str | Path] | None,
     *,
     parse_header_fn: Callable[[str | Path, dict | None], tuple[float | None, float | None, float | None]] | None = None,
     open_image_fn: Callable[[str | Path], Any] | None = None,
-) -> list[dict[str, Any]]:
+    return_rejections: bool = False,
+) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Build a list of reference metadata dicts from candidate BG/Dark files.
 
     This function performs I/O (fabio open + header parsing). It is intentionally
@@ -79,7 +108,7 @@ def build_reference_library(
     reference_score / select_best_reference).
     """
     if not paths:
-        return []
+        return ([], []) if return_rejections else []
 
     unique_paths = list(dict.fromkeys(str(p) for p in paths if p))
 
@@ -96,6 +125,7 @@ def build_reference_library(
         open_image_fn = _lazy_fabio_open
 
     refs: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
     for p in unique_paths:
         try:
             img = open_image_fn(p)
@@ -115,9 +145,14 @@ def build_reference_library(
                 }
             )
         except Exception:
-            # Skip unreadable or corrupt reference files silently (same as GUI)
+            rejected.append(
+                {
+                    "path": str(p),
+                    "reason": "unreadable_reference",
+                }
+            )
             continue
-    return refs
+    return (refs, rejected) if return_rejections else refs
 
 
 def reference_score(
@@ -169,27 +204,93 @@ def reference_score(
             pass
 
     if used == 0:
-        return 1e9
+        return NO_USABLE_REFERENCE_SCORE
     return score / used
+
+
+def score_reference_candidate(
+    sample_meta: dict[str, Any],
+    ref_meta: dict[str, Any],
+    kind: str = "bg",
+    *,
+    max_score_threshold: float | None = DEFAULT_MAX_SCORE_THRESHOLD,
+    require_same_shape: bool = True,
+    min_matched_fields: int = DEFAULT_MIN_MATCHED_FIELDS,
+) -> dict[str, Any]:
+    """Score and validate one reference candidate.
+
+    The returned dictionary is deliberately plain so GUI dry-check/report code
+    can preserve rejection reasons without depending on implementation classes.
+    """
+    score = reference_score(sample_meta, ref_meta, kind=kind)
+    matched_fields = _matched_scientific_fields(sample_meta, ref_meta, kind=kind)
+    reasons: list[str] = []
+
+    sample_shape = sample_meta.get("shape")
+    ref_shape = ref_meta.get("shape")
+    if require_same_shape and sample_shape is not None and ref_shape != sample_shape:
+        reasons.append("shape_mismatch")
+
+    if len(matched_fields) < int(min_matched_fields):
+        reasons.append("insufficient_matched_fields")
+
+    if not np.isfinite(score) or score >= NO_USABLE_REFERENCE_SCORE:
+        reasons.append("no_usable_score")
+    elif max_score_threshold is not None and score > float(max_score_threshold):
+        reasons.append("score_above_threshold")
+
+    return {
+        "path": str(ref_meta.get("path", "")),
+        "score": score,
+        "matched_fields": matched_fields,
+        "matched_field_count": len(matched_fields),
+        "required_matched_fields": int(min_matched_fields),
+        "sample_shape": sample_shape,
+        "ref_shape": ref_shape,
+        "reasons": reasons,
+        "accepted": not reasons,
+        "reference": ref_meta,
+    }
 
 
 def select_best_reference(
     sample_meta: dict[str, Any],
     refs: list[dict[str, Any]],
     kind: str = "bg",
-) -> tuple[dict[str, Any] | None, float | None]:
+    *,
+    max_score_threshold: float | None = DEFAULT_MAX_SCORE_THRESHOLD,
+    require_same_shape: bool = True,
+    min_matched_fields: int = DEFAULT_MIN_MATCHED_FIELDS,
+    return_rejections: bool = False,
+) -> tuple[dict[str, Any] | None, float | None] | tuple[
+    dict[str, Any] | None,
+    float | None,
+    list[dict[str, Any]],
+]:
     """Return (best_ref_dict, best_score) or (None, None) if no candidates."""
     if not refs:
-        return None, None
+        return (None, None, []) if return_rejections else (None, None)
 
-    sample_shape = sample_meta.get("shape")
-    if sample_shape is not None:
-        same_shape = [r for r in refs if r.get("shape") == sample_shape]
-        pool = same_shape if same_shape else refs
-    else:
-        pool = refs
+    scored: list[tuple[float, dict[str, Any]]] = []
+    rejected: list[dict[str, Any]] = []
+    for ref_meta in refs:
+        candidate = score_reference_candidate(
+            sample_meta,
+            ref_meta,
+            kind=kind,
+            max_score_threshold=max_score_threshold,
+            require_same_shape=require_same_shape,
+            min_matched_fields=min_matched_fields,
+        )
+        if candidate["accepted"]:
+            scored.append((candidate["score"], ref_meta))
+        else:
+            candidate.pop("reference", None)
+            rejected.append(candidate)
 
-    scored = [(reference_score(sample_meta, r, kind=kind), r) for r in pool]
+    if not scored:
+        return (None, None, rejected) if return_rejections else (None, None)
+
     scored.sort(key=lambda x: x[0])
     best_score, best_ref = scored[0]
-    return best_ref, best_score
+    return (best_ref, best_score, rejected) if return_rejections else (best_ref, best_score)

@@ -7,6 +7,7 @@ apply identical behavior when existing output files are present.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -57,3 +58,28 @@ def should_skip_all_existing(existing_flags: list[bool], policy: RunPolicy) -> b
     if not existing_flags:
         return False
     return all(policy.should_skip_existing(flag) for flag in existing_flags)
+
+
+def resolve_output_path_for_write(path: str | Path, policy: RunPolicy) -> Path:
+    """Return the safe path to use for a write under ``policy``.
+
+    This is the final guard before scientific output is written. Callers may
+    still pre-skip existing files for performance, but this helper prevents a
+    missed skip check from silently overwriting data.
+    """
+    target = Path(path)
+    if not target.exists():
+        return target
+    if policy.overwrite_existing:
+        return target
+    if policy.resume_enabled:
+        raise FileExistsError(f"resume-skip policy blocks writing existing output: {target}")
+
+    stem = target.stem
+    suffix = target.suffix
+    parent = target.parent
+    for index in range(1, 10_000):
+        candidate = parent / f"{stem}_rerun{index}{suffix}"
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"could not allocate rerun output path for: {target}")

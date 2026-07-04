@@ -29,6 +29,9 @@ Defaults:
 - `GC001.tif` is the formal glassy carbon standard.
 - `BG001.tif` is the empty/background frame. If `ABS > 1`, background
   transmission is clamped to `T_bg = 1.0` and a warning is recorded.
+- `dark001.tif`, `BG001.tif`, `GC001.tif`, and `drt001.tif` are defaults only.
+  Use `--dark`, `--background`, `--standard`, and `--direct-beam` when a
+  beamtime uses different reference file names.
 - `MASK_file.edf`, `Mask.edf`, or an explicit `--mask` path follows the silx/pyFAI convention:
   nonzero pixels are masked. Mask paths must be files, not directories.
 - `Cali.yaml` from pydidas can be used as the geometry source; SAXSAbs converts it to a
@@ -123,6 +126,12 @@ Primary outputs per accepted sample:
 - PNG preview: `previews/<sample_folder>/<stem>_preview.png`
 
 Use `manifests/pydidas_pyfai_index.csv` for downstream batch integration.
+
+When rerunning with the default `overwrite = false`, an existing HDF5/EDF/JSON
+sidecar set is skipped only if the JSON sidecar is readable and its
+`processing_signature` matches the current run. A schema mismatch, signature
+mismatch, unreadable metadata file, or incomplete existing output set blocks the
+run instead of overwriting scientific outputs silently.
 
 ## Reuse Command
 
