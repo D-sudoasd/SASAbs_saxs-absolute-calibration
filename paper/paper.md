@@ -125,7 +125,7 @@ software is organized into four layers:
 
 ![Calibration workflow of saxsabs. Input data (2D images, instrument metadata, and a reference standard from the pluggable registry) flow through header parsing, normalization, 2D background subtraction, pyFAI integration, and robust K-factor estimation to produce calibrated 1D profiles with structured audit outputs. Optional post-processing steps include buffer subtraction and multi-format export.](fig_workflow.png){#fig:workflow width="95%"}
 
-This architecture enables unit testing of core functions independently of the GUI (66 automated tests across 3 OS × 4 Python versions), while preserving the GUI for interactive beamline use (\autoref{fig:gui}). The incremental migration from monolithic script to modular library avoids abrupt workflow disruption. For public reproducibility, the repository includes a deterministic minimal anonymized 2D package (`examples/minimal_2d/`) that demonstrates 2D image reduction, robust K-factor estimation, absolute scaling, and canSAS/NXcanSAS export without proprietary beamline files.
+This architecture enables unit testing of core functions independently of the GUI across three operating systems and Python 3.10--3.13, while preserving the GUI for interactive beamline use (\autoref{fig:gui}). For public reproducibility, the repository includes an independent deterministic raw-frame package (`examples/minimal_2d/`) with separately constructed dark, blank, SRM 3600, and sample frames. It validates the software arithmetic and interoperable export path without claiming to replace measured beamline acceptance data.
 
 ![The saxsabs graphical user interface in English mode, showing the four-tab layout: K-Factor Calibration, Batch Processing, External 1D Conversion, and Help.](fig_gui.png){#fig:gui width="95%"}
 
@@ -141,13 +141,17 @@ where $t_{\mathrm{exp}}$ is the exposure time (s), $I_0$ is the beam-monitor cou
 
 $$N = I_0 \times T \label{eq:norm_int}$$
 
-**2D background subtraction.** Given sample image $D_s$, dark image $D_d$, and background images $\{D_{\mathrm{bg},i}\}$:
+**2D background subtraction.** Detector images contain integrated counts, so the dark frame is first scaled by the exposure-time ratio. Given sample image $D_s$, dark image $D_d$ acquired for $t_d$, and a no-sample NIST blank $D_{\mathrm{bg}}$:
 
-$$I_{\mathrm{net}}(x,y) = \frac{D_s - D_d}{N_s} - \left\langle \frac{D_{\mathrm{bg},i} - D_d}{N_{\mathrm{bg},i}} \right\rangle \label{eq:bg_sub}$$
+$$I_{\mathrm{net}}(x,y) = \frac{D_s - (t_s/t_d)D_d}{t_s I_{0,s}T_s} - \alpha\frac{D_{\mathrm{bg}} - (t_{\mathrm{bg}}/t_d)D_d}{t_{\mathrm{bg}}I_{0,\mathrm{bg}}} \label{eq:bg_sub}$$
 
-where $\langle\cdot\rangle$ denotes pixel-wise averaging over all background images.
+for rate-type monitors. For integrated monitors, only the denominator exposure
+factors are omitted; the dark-frame exposure ratios remain mandatory because
+the detector images contain integrated counts. The blank term is not divided by
+a separate blank transmission. Multiple blanks are normalized individually and
+then averaged pixel-wise.
 
-**Robust K-factor estimation.** After azimuthal integration via pyFAI to obtain $I_{\mathrm{meas}}(q)$, the profile is interpolated onto the NIST SRM 3600 reference grid (15 points, $q \in [0.008, 0.250]$ Å$^{-1}$). Point-wise ratios are computed:
+**Robust K-factor estimation.** After azimuthal integration via pyFAI to obtain $I_{\mathrm{meas}}(q)$, the profile is interpolated onto the certified NIST SRM 3600 Table 1 grid ($q \in [0.00827568, 0.247402]$ Å$^{-1}$). The certified coupon thickness 1.055 mm is used. Point-wise ratios are computed:
 
 $$R_i = I_{\mathrm{ref}}(q_i) \,/\, I_{\mathrm{meas}}(q_i) \label{eq:ratio}$$
 
@@ -177,7 +181,12 @@ where $\rho$ is the bulk density, $w_i$ is the weight fraction of element $i$, a
 
 $$I_{\mathrm{solute}}(q) = I_{\mathrm{sample}}(q) - \alpha \, I_{\mathrm{buffer}}(q) \label{eq:buffer}$$
 
-where $\alpha$ is a tuneable scaling factor (default 1.0). When both profiles carry error bars, the propagated uncertainty is $\sigma_{\mathrm{solute}} = \sqrt{\sigma_{\mathrm{sample}}^2 + \alpha^2 \sigma_{\mathrm{buffer}}^2}$.
+where $\alpha$ is a tuneable scaling factor (default 1.0). With independent
+standard uncertainties, propagation gives
+$\sigma_{\mathrm{solute}}^2 = \sigma_{\mathrm{sample}}^2 + \alpha^2
+\sigma_{\mathrm{buffer}}^2 + I_{\mathrm{buffer}}^2\sigma_\alpha^2$.
+Missing input uncertainties remain unknown (NaN); they are not replaced by
+zero. An explicit $\sigma_\alpha=0$ is required to treat $\alpha$ as exact.
 
 ## Batch processing and automation
 
@@ -202,15 +211,15 @@ The software defines its impact along four dimensions:
 - **Traceability**: Every run produces structured, deterministic output suitable for version control and audit.
 - **Interoperability**: Native canSAS XML and NXcanSAS HDF5 export enables seamless data exchange with downstream analysis tools (SasView, ATSAS, etc.) and institutional data repositories.
 
-Core algorithms are verified by 66 automated tests across three operating systems and four Python versions (3.10–3.13) under continuous integration.
+Core numerical behavior, I/O contracts, and deterministic synthetic workflows are checked by automated tests across three operating systems and four Python versions (3.10–3.13). Experimental beamline acceptance remains a separate documented activity.
 
 # AI usage disclosure
 
 The following AI-assisted coding tools were used during the development of this software:
 
 - GitHub Copilot (VS Code) and Anthropic Claude were used for code refactoring, internationalization extraction, test skeleton generation, and initial documentation drafts.
-- AI assistance was limited to scaffolding and boilerplate. All core numerical algorithms were designed and validated by the author independently.
-- Every AI-generated fragment was reviewed, tested, and revised before inclusion. Automated tests provide ongoing verification of scientific correctness.
+- AI assistance was used for scaffolding, refactoring, test development, and documentation drafting. Scientific formulas and reference values were checked against the cited primary sources.
+- Automated tests provide regression evidence for defined numerical contracts; they do not by themselves establish experimental beamline validity.
 
 # Acknowledgements
 

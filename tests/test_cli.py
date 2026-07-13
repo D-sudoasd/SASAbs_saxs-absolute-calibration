@@ -74,6 +74,11 @@ def test_cli_estimate_k(tmp_path: Path, capsys: pytest.CaptureFixture[str], monk
     main()
     out = json.loads(capsys.readouterr().out)
     assert out["k_factor"] == pytest.approx(2.0, rel=1e-6)
+    assert out["k_std_semantics"] == "inlier ratio scatter; not combined K uncertainty"
+    assert out["k_statistical_standard_uncertainty"] == pytest.approx(0.0, abs=1e-12)
+    assert out["k_standard_uncertainty"] is None
+    assert out["k_expanded_uncertainty"] is None
+    assert out["coverage_factor"] is None
 
 
 def test_cli_estimate_k_accepts_common_intensity_column_names(
@@ -251,6 +256,10 @@ def test_cli_bl19b2_abs2d_passes_pydidas_yaml_and_mask_to_workflow(
             str(mask),
             "--output-root",
             str(output_root),
+            "--mu",
+            "20.2",
+            "--monitor-mode",
+            "rate",
             "--dry-run",
             "--no-preview",
         ],
@@ -306,6 +315,10 @@ def test_cli_bl19b2_abs2d_passes_explicit_reference_paths(
             str(standard),
             "--direct-beam",
             str(direct),
+            "--mu",
+            "20.2",
+            "--monitor-mode",
+            "rate",
             "--dry-run",
         ],
     )
@@ -319,6 +332,92 @@ def test_cli_bl19b2_abs2d_passes_explicit_reference_paths(
     assert config.background_path == background
     assert config.standard_path == standard
     assert config.direct_path == direct
+
+
+def test_cli_bl19b2_abs2d_passes_monitor_and_fixed_thickness_modes(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured = {}
+
+    def fake_run(config: bl19b2_abs2d.BL19B2Abs2DConfig) -> dict[str, str]:
+        captured["config"] = config
+        return {"status": "dry-run", "output_root": str(config.resolved_output_root())}
+
+    monkeypatch.setattr(bl19b2_abs2d, "run_bl19b2_abs2d", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "saxsabs",
+            "bl19b2-abs2d",
+            "--input-root",
+            str(tmp_path / "dat001"),
+            "--poni",
+            str(tmp_path / "geometry.poni"),
+            "--monitor-mode",
+            "integrated",
+            "--sample-thickness-cm",
+            "0.0123",
+            "--monitor-relative-standard-uncertainty",
+            "0.01",
+            "--sample-thickness-relative-standard-uncertainty",
+            "0.02",
+            "--alpha-standard-uncertainty",
+            "0.03",
+            "--standard-thickness-relative-standard-uncertainty",
+            "0.04",
+            "--dry-run",
+        ],
+    )
+
+    main()
+
+    assert json.loads(capsys.readouterr().out)["status"] == "dry-run"
+    assert captured["config"].monitor_mode == "integrated"
+    assert captured["config"].sample_thickness_cm == 0.0123
+    assert captured["config"].mu_cm_inv is None
+    assert captured["config"].monitor_relative_standard_uncertainty == 0.01
+    assert captured["config"].sample_thickness_relative_standard_uncertainty == 0.02
+    assert captured["config"].alpha_standard_uncertainty == 0.03
+    assert captured["config"].standard_thickness_relative_standard_uncertainty == 0.04
+
+
+@pytest.mark.parametrize("status", ["partial", "failed"])
+def test_cli_bl19b2_abs2d_returns_nonzero_for_incomplete_scientific_run(
+    status: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        bl19b2_abs2d,
+        "run_bl19b2_abs2d",
+        lambda config: {"status": status, "output_root": str(config.resolved_output_root())},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "saxsabs",
+            "bl19b2-abs2d",
+            "--input-root",
+            str(tmp_path / "dat001"),
+            "--poni",
+            str(tmp_path / "geometry.poni"),
+            "--mu",
+            "20.2",
+            "--monitor-mode",
+            "rate",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 1
+    assert json.loads(capsys.readouterr().out)["status"] == status
 
 
 def test_cli_bl19b2_abs2d_rejects_two_geometry_sources(

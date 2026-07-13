@@ -11,6 +11,24 @@ from .reference_matching import (
     select_best_reference,
 )
 from .session_grouper import AcquisitionGroup, add_group_to_meta, cluster_by_acquisition_time
+from .detector_reduction import (
+    NetDetectorImage,
+    NormalizedDetectorFrame,
+    build_nist_net_image,
+    normalize_detector_frame,
+    validate_blank_transmission,
+)
+from .calibration_context import CalibrationContext, sha256_file
+from .calibration_record import (
+    CalibrationRecordLoadResult,
+    CalibrationUncertaintyPayload,
+    SampleThicknessConfig,
+    build_calibration_uncertainty_payload,
+    read_calibration_record,
+    resolve_sample_thickness_config,
+    write_calibration_record,
+)
+from .uncertainty import AbsoluteUncertaintyBudget, propagate_absolute_uncertainty
 
 __all__ = [
     "compute_norm_factor",
@@ -35,4 +53,20 @@ __all__ = [
     "AcquisitionGroup",
     "add_group_to_meta",
     "cluster_by_acquisition_time",
+    "NetDetectorImage",
+    "NormalizedDetectorFrame",
+    "build_nist_net_image",
+    "normalize_detector_frame",
+    "validate_blank_transmission",
+    "CalibrationContext",
+    "sha256_file",
+    "CalibrationRecordLoadResult",
+    "CalibrationUncertaintyPayload",
+    "SampleThicknessConfig",
+    "build_calibration_uncertainty_payload",
+    "read_calibration_record",
+    "resolve_sample_thickness_config",
+    "write_calibration_record",
+    "AbsoluteUncertaintyBudget",
+    "propagate_absolute_uncertainty",
 ]

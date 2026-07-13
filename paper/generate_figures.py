@@ -13,7 +13,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
-import matplotlib.patheffects as pe
+from saxsabs.constants import NIST_SRM3600_DATA
 
 OUT_DIR = Path(__file__).resolve().parent
 
@@ -116,18 +116,17 @@ def make_workflow_figure():
     fig.savefig(OUT_DIR / "fig_workflow.png", dpi=300, bbox_inches="tight",
                 facecolor="white", pad_inches=0.15)
     plt.close(fig)
-    print(f"  ✓ fig_workflow.png")
+    print("  ✓ fig_workflow.png")
 
 
 # ══════════════════════════════════════════════════════════════════════
 # Figure 2 — K-factor Estimation Demonstration
 # ══════════════════════════════════════════════════════════════════════
 
-# NIST SRM 3600 reference data (15 points)
-Q_REF = np.array([0.008, 0.010, 0.020, 0.030, 0.040, 0.050, 0.060,
-                   0.080, 0.100, 0.120, 0.150, 0.180, 0.200, 0.220, 0.250])
-I_REF = np.array([35.0, 34.2, 30.8, 28.8, 27.5, 26.8, 26.3,
-                   25.4, 23.6, 20.8, 15.8, 10.9, 8.4, 6.5, 4.2])
+# NIST SRM 3600 Certificate Table 1.  Keep the paper figure tied to the
+# package's reviewer-tested source of truth instead of a sparse approximation.
+Q_REF = NIST_SRM3600_DATA[:, 0]
+I_REF = NIST_SRM3600_DATA[:, 1]
 
 
 def make_kfactor_figure():
@@ -148,9 +147,6 @@ def make_kfactor_figure():
     ratios_with_outliers = ratios.copy()
     ratios_with_outliers[1] = K_TRUE * 3.5    # outlier high
     ratios_with_outliers[13] = K_TRUE * 0.3    # outlier low
-
-    # Recompute measured values to show outlier-affected data
-    i_meas_at_ref_vis = I_REF / ratios_with_outliers
 
     # MAD outlier rejection
     r_med = np.median(ratios_with_outliers)
@@ -207,7 +203,7 @@ def make_kfactor_figure():
     fig.savefig(OUT_DIR / "fig_kfactor_demo.png", dpi=300, bbox_inches="tight",
                 facecolor="white", pad_inches=0.1)
     plt.close(fig)
-    print(f"  ✓ fig_kfactor_demo.png")
+    print("  ✓ fig_kfactor_demo.png")
 
 
 # ══════════════════════════════════════════════════════════════════════

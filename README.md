@@ -112,7 +112,10 @@ flowchart TD
 - **canSAS / NXcanSAS export guard** — blocks export when the x-axis is not
   momentum-transfer Q (e.g. chi-angle data), preventing silent unit mismatch
 - **Buffer subtraction fallback** — the no-library fallback path now correctly
-  propagates buffer uncertainty: σ² = σ\_s² + α² σ\_b²
+  propagates buffer and scale-factor uncertainty:
+  σ² = σ\_s² + α² σ\_b² + I\_b² σ\_α². A missing σ\_α remains unknown and
+  therefore keeps the combined uncertainty as NaN; pass `0.0` only when α is
+  known to be exact.
 - **Duplicate x-point error merging** — fixed from arithmetic averaging
   (Σσᵢ / N) to proper quadrature (√Σσᵢ² / N)
 
@@ -262,7 +265,8 @@ saxsabs estimate-k --meas examples/k_measured.csv --ref examples/k_reference.csv
 pytest -q
 ```
 
-66 automated tests across 3 OS × 4 Python versions (3.10–3.13).
+Automated tests run across 3 OS × 4 Python versions (3.10–3.13), including
+optional pyFAI/fabio/HDF5 workflow dependencies.
 
 Manual workflow verification checklist is in `examples/manual-verification.md`.
 

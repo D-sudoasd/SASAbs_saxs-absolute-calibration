@@ -17,22 +17,40 @@ references:
   background: reference_saxs/BG001.tif
   standard: reference_saxs/GC001.tif
   mask: reference_saxs/Mask.edf
-  direct_beam_qc: reference_saxs/drt001.tif
+  direct_beam_provenance: reference_saxs/drt001.tif
 
 calibration:
   standard_key: SRM3600
+  monitor_mode: rate
+  # Choose exactly one sample-thickness strategy. This example uses an explicit
+  # material/energy-specific attenuation coefficient.
   mu_cm_inv: 20.2
+  sample_thickness_cm: null
   alpha: 1.0
   qmin: 0.01
   qmax: 0.2
   npt: 1000
   dtype: float32
   dark_hot_pixel_threshold: 10.0
-  standard_thickness_cm: null
+  standard_thickness_cm: 0.1055
+  correct_solid_angle_for_k: true
+
+# Optional standard-uncertainty inputs. Keep unknown values null; do not write
+# zero unless the uncertainty is genuinely known to be zero.
+uncertainty:
+  transmission_abs_uncertainty: null
+  monitor_relative_standard_uncertainty: null
+  sample_thickness_relative_standard_uncertainty: null
+  standard_thickness_relative_standard_uncertainty: null
+  mu_relative_standard_uncertainty: null
+  alpha_standard_uncertainty: null
 
 assumptions:
   transmission_field: ABS
   normalization_formula: exposure_s * MON * ABS
+  integrated_normalization_formula: MON * ABS
+  background_rate_formula: background / (exposure_s * MON)
+  background_integrated_formula: background / MON
   dark_scaling: exposure_matched
   mask_convention: pyFAI 0=valid 1=masked
   solid_angle_applied_in_image: false
@@ -44,20 +62,23 @@ dry_run_command: >-
   --input-root "<input_root>"
   --pydidas-cali-yaml "<pydidas_cali_yaml>"
   --output-root "<output_root>"
+  --monitor-mode rate
+  --mu 20.2
   --dark "<references.dark>"
   --background "<references.background>"
   --standard "<references.standard>"
-  --direct-beam "<references.direct_beam_qc>"
+  --direct-beam "<references.direct_beam_provenance>"
 
 full_run_command: >-
   py -3.11 -m saxsabs.cli bl19b2-abs2d
   --input-root "<input_root>"
   --pydidas-cali-yaml "<pydidas_cali_yaml>"
   --output-root "<output_root>"
+  --monitor-mode rate
   --dark "<references.dark>"
   --background "<references.background>"
   --standard "<references.standard>"
-  --direct-beam "<references.direct_beam_qc>"
+  --direct-beam "<references.direct_beam_provenance>"
   --mu 20.2
   --alpha 1.0
   --qmin 0.01

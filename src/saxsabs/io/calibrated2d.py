@@ -112,7 +112,13 @@ def _pyfai_mask(mask: np.ndarray | None, shape: tuple[int, ...]) -> np.ndarray:
     return np.where(mask_arr != 0, 1, 0).astype(np.uint8)
 
 
-def _validate_calibrated_image(image: np.ndarray, min_finite_fraction: float = 0.99) -> None:
+def _validate_calibrated_image(
+    image: np.ndarray,
+    min_finite_fraction: float = 0.99,
+    *,
+    mask: np.ndarray | None = None,
+    stage: str = "input",
+) -> None:
     if image.ndim != 2 or image.size == 0 or any(dim == 0 for dim in image.shape):
         raise ValueError("calibrated image must be a non-empty 2-D array")
     min_fraction = float(min_finite_fraction)
@@ -125,6 +131,16 @@ def _validate_calibrated_image(image: np.ndarray, min_finite_fraction: float = 0
             "calibrated image has too many non-finite values; "
             f"finite_fraction={finite_fraction:.6g}, min_finite_fraction={min_fraction:.6g}"
         )
+    if mask is not None:
+        mask_arr = np.asarray(mask) != 0
+        if mask_arr.shape != image.shape:
+            raise ValueError(f"mask shape mismatch: {mask_arr.shape} vs {image.shape}")
+        invalid_unmasked = (~mask_arr) & (~np.isfinite(image))
+        if np.any(invalid_unmasked):
+            raise ValueError(
+                f"calibrated image has non-finite unmasked pixels after {stage}; "
+                f"count={int(np.count_nonzero(invalid_unmasked))}"
+            )
 
 
 def _write_edf(path: Path, data: np.ndarray, header: dict[str, str] | None = None) -> None:
@@ -186,10 +202,22 @@ def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2D
     image = np.asarray(config.image)
     if image.ndim != 2:
         raise ValueError("calibrated image must be a 2-D array")
-    _validate_calibrated_image(image, config.min_finite_fraction)
     out_dtype = _coerce_dtype(config.dtype)
-    image_out = image.astype(out_dtype, copy=False)
     mask_out = _pyfai_mask(config.mask, image.shape)
+    _validate_calibrated_image(
+        image,
+        config.min_finite_fraction,
+        mask=mask_out,
+        stage="input validation",
+    )
+    with np.errstate(over="ignore", invalid="ignore"):
+        image_out = image.astype(out_dtype, copy=False)
+    _validate_calibrated_image(
+        image_out,
+        config.min_finite_fraction,
+        mask=mask_out,
+        stage="dtype conversion",
+    )
 
     dirs = {
         "images": root / "images",
@@ -277,8 +305,10 @@ def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2D
         "qc": {
             "image_shape": list(image.shape),
             "mask_shape": list(mask_out.shape),
-            "finite_fraction": float(np.isfinite(image).sum() / image.size),
-            "negative_fraction": float(np.sum(np.isfinite(image) & (image < 0)) / image.size),
+            "finite_fraction": float(np.isfinite(image_out).sum() / image_out.size),
+            "negative_fraction": float(
+                np.sum(np.isfinite(image_out) & (image_out < 0)) / image_out.size
+            ),
         },
     }
     for key, value in user_meta.items():

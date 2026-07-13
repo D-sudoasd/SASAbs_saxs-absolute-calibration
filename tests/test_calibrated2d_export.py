@@ -88,6 +88,28 @@ def test_write_calibrated2d_package_rejects_scientifically_unsafe_image_data(
     assert not root.exists()
 
 
+def test_write_calibrated2d_package_rejects_float32_overflow_after_cast(tmp_path: Path):
+    poni = tmp_path / "geometry.poni"
+    poni.write_text("poni_version: 2\nDetector: Detector\n", encoding="utf-8")
+    raw = tmp_path / "raw.tif"
+    raw.write_text("placeholder", encoding="utf-8")
+    root = tmp_path / "processed_calibrated_2d"
+
+    config = Calibrated2DExportConfig(
+        root_dir=root,
+        sample_id="sample001",
+        raw_sample_path=raw,
+        poni_path=poni,
+        image=np.full((2, 2), 1e100, dtype=np.float64),
+        dtype="float32",
+    )
+
+    with pytest.raises(ValueError, match="dtype conversion|non-finite"):
+        write_calibrated2d_package(config)
+
+    assert not root.exists()
+
+
 def test_write_calibrated2d_package_writes_edf_mask_poni_and_metadata(tmp_path: Path):
     fabio = pytest.importorskip("fabio", reason="fabio is required for EDF calibrated 2D export")
 
@@ -198,6 +220,7 @@ def test_write_calibrated2d_package_allows_configured_finite_fraction_threshold(
         raw_sample_path=raw,
         poni_path=poni,
         image=np.array([[1.0, 2.0], [3.0, np.nan]], dtype=float),
+        mask=np.array([[0, 0], [0, 1]], dtype=np.uint8),
         min_finite_fraction=0.75,
     )
 
@@ -205,3 +228,121 @@ def test_write_calibrated2d_package_allows_configured_finite_fraction_threshold(
     meta = json.loads(result.metadata_path.read_text(encoding="utf-8"))
 
     assert meta["qc"]["finite_fraction"] == pytest.approx(0.75)
+
+
+def test_real_float32_export_reopens_and_reintegrates_like_direct_absolute_2d(
+    tmp_path: Path,
+):
+    fabio = pytest.importorskip("fabio", reason="fabio is required for EDF round-trip")
+    pyfai = pytest.importorskip("pyFAI", reason="pyFAI is required for reintegration")
+    from pyFAI.integrator.azimuthal import AzimuthalIntegrator
+
+    raw = tmp_path / "raw" / "sample001.tif"
+    raw.parent.mkdir()
+    raw.write_bytes(b"independent synthetic raw identity")
+
+    shape = (64, 64)
+    yy, xx = np.indices(shape, dtype=np.float64)
+    img_net = 1.5 + 0.025 * xx + 0.04 * yy + 0.15 * np.sin(xx / 6.0)
+    mask = np.zeros(shape, dtype=np.uint8)
+    mask[:3, :] = 1
+    mask[30:34, 30:34] = 1
+    k_factor = 2.5
+    thickness_cm = 0.2
+    image_abs = build_absolute_detector_image(
+        img_net,
+        k_factor=k_factor,
+        thickness_cm=thickness_cm,
+        apply_flat=False,
+    )
+
+    ai = AzimuthalIntegrator(
+        dist=0.2,
+        poni1=0.0032,
+        poni2=0.0032,
+        pixel1=1.0e-4,
+        pixel2=1.0e-4,
+        wavelength=1.0e-10,
+    )
+    source_poni = tmp_path / "source_geometry.poni"
+    ai.save(str(source_poni))
+    policy = {
+        "correctSolidAngle": True,
+        "polarization_factor": 0.95,
+        "flat_applied_in_image": False,
+        "mask_convention": "pyFAI: 0=valid, 1=masked",
+    }
+
+    result = write_calibrated2d_package(
+        Calibrated2DExportConfig(
+            root_dir=tmp_path / "processed_calibrated_2d",
+            sample_id="sample001",
+            raw_sample_path=raw,
+            poni_path=source_poni,
+            image=image_abs,
+            mask=mask,
+            dtype="float32",
+            metadata={"integration_policy": policy},
+        )
+    )
+
+    image_handle = fabio.open(str(result.image_path))
+    try:
+        reopened_abs = np.asarray(image_handle.data).copy()
+        reopened_header = dict(image_handle.header)
+    finally:
+        image_handle.close()
+    mask_handle = fabio.open(str(result.mask_edf_path))
+    try:
+        reopened_mask_edf = np.asarray(mask_handle.data).copy()
+    finally:
+        mask_handle.close()
+
+    reopened_mask_npy = np.load(result.mask_npy_path, allow_pickle=False)
+    metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    metadata_dir = result.metadata_path.parent
+    assert reopened_abs.dtype == np.float32
+    assert reopened_header["SAXSAbsSchema"] == "saxsabs.calibrated2d.v1"
+    np.testing.assert_array_equal(reopened_mask_npy, mask)
+    np.testing.assert_array_equal(reopened_mask_edf, mask)
+    assert result.poni_path.read_bytes() == source_poni.read_bytes()
+    assert (metadata_dir / metadata["files"]["calibrated_image"]).resolve() == (
+        result.image_path.resolve()
+    )
+    assert (metadata_dir / metadata["files"]["poni"]).resolve() == result.poni_path.resolve()
+    assert (metadata_dir / metadata["files"]["mask_npy"]).resolve() == (
+        result.mask_npy_path.resolve()
+    )
+    recommended = metadata["recommended_pyfai_reintegration"]
+    assert recommended["correctSolidAngle"] is True
+    assert recommended["polarization_factor"] == pytest.approx(0.95)
+    assert recommended["normalization_factor"] == pytest.approx(1.0)
+
+    integration_kwargs = {
+        "mask": mask,
+        "correctSolidAngle": policy["correctSolidAngle"],
+        "polarization_factor": policy["polarization_factor"],
+    }
+    direct = ai.integrate1d(
+        image_abs,
+        48,
+        unit="q_A^-1",
+        **integration_kwargs,
+    )
+    reopened_ai = pyfai.load(str(result.poni_path))
+    regenerated = reopened_ai.integrate1d(
+        reopened_abs,
+        48,
+        unit="q_A^-1",
+        mask=reopened_mask_npy,
+        correctSolidAngle=recommended["correctSolidAngle"],
+        polarization_factor=recommended["polarization_factor"],
+    )
+
+    np.testing.assert_allclose(regenerated.radial, direct.radial, rtol=1e-10, atol=1e-12)
+    np.testing.assert_allclose(
+        regenerated.intensity,
+        direct.intensity,
+        rtol=3e-6,
+        atol=2e-6,
+    )

@@ -168,17 +168,50 @@ def build_parser() -> argparse.ArgumentParser:
     p_bl.add_argument("--dark", type=Path, default=None, help="Explicit BL19B2 dark reference TIFF")
     p_bl.add_argument("--background", type=Path, default=None, help="Explicit BL19B2 background TIFF")
     p_bl.add_argument("--standard", type=Path, default=None, help="Explicit BL19B2 standard TIFF")
-    p_bl.add_argument("--direct-beam", type=Path, default=None, help="Optional direct-beam QC TIFF")
-    p_bl.add_argument("--output-root", type=Path, default=None)
     p_bl.add_argument(
+        "--direct-beam",
+        type=Path,
+        default=None,
+        help="Optional direct-beam provenance TIFF (no transmission QC is applied)",
+    )
+    p_bl.add_argument("--output-root", type=Path, default=None)
+    thickness_mode = p_bl.add_mutually_exclusive_group(required=True)
+    thickness_mode.add_argument(
         "--mu",
         type=float,
-        default=20.2,
+        default=None,
         help=(
             "mu in cm^-1 for Beer-Lambert thickness d=-ln(ABS)/mu; "
             "must match material and X-ray energy"
         ),
     )
+    thickness_mode.add_argument(
+        "--sample-thickness-cm",
+        type=float,
+        default=None,
+        help="Fixed sample thickness in cm; mutually exclusive with --mu",
+    )
+    p_bl.add_argument(
+        "--monitor-mode",
+        choices=["rate", "integrated"],
+        required=True,
+        help="Whether MON is a rate (normalization exp*MON*T) or integrated counts (MON*T)",
+    )
+    p_bl.add_argument("--transmission-abs-uncertainty", type=float, default=None)
+    p_bl.add_argument("--monitor-relative-standard-uncertainty", type=float, default=None)
+    p_bl.add_argument(
+        "--sample-thickness-relative-standard-uncertainty",
+        type=float,
+        default=None,
+    )
+    p_bl.add_argument(
+        "--standard-thickness-relative-standard-uncertainty",
+        type=float,
+        default=None,
+        help="Relative standard uncertainty of the calibration-standard thickness",
+    )
+    p_bl.add_argument("--mu-relative-standard-uncertainty", type=float, default=None)
+    p_bl.add_argument("--alpha-standard-uncertainty", type=float, default=None)
     p_bl.add_argument("--alpha", type=float, default=1.0, help="background scaling factor")
     p_bl.add_argument("--qmin", type=float, default=0.01)
     p_bl.add_argument("--qmax", type=float, default=0.2)
@@ -261,6 +294,13 @@ def main() -> None:
                 {
                     "k_factor": out.k_factor,
                     "k_std": out.k_std,
+                    "k_std_semantics": "inlier ratio scatter; not combined K uncertainty",
+                    "k_statistical_standard_uncertainty": (
+                        out.k_statistical_standard_uncertainty
+                    ),
+                    "k_standard_uncertainty": out.k_standard_uncertainty,
+                    "k_expanded_uncertainty": out.k_expanded_uncertainty,
+                    "coverage_factor": out.coverage_factor,
                     "q_min_overlap": out.q_min_overlap,
                     "q_max_overlap": out.q_max_overlap,
                     "points_used": out.points_used,
@@ -286,6 +326,20 @@ def main() -> None:
                 direct_path=args.direct_beam,
                 output_root=args.output_root,
                 mu_cm_inv=args.mu,
+                sample_thickness_cm=args.sample_thickness_cm,
+                monitor_mode=args.monitor_mode,
+                transmission_abs_uncertainty=args.transmission_abs_uncertainty,
+                monitor_relative_standard_uncertainty=(
+                    args.monitor_relative_standard_uncertainty
+                ),
+                sample_thickness_relative_standard_uncertainty=(
+                    args.sample_thickness_relative_standard_uncertainty
+                ),
+                standard_thickness_relative_standard_uncertainty=(
+                    args.standard_thickness_relative_standard_uncertainty
+                ),
+                mu_relative_standard_uncertainty=args.mu_relative_standard_uncertainty,
+                alpha_standard_uncertainty=args.alpha_standard_uncertainty,
                 alpha=args.alpha,
                 q_window=(args.qmin, args.qmax),
                 npt=args.npt,
@@ -299,6 +353,8 @@ def main() -> None:
             )
         )
         print(json.dumps(out, ensure_ascii=False))
+        if out.get("status") in {"partial", "failed"}:
+            raise SystemExit(1)
         return
 
 

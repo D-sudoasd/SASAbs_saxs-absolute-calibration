@@ -58,7 +58,7 @@ Main capabilities include:
 
 ### 2.3 Quality assurance and portability
 
-The software is tested in continuous integration on Linux, Windows, and macOS with Python 3.10-3.13. The current test suite includes 52 automated tests covering normalization, calibration, parsing, I/O interoperability, attenuation calculation, and buffer subtraction.
+The software is tested in continuous integration on Linux, Windows, and macOS with Python 3.10-3.13. Automated tests cover normalization, calibration, parsing, I/O interoperability, attenuation calculation, buffer subtraction, detector-frame reduction, provenance checks, and deterministic synthetic validation.
 
 ## 3. Illustrative examples
 
@@ -114,7 +114,7 @@ Delun Gong: Conceptualization, Methodology, Software, Validation, Investigation,
 
 [5] J.B. Hopkins, R.E. Gillilan, S. Skou, BioXTAS RAW: improvements to a free open-source program for small-angle X-ray scattering data reduction and analysis, Journal of Applied Crystallography 50 (2017) 1545-1553. https://doi.org/10.1107/S1600576717011438
 
-[6] National Institute of Standards and Technology, Standard Reference Material 3600: Absolute Intensity Calibration Standard for Small-Angle X-ray Scattering (Certificate of Analysis), 2016. https://doi.org/10.18434/M32059
+[6] National Institute of Standards and Technology, Standard Reference Material 3600: Absolute Intensity Calibration Standard for Small-Angle X-ray Scattering (Certificate of Analysis), 2016. https://tsapps.nist.gov/srmext/certificates/3600.pdf
 
 [7] O. Glatter, O. Kratky, Small Angle X-ray Scattering, Academic Press, 1982.
 

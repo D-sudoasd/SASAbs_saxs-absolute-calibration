@@ -1,8 +1,13 @@
+import hashlib
+
 import numpy as np
 import pytest
 
 from saxsabs.core.calibration import estimate_k_factor_robust
 from saxsabs.constants import (
+    NIST_SRM3600_COVERAGE_FACTOR,
+    NIST_SRM3600_DATA,
+    NIST_SRM3600_UNCERTAINTY,
     STANDARD_REGISTRY,
     get_reference_data,
     water_dsdw,
@@ -20,6 +25,64 @@ def test_estimate_k_factor_robust_basic():
     assert out.points_used >= 3
 
 
+def test_default_nist_calibration_reports_certificate_aware_k_uncertainty():
+    true_k = 2.5
+    q = NIST_SRM3600_DATA[:, 0]
+    i_meas = NIST_SRM3600_DATA[:, 1] / true_k
+
+    out = estimate_k_factor_robust(
+        q_meas=q,
+        i_meas_per_cm=i_meas,
+        q_window=(0.008, 0.25),
+    )
+
+    assert out.k_factor == pytest.approx(true_k)
+    assert out.k_std == pytest.approx(0.0, abs=1e-12)
+    assert out.k_statistical_standard_uncertainty == pytest.approx(0.0, abs=1e-12)
+    assert out.k_standard_uncertainty == pytest.approx(true_k * 0.0258, rel=3e-4)
+    assert out.k_expanded_uncertainty == pytest.approx(true_k * 0.0625, rel=3e-4)
+    assert out.coverage_factor == pytest.approx(NIST_SRM3600_COVERAGE_FACTOR)
+
+
+def test_custom_reference_does_not_treat_unknown_systematic_uncertainty_as_zero():
+    q = np.array([0.01, 0.02, 0.03, 0.04], dtype=float)
+    i_ref = np.array([10.0, 8.0, 6.0, 4.0], dtype=float)
+    out = estimate_k_factor_robust(q, i_ref / 2.0, q_ref=q, i_ref=i_ref)
+
+    assert out.k_statistical_standard_uncertainty == pytest.approx(0.0, abs=1e-12)
+    assert out.k_standard_uncertainty is None
+    assert out.k_expanded_uncertainty is None
+    assert out.coverage_factor is None
+
+
+def test_k_statistical_uncertainty_matches_median_estimator_not_mean_estimator():
+    q = np.array([0.01, 0.02, 0.03, 0.04], dtype=float)
+    i_ref = np.full(4, 12.0)
+    ratio = np.array([1.0, 2.0, 3.0, 4.0])
+
+    out = estimate_k_factor_robust(q, i_ref / ratio, q_ref=q, i_ref=i_ref)
+
+    # Normal-approximation SE(median) = 1.253314 * population_sigma / sqrt(n).
+    assert out.k_statistical_standard_uncertainty == pytest.approx(0.700623902, rel=1e-7)
+
+
+def test_custom_reference_uncertainty_and_coverage_are_propagated():
+    q = np.array([0.01, 0.02, 0.03, 0.04], dtype=float)
+    i_ref = np.array([10.0, 8.0, 6.0, 4.0], dtype=float)
+    out = estimate_k_factor_robust(
+        q,
+        i_ref / 2.0,
+        q_ref=q,
+        i_ref=i_ref,
+        i_ref_standard_uncertainty=i_ref * 0.03,
+        coverage_factor=2.0,
+    )
+
+    assert out.k_standard_uncertainty == pytest.approx(0.06)
+    assert out.k_expanded_uncertainty == pytest.approx(0.12)
+    assert out.coverage_factor == pytest.approx(2.0)
+
+
 def test_estimate_k_factor_robust_with_outlier_still_stable():
     q = np.array([0.01, 0.02, 0.05, 0.10, 0.15, 0.20], dtype=float)
     i_ref = np.array([34.2, 30.8, 26.8, 23.6, 15.8, 8.4], dtype=float)
@@ -29,6 +92,34 @@ def test_estimate_k_factor_robust_with_outlier_still_stable():
 
     out = estimate_k_factor_robust(q_meas=q, i_meas_per_cm=i_meas, q_ref=q, i_ref=i_ref)
     assert np.isclose(out.k_factor, true_k, rtol=0.1)
+
+
+def test_estimate_k_factor_zero_mad_still_rejects_nonmedian_outlier():
+    q = np.array([0.01, 0.02, 0.05, 0.10, 0.15, 0.20], dtype=float)
+    i_ref = np.array([34.2, 30.8, 26.8, 23.6, 15.8, 8.4], dtype=float)
+    i_meas = i_ref / 2.0
+    i_meas[2] /= 10.0
+
+    out = estimate_k_factor_robust(q_meas=q, i_meas_per_cm=i_meas, q_ref=q, i_ref=i_ref)
+
+    assert out.k_factor == pytest.approx(2.0)
+    assert out.points_used == 5
+    assert out.k_std == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    "ratio",
+    [
+        np.array([1.0, 1.0, 100.0]),
+        np.array([1.0, 2.0, 100.0]),
+    ],
+)
+def test_estimate_k_factor_fails_when_outlier_rejection_leaves_too_few_points(ratio):
+    q = np.array([0.01, 0.02, 0.03])
+    i_ref = np.full(3, 12.0)
+
+    with pytest.raises(ValueError, match="inlier"):
+        estimate_k_factor_robust(q, i_ref / ratio, q_ref=q, i_ref=i_ref)
 
 
 def test_estimate_k_factor_overlap_insufficient_raises():
@@ -60,6 +151,29 @@ def test_estimate_k_factor_requires_complete_reference_pair(q_ref, i_ref):
         estimate_k_factor_robust(q_meas=q, i_meas_per_cm=i, q_ref=q_ref, i_ref=i_ref)
 
 
+def test_estimate_k_factor_rejects_non_1d_measured_profiles():
+    with pytest.raises(ValueError, match="1-D"):
+        estimate_k_factor_robust(
+            q_meas=np.array([[0.01, 0.02, 0.03]]),
+            i_meas_per_cm=np.ones((1, 3)),
+            q_ref=np.array([0.01, 0.02, 0.03]),
+            i_ref=np.ones(3),
+        )
+
+
+@pytest.mark.parametrize(
+    "i_ref",
+    [
+        np.array([1.0, 1.0, np.nan, 1.0]),
+        np.array([1.0, 1.0, -1.0, 1.0]),
+    ],
+)
+def test_estimate_k_factor_rejects_invalid_reference_intensity(i_ref):
+    q = np.array([0.01, 0.02, 0.03, 0.04])
+    with pytest.raises(ValueError, match="reference intensity"):
+        estimate_k_factor_robust(q, np.ones(4), q_ref=q, i_ref=i_ref)
+
+
 # ---------------------------------------------------------------------------
 # Multi-standard support tests
 # ---------------------------------------------------------------------------
@@ -69,7 +183,39 @@ class TestStandardRegistry:
         ref = STANDARD_REGISTRY["SRM3600"]
         assert ref.standard_type == "primary"
         assert ref.q_data is not None
-        assert len(ref.q_data) == 15
+        assert len(ref.q_data) == 59
+
+    def test_srm3600_certificate_table_and_uncertainty_are_preserved(self):
+        assert NIST_SRM3600_DATA.shape == (59, 2)
+        assert NIST_SRM3600_UNCERTAINTY.shape == (59, 2)
+        np.testing.assert_allclose(
+            NIST_SRM3600_DATA[[0, -1]],
+            [[0.00827568, 34.933380], [0.24740200, 4.463604]],
+            rtol=0,
+            atol=5e-9,
+        )
+        np.testing.assert_allclose(
+            NIST_SRM3600_UNCERTAINTY[[0, -1]],
+            [[0.901092, 2.183336], [0.115137, 0.278975]],
+            rtol=0,
+            atol=5e-7,
+        )
+        assert NIST_SRM3600_COVERAGE_FACTOR == pytest.approx(2.4231)
+        certificate_bytes = np.column_stack(
+            (NIST_SRM3600_DATA, NIST_SRM3600_UNCERTAINTY)
+        ).astype("<f8").tobytes()
+        assert hashlib.sha256(certificate_bytes).hexdigest() == (
+            "b128fbbd04c2a66fd9aa04c90a7f238f45092f6253d4960dc12b560e5b0ef471"
+        )
+
+        ref = STANDARD_REGISTRY["SRM3600"]
+        np.testing.assert_array_equal(
+            ref.standard_uncertainty_data, NIST_SRM3600_UNCERTAINTY[:, 0]
+        )
+        np.testing.assert_array_equal(
+            ref.expanded_uncertainty_data, NIST_SRM3600_UNCERTAINTY[:, 1]
+        )
+        assert ref.coverage_factor == pytest.approx(2.4231)
 
     def test_water_in_registry(self):
         assert "Water_20C" in STANDARD_REGISTRY
@@ -87,15 +233,32 @@ class TestWaterDsdw:
         val = water_dsdw(25.0)
         assert 0.0163 < val < 0.0170
 
+    @pytest.mark.parametrize(
+        ("temperature_c", "expected_cm_inv"),
+        [
+            (4.0, 0.016636024148),
+            (15.0, 0.016335815876),
+            (25.0, 0.016365023897),
+            (40.0, 0.016805192483),
+        ],
+    )
+    def test_iapws95_golden_values(self, temperature_c, expected_cm_inv):
+        assert water_dsdw(temperature_c) == pytest.approx(expected_cm_inv, rel=2e-9)
+
     def test_out_of_range_raises(self):
         with pytest.raises(ValueError):
             water_dsdw(-10.0)
+
+    @pytest.mark.parametrize("temperature_c", [np.nan, np.inf, -np.inf, "not-a-number"])
+    def test_nonfinite_or_non_numeric_temperature_raises(self, temperature_c):
+        with pytest.raises(ValueError, match="temperature"):
+            water_dsdw(temperature_c)
 
 
 class TestGetReferenceData:
     def test_srm3600(self):
         q_ref, i_ref = get_reference_data("SRM3600")
-        assert len(q_ref) == 15
+        assert len(q_ref) == 59
         assert np.all(q_ref > 0)
         assert np.all(i_ref > 0)
 

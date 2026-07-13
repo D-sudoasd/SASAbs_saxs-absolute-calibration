@@ -55,7 +55,7 @@ cannot be fully public.
 
    Expected: `k_factor` close to `2.0`, with non-zero `points_used`.
 
-7. Verify deterministic 2D → absolute intensity workflow:
+7. Verify the independent synthetic raw-frame → absolute intensity workflow:
 
    ```bash
    python examples/minimal_2d/run_minimal_2d_pipeline.py
@@ -63,11 +63,26 @@ cannot be fully public.
 
    Expected outputs in `examples/minimal_2d/outputs/`:
 
-   - `summary.json` exists and contains `k_factor` in `[1.99, 2.01]`
+   - `summary.json` reports `validation_type=independent_synthetic_raw_frames`
+   - `k_relative_error < 0.005`
+   - `sample_max_relative_error < 0.01`
    - `absolute_profile.csv`, `absolute_profile.tsv`, `absolute_profile.xml` exist
    - `absolute_profile.h5` exists when `h5py` is available
 
 ## Notes
 
-- The minimal 2D package is synthetic and deterministic, intended for review reproducibility only.
+- The minimal package starts from separately constructed dark, NIST blank,
+  SRM 3600, and sample frames. It does not use `I_ref = constant * I_meas`.
+- Synthetic validation verifies the implementation but is not evidence of a
+  completed beamline measurement validation.
 - Proprietary beamline data remain excluded for legal and confidentiality reasons.
+
+## Required beamline acceptance before publication
+
+Process one measured SRM 3600 coupon using the certified thickness 1.055 mm,
+independently measured sample/standard transmissions, a no-sample blank, and an
+exposure-matched electronic dark. Record the K(q) residuals across the certified
+q range, repeatability across at least three acquisitions, and agreement with an
+independent secondary standard. Do not mark experimental validation complete
+until these files and acceptance results are archived with the processing
+provenance.

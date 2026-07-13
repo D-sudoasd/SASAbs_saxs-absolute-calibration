@@ -23,12 +23,15 @@ BL19B2 DATA/
 Defaults:
 
 - `ABS` in the TIFF header is treated as sample transmission.
-- `MON` is treated as a monitor-rate-like factor, so normalization uses
-  `Exposure_time * MON * ABS`.
-- `mu_cm_inv = 20.2` is used for Beer-Lambert thickness estimation.
+- `--monitor-mode rate` uses `Exposure_time * MON * ABS`; `integrated` uses
+  `MON * ABS`. The mode must be selected explicitly.
+- Choose exactly one sample-thickness strategy: an explicit material- and
+  energy-specific `--mu`, or `--sample-thickness-cm`.
+- SRM 3600 uses the NIST certified coupon thickness `0.1055 cm` unless an
+  explicit standard thickness is recorded.
 - `GC001.tif` is the formal glassy carbon standard.
-- `BG001.tif` is the empty/background frame. If `ABS > 1`, background
-  transmission is clamped to `T_bg = 1.0` and a warning is recorded.
+- `BG001.tif` is the no-sample NIST blank. Its recorded transmission must be
+  close to one and is used only as a definition check, not as a divisor.
 - `dark001.tif`, `BG001.tif`, `GC001.tif`, and `drt001.tif` are defaults only.
   Use `--dark`, `--background`, `--standard`, and `--direct-beam` when a
   beamtime uses different reference file names.
@@ -55,18 +58,47 @@ S_corr  = S  - dark_rate * exposure_s
 BG_corr = BG - dark_rate * exposure_bg
 GC_corr = GC - dark_rate * exposure_gc
 
-BG_norm = BG_corr / (exposure_bg * MON_bg * T_bg)
-GC_norm = GC_corr / (exposure_gc * MON_gc * T_gc)
+rate mode:
+  BG_norm = BG_corr / (exposure_bg * MON_bg)
+  GC_norm = GC_corr / (exposure_gc * MON_gc * T_gc)
+  I_net_2D = S_corr / (exposure_s * MON_s * T_s) - alpha * BG_norm
 
-I_net_2D = S_corr / (exposure_s * MON_s * T_s) - alpha * BG_norm
+integrated mode:
+  BG_norm = BG_corr / MON_bg
+  GC_norm = GC_corr / (MON_gc * T_gc)
+  I_net_2D = S_corr / (MON_s * T_s) - alpha * BG_norm
+
 I_abs_2D = I_net_2D * K / thickness_cm
 ```
+
+In both modes the detector dark remains exposure-matched as shown above. The
+blank is never divided by a separate `T_bg`.
 
 Thickness:
 
 ```text
 thickness_cm = -ln(ABS) / mu_cm_inv
 ```
+
+Beer--Lambert inversion is rejected for transmissions close to zero or one.
+Without a reported transmission uncertainty the accepted interval is
+`0.001 < T < 0.999`; with `--transmission-abs-uncertainty u_T`, both `T` and
+`1-T` must exceed `3*u_T`. Use `--sample-thickness-cm` when transmission is not
+sufficiently precise.
+
+Optional uncertainty inputs are
+`--monitor-relative-standard-uncertainty`,
+`--sample-thickness-relative-standard-uncertainty` (fixed-thickness mode),
+`--standard-thickness-relative-standard-uncertainty` (calibration coupon),
+`--mu-relative-standard-uncertainty` (Beer--Lambert mode), and
+`--alpha-standard-uncertainty`. Unknown values must be omitted and remain
+`null`; they are never treated as zero. BL19B2 output records these components
+and the K standard/expanded uncertainty, but leaves the combined per-pixel
+uncertainty `null` until all statistical and systematic inputs are available.
+The monitor value is interpreted as the same relative standard uncertainty on
+two independent per-frame readings (sample and blank), so their absolute
+contributions are combined in quadrature rather than treated as a common-mode
+scale error.
 
 The 2D output does not burn in mask, solid-angle, or polarization correction.
 Those corrections are deferred to pyFAI/pydidas reintegration.
@@ -129,9 +161,11 @@ Use `manifests/pydidas_pyfai_index.csv` for downstream batch integration.
 
 When rerunning with the default `overwrite = false`, an existing HDF5/EDF/JSON
 sidecar set is skipped only if the JSON sidecar is readable and its
-`processing_signature` matches the current run. A schema mismatch, signature
-mismatch, unreadable metadata file, or incomplete existing output set blocks the
-run instead of overwriting scientific outputs silently.
+`processing_signature` matches the current run. Resume also verifies source
+TIFF identity, HDF5/EDF checksums, internal schema/formula/unit/shape/dtype,
+finite unmasked values, and the embedded K uncertainty contract. A mismatch,
+unreadable file, or incomplete output set blocks the run instead of overwriting
+scientific outputs silently.
 
 ## Reuse Command
 
@@ -145,10 +179,14 @@ $env:PYTHONPATH='src'
 python -m saxsabs.cli bl19b2-abs2d `
   --input-root '<BL19B2 DATA>\datXXX' `
   --pydidas-cali-yaml '<BL19B2 DATA>\datXXX\reference_saxs\Cali.yaml' `
-  --output-root '<BL19B2 DATA>\datXXX_absolute_corrected_2D'
+  --output-root '<BL19B2 DATA>\datXXX_absolute_corrected_2D' `
+  --monitor-mode rate `
+  --mu 20.2
 ```
 
-The actual command used for a run is stored in `config/run_command.ps1`.
+The value `20.2` above is an explicit example for one material/energy, not a
+software default. The actual command used for a run is stored in
+`config/run_command.ps1`.
 
 ## Downstream pyFAI / pydidas Settings
 
@@ -161,7 +199,8 @@ Set:
 - `flat = None`
 - `mask = masks/bl19b2_mask.npy`
 - `normalization_factor = 1.0`
-- `correctSolidAngle = True`
+- `correctSolidAngle` must equal the run's recorded
+  `correct_solid_angle_for_k` value (the default template uses `True`).
 - `polarization_factor = None`, unless a beamline-specific value is confirmed
 
 Do not reapply:

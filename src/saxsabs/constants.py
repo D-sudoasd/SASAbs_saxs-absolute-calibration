@@ -44,45 +44,97 @@ HC_KEV_A: float = 12.398419843320025
 # ---------------------------------------------------------------------------
 # NIST SRM 3600 — Glassy Carbon primary standard
 # ---------------------------------------------------------------------------
-NIST_SRM3600_DATA = np.array(
+_NIST_SRM3600_CERTIFICATE_TABLE = np.array(
     [
-        [0.008, 35.0],
-        [0.010, 34.2],
-        [0.020, 30.8],
-        [0.030, 28.8],
-        [0.040, 27.5],
-        [0.050, 26.8],
-        [0.060, 26.3],
-        [0.080, 25.4],
-        [0.100, 23.6],
-        [0.120, 20.8],
-        [0.150, 15.8],
-        [0.180, 10.9],
-        [0.200, 8.4],
-        [0.220, 6.5],
-        [0.250, 4.2],
+        [0.00827568, 34.933380, 0.901092, 2.183336],
+        [0.00888450, 34.427156, 0.888034, 2.151697],
+        [0.00954735, 34.042170, 0.878103, 2.127636],
+        [0.01026900, 33.698553, 0.869240, 2.106160],
+        [0.01105780, 33.352529, 0.860314, 2.084533],
+        [0.01191830, 33.027533, 0.851931, 2.064221],
+        [0.01286110, 32.665045, 0.842581, 2.041565],
+        [0.01389340, 32.306665, 0.833337, 2.019167],
+        [0.01502510, 31.970485, 0.824665, 1.998155],
+        [0.01626850, 31.559099, 0.814053, 1.972444],
+        [0.01763650, 31.183763, 0.804372, 1.948985],
+        [0.01914320, 30.861805, 0.796067, 1.928863],
+        [0.02080510, 30.514300, 0.787103, 1.907144],
+        [0.02264220, 30.084982, 0.776029, 1.880311],
+        [0.02467500, 29.690414, 0.765852, 1.855651],
+        [0.02692890, 29.249965, 0.754490, 1.828123],
+        [0.02943170, 28.889970, 0.745204, 1.805623],
+        [0.03221560, 28.449341, 0.733839, 1.778084],
+        [0.03531810, 28.065980, 0.723950, 1.754124],
+        [0.03878270, 27.704965, 0.714638, 1.731560],
+        [0.04265880, 27.331304, 0.704999, 1.708207],
+        [0.04700390, 26.974065, 0.695784, 1.685879],
+        [0.05188580, 26.676952, 0.688121, 1.667309],
+        [0.05738140, 26.401158, 0.681007, 1.650072],
+        [0.06358290, 26.177427, 0.675236, 1.636089],
+        [0.07059620, 25.904683, 0.668200, 1.619043],
+        [0.07854840, 25.528734, 0.658503, 1.595546],
+        [0.08758630, 24.917743, 0.642743, 1.557359],
+        [0.09788540, 23.946472, 0.617689, 1.496655],
+        [0.10965500, 22.472101, 0.579658, 1.404506],
+        [0.11431200, 21.777228, 0.561734, 1.361077],
+        [0.11839500, 21.112938, 0.544599, 1.319559],
+        [0.12262400, 20.401110, 0.526238, 1.275069],
+        [0.12314200, 20.287060, 0.523296, 1.267941],
+        [0.12700400, 19.685107, 0.507769, 1.230319],
+        [0.13154000, 18.909809, 0.487770, 1.181863],
+        [0.13623900, 18.089242, 0.466604, 1.130578],
+        [0.13864300, 17.679572, 0.456037, 1.104973],
+        [0.14110500, 17.264117, 0.445321, 1.079007],
+        [0.14614500, 16.372848, 0.422331, 1.023303],
+        [0.15136500, 15.458350, 0.398742, 0.966147],
+        [0.15651300, 14.587700, 0.376284, 0.911731],
+        [0.15677100, 14.563071, 0.375648, 0.910192],
+        [0.16237100, 13.616671, 0.351236, 0.851042],
+        [0.16817000, 12.668549, 0.326780, 0.791784],
+        [0.17417700, 11.752287, 0.303145, 0.734518],
+        [0.17718100, 11.311460, 0.291774, 0.706966],
+        [0.18039800, 10.862157, 0.280185, 0.678885],
+        [0.18684100, 9.961979, 0.256965, 0.622624],
+        [0.19351500, 9.116906, 0.235167, 0.569807],
+        [0.20042700, 8.325578, 0.214755, 0.520349],
+        [0.20116500, 8.224897, 0.212158, 0.514056],
+        [0.20758600, 7.541931, 0.194541, 0.471371],
+        [0.21500000, 6.854391, 0.176806, 0.428399],
+        [0.22267900, 6.216070, 0.160341, 0.388504],
+        [0.22909500, 5.715911, 0.147439, 0.357244],
+        [0.23063300, 5.582366, 0.143995, 0.348898],
+        [0.23887100, 4.999113, 0.128950, 0.312445],
+        [0.24740200, 4.463604, 0.115137, 0.278975],
     ],
     dtype=np.float64,
 )
-"""15-point dΣ/dΩ (cm⁻¹ sr⁻¹) vs *q* (Å⁻¹) from NIST SRM 3600 certificate."""
+
+NIST_SRM3600_DATA = _NIST_SRM3600_CERTIFICATE_TABLE[:, :2].copy()
+"""Certified ``[q, dΣ/dΩ]`` values from NIST SRM 3600 Certificate Table 1."""
+
+NIST_SRM3600_UNCERTAINTY = _NIST_SRM3600_CERTIFICATE_TABLE[:, 2:].copy()
+"""Certificate ``[u_c, U]`` values corresponding to :data:`NIST_SRM3600_DATA`."""
+
+NIST_SRM3600_COVERAGE_FACTOR: float = 2.4231
+"""Coverage factor used by NIST for the SRM 3600 expanded uncertainty."""
 
 
 # ---------------------------------------------------------------------------
-# Water isothermal compressibility look-up table (CRC Handbook, 97th ed.)
+# Water isothermal compressibility look-up table (IAPWS-95 at 0.101325 MPa)
 # κ_T in 10⁻¹⁰ Pa⁻¹  ;  T in °C
 # ---------------------------------------------------------------------------
 _WATER_KAPPA_T: dict[int, float] = {
-    4: 5.068,
-    5: 4.920,
-    10: 4.788,
-    15: 4.524,
-    20: 4.591,
-    25: 4.524,
-    30: 4.475,
-    35: 4.422,
-    40: 4.399,
+    4: 4.948056712,
+    5: 4.916853822,
+    10: 4.780829642,
+    15: 4.673284441,
+    20: 4.589128995,
+    25: 4.524617174,
+    30: 4.476921593,
+    35: 4.443866799,
+    40: 4.423755184,
 }
-"""Isothermal compressibility of H₂O (×10⁻¹⁰ Pa⁻¹) at selected temperatures."""
+"""IAPWS-95 isothermal compressibility of H₂O (×10⁻¹⁰ Pa⁻¹)."""
 
 _WATER_REF_TEMP_C: float = 20.0
 _WATER_REF_DSDW: float = 0.01632  # cm⁻¹ at 20 °C
@@ -105,6 +157,12 @@ def water_dsdw(temperature_C: float = 20.0) -> float:
     float
         dΣ/dΩ in cm⁻¹.
     """
+    try:
+        temperature_C = float(temperature_C)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Water temperature must be a finite number") from exc
+    if not np.isfinite(temperature_C):
+        raise ValueError("Water temperature must be a finite number")
     if temperature_C < 4 or temperature_C > 40:
         raise ValueError(
             f"Water temperature {temperature_C} °C is outside the valid range 4–40 °C"
@@ -145,6 +203,12 @@ class StandardReference:
         Bibliographic citation.
     notes : str
         Implementation notes or warnings for the user.
+    standard_uncertainty_data : np.ndarray | None
+        Point-wise combined standard uncertainties for a reference curve.
+    expanded_uncertainty_data : np.ndarray | None
+        Point-wise expanded uncertainties for a reference curve.
+    coverage_factor : float | None
+        Coverage factor associated with expanded uncertainties.
     """
 
     name: str
@@ -155,6 +219,9 @@ class StandardReference:
     flat_value_cm_inv: float | None = None
     reference: str = ""
     notes: str = ""
+    standard_uncertainty_data: np.ndarray | None = field(default=None, repr=False)
+    expanded_uncertainty_data: np.ndarray | None = field(default=None, repr=False)
+    coverage_factor: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -166,9 +233,13 @@ STANDARD_REGISTRY: dict[str, StandardReference] = {
         standard_type="primary",
         q_data=NIST_SRM3600_DATA[:, 0].copy(),
         i_data=NIST_SRM3600_DATA[:, 1].copy(),
+        standard_uncertainty_data=NIST_SRM3600_UNCERTAINTY[:, 0].copy(),
+        expanded_uncertainty_data=NIST_SRM3600_UNCERTAINTY[:, 1].copy(),
+        coverage_factor=NIST_SRM3600_COVERAGE_FACTOR,
         is_q_independent=False,
         reference=(
-            "Allen et al. (2017) J. Appl. Cryst. 50, 462–474; NIST SP260-185"
+            "NIST SRM 3600 Certificate of Analysis (2016); "
+            "Allen et al. (2017) J. Appl. Cryst. 50, 462–474"
         ),
         notes="Recommended q window: 0.01–0.20 Å⁻¹.",
     ),

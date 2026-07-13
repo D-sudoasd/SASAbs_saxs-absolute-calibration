@@ -43,6 +43,9 @@ def _read_package_version() -> str:
 
 
 APP_VERSION = _read_package_version()
+DEFAULT_STANDARD_THICKNESS_MM = 1.055
+DEFAULT_SAMPLE_MU_CM_INV = None
+WORKBENCH_FORMULA_VERSION = "v3_nist_blank_exposure_matched"
 
 logger = logging.getLogger(__name__)
 SUPPORTED_LANGUAGES = ("en", "zh")
@@ -1110,6 +1113,36 @@ except Exception:
     _core_compute_norm_factor = None
 
 try:
+    from saxsabs.core.detector_reduction import (
+        normalize_detector_frame,
+        validate_blank_transmission,
+    )
+except Exception:
+    normalize_detector_frame = None
+    validate_blank_transmission = None
+
+try:
+    from saxsabs.core.calibration_context import CalibrationContext, sha256_file
+except Exception:
+    CalibrationContext = None
+    sha256_file = None
+
+try:
+    from saxsabs.core.calibration_record import (
+        CALIBRATION_RECORD_SCHEMA,
+        build_calibration_uncertainty_payload as _core_build_calibration_uncertainty_payload,
+        read_calibration_record as _core_read_calibration_record,
+        resolve_sample_thickness_config as _core_resolve_sample_thickness_config,
+        write_calibration_record as _core_write_calibration_record,
+    )
+except Exception:
+    CALIBRATION_RECORD_SCHEMA = "saxsabs.workbench_calibration_record.v1"
+    _core_build_calibration_uncertainty_payload = None
+    _core_read_calibration_record = None
+    _core_resolve_sample_thickness_config = None
+    _core_write_calibration_record = None
+
+try:
     from saxsabs.io.parsers import parse_header_values as _core_parse_header_values
 except Exception:
     _core_parse_header_values = None
@@ -1184,7 +1217,15 @@ class SAXSAbsWorkbenchApp:
             "monitor_mode": tk.StringVar(value="rate"),
             "apply_solid_angle": tk.BooleanVar(value=True),
             "k_solid_angle": tk.StringVar(value="unknown"),
+            "mask_path": tk.StringVar(),
+            "flat_path": tk.StringVar(),
+            "polarization_enabled": tk.BooleanVar(value=False),
+            "polarization_factor": tk.DoubleVar(value=0.0),
         }
+        self.calibration_context = None
+        self.calibration_k_value = None
+        self.calibration_uncertainty = None
+        self.calibration_record_path = None
         self.session_geometry_fallback = {}
 
         # === 布局 ===
@@ -1294,7 +1335,204 @@ class SAXSAbsWorkbenchApp:
             out.append(p)
         return out
 
-    def build_composite_bg_net(self, bg_paths, d_dark, monitor_mode, fallback_triplet, ref_shape=None):
+    def read_required_dark_exposure(self, dark_path):
+        """Read the dark exposure used for exposure-matched subtraction."""
+        exp, _mon, _trans = self.parse_header(dark_path)
+        try:
+            value = float(exp)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("dark exposure metadata is required for absolute reduction") from exc
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError("dark exposure metadata must be finite and > 0")
+        return value
+
+    def build_integration_correction_kwargs(
+        self,
+        *,
+        correct_solid_angle,
+        error_model="none",
+        mask=None,
+        flat=None,
+        polarization_factor=None,
+    ):
+        """Build the correction policy shared by K calibration and sample integration."""
+        kwargs = {"correctSolidAngle": bool(correct_solid_angle)}
+        error_name = str(error_model or "none").strip().lower()
+        if error_name != "none":
+            kwargs["error_model"] = error_name
+        if mask is not None:
+            kwargs["mask"] = mask
+        if flat is not None:
+            kwargs["flat"] = flat
+        if polarization_factor is not None:
+            factor = float(polarization_factor)
+            if not np.isfinite(factor) or factor < -1.0 or factor > 1.0:
+                raise ValueError("Polarization factor must be finite and in [-1, 1]")
+            kwargs["polarization_factor"] = factor
+        return kwargs
+
+    def _optional_file_sha256(self, path):
+        text = str(path or "").strip()
+        if not text:
+            return None
+        if sha256_file is None:
+            raise RuntimeError("CalibrationContext hashing support is unavailable")
+        file_path = Path(text)
+        if not file_path.is_file():
+            raise FileNotFoundError(f"calibration context file not found: {file_path}")
+        return sha256_file(file_path)
+
+    def require_calibration_context_for_batch(
+        self,
+        *,
+        k_factor,
+        monitor_mode,
+        poni_path,
+        mask_path,
+        flat_path,
+        correct_solid_angle,
+        polarization_factor,
+    ):
+        """Fail closed unless the active batch operator matches the calibrated K."""
+        if CalibrationContext is None:
+            raise RuntimeError("CalibrationContext support is unavailable")
+        calibrated = getattr(self, "calibration_context", None)
+        if not isinstance(calibrated, CalibrationContext):
+            raise ValueError(
+                "当前 K 没有 CalibrationContext；手工输入或旧版 K 禁止用于正式输出，请先在 Tab1 重新标定。"
+            )
+        calibrated_k = getattr(self, "calibration_k_value", None)
+        try:
+            same_k = np.isclose(float(k_factor), float(calibrated_k), rtol=1e-12, atol=0.0)
+        except (TypeError, ValueError):
+            same_k = False
+        if not same_k:
+            raise ValueError("当前 K 已在标定后被修改；请恢复标定 K 或重新运行 Tab1。")
+
+        poni_text = str(poni_path or "").strip()
+        if not poni_text:
+            raise ValueError("PONI path is required for CalibrationContext validation")
+        current = CalibrationContext(
+            formula_version=WORKBENCH_FORMULA_VERSION,
+            monitor_mode=str(monitor_mode).strip().lower(),
+            poni_sha256=self._optional_file_sha256(poni_text),
+            mask_sha256=self._optional_file_sha256(mask_path),
+            flat_sha256=self._optional_file_sha256(flat_path),
+            correct_solid_angle=bool(correct_solid_angle),
+            polarization_factor=polarization_factor,
+            standard_key=calibrated.standard_key,
+            standard_thickness_cm=calibrated.standard_thickness_cm,
+        )
+        calibrated.assert_operator_compatible(current)
+        return calibrated
+
+    def build_calibration_uncertainty_payload(
+        self,
+        k_statistical_standard_uncertainty,
+        k_standard_uncertainty,
+        k_expanded_uncertainty,
+        coverage_factor,
+    ):
+        """Delegate uncertainty normalization to the reusable scientific core."""
+        if _core_build_calibration_uncertainty_payload is None:
+            raise RuntimeError("calibration record support is unavailable")
+        return _core_build_calibration_uncertainty_payload(
+            k_statistical_standard_uncertainty,
+            k_standard_uncertainty,
+            k_expanded_uncertainty,
+            coverage_factor,
+        )
+
+    def resolve_sample_thickness_config(self, *, mode, mu_value, fixed_thickness_mm):
+        """Return the core thickness policy as a legacy mapping for GUI callers."""
+        if _core_resolve_sample_thickness_config is None:
+            raise RuntimeError("calibration record support is unavailable")
+        return _core_resolve_sample_thickness_config(
+            mode=mode,
+            mu_value=mu_value,
+            fixed_thickness_mm=fixed_thickness_mm,
+        ).to_dict()
+
+    def save_calibration_record(
+        self,
+        path,
+        *,
+        k_factor,
+        calibration_context,
+        calibration_uncertainty,
+        poni_path,
+        mask_path,
+        flat_path,
+    ):
+        """Persist a complete K plus CalibrationContext record through the core API."""
+        if _core_write_calibration_record is None:
+            raise RuntimeError("calibration record support is unavailable")
+        return _core_write_calibration_record(
+            path,
+            k_factor=k_factor,
+            calibration_context=calibration_context,
+            calibration_uncertainty=calibration_uncertainty,
+            poni_path=poni_path,
+            mask_path=mask_path,
+            flat_path=flat_path,
+        )
+
+    def load_calibration_record(self, path):
+        """Validate and apply a complete calibration record; mutate only after all checks pass."""
+        if _core_read_calibration_record is None:
+            raise RuntimeError("calibration record support is unavailable")
+        loaded = _core_read_calibration_record(path)
+        context = loaded.calibration_context
+        k_value = loaded.k_factor
+        uncertainty = loaded.calibration_uncertainty
+        poni_path = str(loaded.poni_path)
+        mask_path = str(loaded.mask_path) if loaded.mask_path is not None else ""
+        flat_path = str(loaded.flat_path) if loaded.flat_path is not None else ""
+
+        self.global_vars["k_factor"].set(k_value)
+        self.global_vars["monitor_mode"].set(context.monitor_mode)
+        self.global_vars["poni_path"].set(poni_path)
+        self.global_vars["mask_path"].set(mask_path)
+        self.global_vars["flat_path"].set(flat_path)
+        self.global_vars["apply_solid_angle"].set(context.correct_solid_angle)
+        self.global_vars["k_solid_angle"].set(
+            "on" if context.correct_solid_angle else "off"
+        )
+        self.global_vars["polarization_enabled"].set(context.polarization_factor is not None)
+        self.global_vars["polarization_factor"].set(context.polarization_factor or 0.0)
+        if hasattr(self, "t1_std_type"):
+            self.t1_std_type.set(context.standard_key)
+        if hasattr(self, "t1_std_combo") and hasattr(self, "_t1_std_option_map"):
+            label = next(
+                (
+                    option
+                    for option, key in self._t1_std_option_map.items()
+                    if key == context.standard_key
+                ),
+                None,
+            )
+            if label is not None:
+                self.t1_std_combo.set(label)
+        if hasattr(self, "t1_params") and "std_thk" in self.t1_params:
+            self.t1_params["std_thk"].set(context.standard_thickness_cm * 10.0)
+        self.calibration_context = context
+        self.calibration_k_value = k_value
+        self.calibration_uncertainty = uncertainty
+        self.calibration_record_path = loaded.record_path
+        return context
+
+    def build_composite_bg_net(
+        self,
+        bg_paths,
+        d_dark,
+        monitor_mode,
+        fallback_triplet,
+        *,
+        dark_exposure_s,
+        ref_shape=None,
+    ):
+        if normalize_detector_frame is None or validate_blank_transmission is None:
+            raise RuntimeError("shared detector reduction support is unavailable")
         nets = []
         norms = []
         used_paths = []
@@ -1308,14 +1546,21 @@ class SAXSAbsWorkbenchApp:
                 raise ValueError(f"BG 尺寸不匹配: {d_bg.shape} vs {ref_shape}")
 
             exp, mon, trans = self.parse_header(bg_path, header_dict=getattr(img, "header", {}))
-            n = self.compute_norm_factor(exp, mon, trans, monitor_mode)
-            if not np.isfinite(n) or n <= 0:
-                n = self.compute_norm_factor(fallback_triplet[0], fallback_triplet[1], fallback_triplet[2], monitor_mode)
-            if not np.isfinite(n) or n <= 0:
-                raise ValueError(f"背景归一化因子无效: {Path(bg_path).name}")
-
-            nets.append((d_bg - dark) / float(n))
-            norms.append(float(n))
+            exp_use = exp if exp is not None else fallback_triplet[0]
+            mon_use = mon if mon is not None else fallback_triplet[1]
+            trans_use = trans if trans is not None else fallback_triplet[2]
+            validate_blank_transmission(trans_use)
+            normalized = normalize_detector_frame(
+                d_bg,
+                dark,
+                image_exposure_s=exp_use,
+                dark_exposure_s=dark_exposure_s,
+                monitor=mon_use,
+                transmission=1.0,
+                monitor_mode=monitor_mode,
+            )
+            nets.append(normalized.image)
+            norms.append(normalized.normalization_factor)
             used_paths.append(str(bg_path))
 
         if not nets:
@@ -2576,10 +2821,14 @@ class SAXSAbsWorkbenchApp:
             write_nxcansas_h5(final_path, x_arr, i_arr, e_arr)
             return final_path
 
+        # ``i_err`` is the pyFAI statistical/azimuthal sigma after scaling.  Keep the
+        # legacy column for compatibility, but do not present it as a complete budget.
         df = pd.DataFrame({
             x_label: x_arr,
             "I_abs_cm^-1": i_arr,
             "Error_cm^-1": e_arr,
+            "Error_Statistical_cm^-1": e_arr,
+            "Error_CombinedStandard_cm^-1": np.full_like(e_arr, np.nan),
         })
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
         sep = "," if output_format == "csv" else "\t"
@@ -2588,7 +2837,7 @@ class SAXSAbsWorkbenchApp:
             sep=sep,
             index=False,
             encoding="utf-8-sig",
-            na_rep="",
+            na_rep="NaN",
             float_format="%.10g",
         )
         return final_path
@@ -2864,6 +3113,20 @@ class SAXSAbsWorkbenchApp:
         row_poni = self.add_file_row(f_files, self.tr("lbl_t1_poni_file"), self.t1_files["poni"], "*.poni")
         self.add_tooltip(row_poni["entry"], "tip_t1_poni_entry")
         self.add_tooltip(row_poni["button"], "tip_t1_poni_btn")
+        row_mask_t1 = self.add_file_row(
+            f_files,
+            self.tr("lbl_t2_mask"),
+            self.global_vars["mask_path"],
+            "*.tif *.tiff *.edf *.npy",
+        )
+        row_flat_t1 = self.add_file_row(
+            f_files,
+            self.tr("lbl_t2_flat"),
+            self.global_vars["flat_path"],
+            "*.tif *.tiff *.edf *.npy",
+        )
+        self.add_tooltip(row_mask_t1["entry"], "tip_t2_mask")
+        self.add_tooltip(row_flat_t1["entry"], "tip_t2_flat")
 
         # 2. 物理参数
         f_phys = ttk.LabelFrame(left_panel, text=self.tr("t1_phys_title"), style="Group.TLabelframe")
@@ -2875,7 +3138,8 @@ class SAXSAbsWorkbenchApp:
         
         self.t1_params = {
             "std_exp": tk.DoubleVar(value=1.0), "std_i0": tk.DoubleVar(value=1.0),
-            "std_t": tk.DoubleVar(value=1.0), "std_thk": tk.DoubleVar(value=1.0),
+            "std_t": tk.DoubleVar(value=1.0),
+            "std_thk": tk.DoubleVar(value=DEFAULT_STANDARD_THICKNESS_MM),
             "bg_exp": self.global_vars["bg_exp"], "bg_i0": self.global_vars["bg_i0"], "bg_t": self.global_vars["bg_t"]
         }
         
@@ -2921,6 +3185,26 @@ class SAXSAbsWorkbenchApp:
         )
         cb_solid_t1.pack(side="left", padx=(8, 0))
         self._register_i18n_widget(cb_solid_t1, "cb_solid_angle")
+        cb_pol_t1 = ttk.Checkbutton(
+            norm_row,
+            text="Polarization",
+            variable=self.global_vars["polarization_enabled"],
+        )
+        cb_pol_t1.pack(side="left", padx=(8, 2))
+        e_pol_t1 = ttk.Entry(
+            norm_row,
+            textvariable=self.global_vars["polarization_factor"],
+            width=6,
+        )
+        e_pol_t1.pack(side="left")
+
+        def _sync_t1_pol_entry_state():
+            e_pol_t1.configure(
+                state="normal" if self.global_vars["polarization_enabled"].get() else "disabled"
+            )
+
+        cb_pol_t1.configure(command=_sync_t1_pol_entry_state)
+        _sync_t1_pol_entry_state()
 
         self.add_tooltip(e_std_exp, "tip_t1_std_exp")
         self.add_tooltip(e_std_i0, "tip_t1_std_i0")
@@ -2932,6 +3216,8 @@ class SAXSAbsWorkbenchApp:
         self.add_tooltip(cb_norm_t1, "tip_t1_norm_mode")
         self.add_tooltip(lbl_norm_hint_t1, "tip_t1_norm_hint")
         self.add_tooltip(cb_solid_t1, "tip_t1_solid_angle")
+        self.add_tooltip(cb_pol_t1, "tip_t2_polarization")
+        self.add_tooltip(e_pol_t1, "tip_t2_polarization")
 
         # 3. 操作按钮
         btn_row = ttk.Frame(left_panel)
@@ -2992,17 +3278,19 @@ class SAXSAbsWorkbenchApp:
         
         self.t2_files = []
         self.t2_groups = []  # list of AcquisitionGroup (or simple dicts for UI)
-        self.t2_mu = tk.DoubleVar(value=20.2)
-        self.t2_calc_mode = tk.StringVar(value="auto") 
+        self.t2_mu = tk.StringVar(
+            value="" if DEFAULT_SAMPLE_MU_CM_INV is None else str(DEFAULT_SAMPLE_MU_CM_INV)
+        )
+        self.t2_calc_mode = tk.StringVar(value="fixed")
         self.t2_fixed_thk = tk.DoubleVar(value=1.0)
         self.t2_ref_mode = tk.StringVar(value="fixed")
         self.t2_error_model = tk.StringVar(value="azimuthal")
         self.t2_apply_solid_angle = self.global_vars["apply_solid_angle"]
-        self.t2_polarization_enabled = tk.BooleanVar(value=False)
-        self.t2_polarization = tk.DoubleVar(value=0.0)
+        self.t2_polarization_enabled = self.global_vars["polarization_enabled"]
+        self.t2_polarization = self.global_vars["polarization_factor"]
         self.t2_output_root = tk.StringVar(value="")
-        self.t2_mask_path = tk.StringVar()
-        self.t2_flat_path = tk.StringVar()
+        self.t2_mask_path = self.global_vars["mask_path"]
+        self.t2_flat_path = self.global_vars["flat_path"]
         self.t2_resume_enabled = tk.BooleanVar(value=True)
         self.t2_overwrite = tk.BooleanVar(value=False)
         self.t2_workers = tk.IntVar(value=1)
@@ -5115,7 +5403,8 @@ A7：
    - processed_robust_1d_sector/sector_*/*.dat（多扇区分别保存）
    - processed_robust_1d_sector_combined/*.dat（扇区合并保存，若勾选）
    - processed_robust_radial_chi/*.chi
-   每个文件均为：坐标列 + I_abs_cm^-1 + Error_cm^-1
+   每个文件均为：坐标列 + I_abs_cm^-1 + 兼容误差列 Error_cm^-1
+   + Error_Statistical_cm^-1；Error_CombinedStandard_cm^-1 当前为 NaN（系统不确定度尚未完整输入）。
    - processed_robust_reports/batch_report_*.csv
    - processed_robust_reports/metadata_for_tab3_*.csv
    - processed_robust_reports/metadata.csv
@@ -5264,20 +5553,42 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             d_std = fabio.open(files["std"]).data.astype(np.float64)
             d_dark = fabio.open(files["dark"]).data.astype(np.float64)
             self._assert_same_shape(d_std, d_dark, "std", "dark")
+            dark_exposure_s = self.read_required_dark_exposure(files["dark"])
+            mask_path = self.global_vars["mask_path"].get().strip()
+            flat_path = self.global_vars["flat_path"].get().strip()
+            mask_arr = self.load_optional_array(mask_path, "Mask")
+            if mask_arr is not None:
+                mask_arr = np.asarray(mask_arr) != 0
+                self._assert_same_shape(d_std, mask_arr, "std", "mask")
+            flat_arr = self.load_optional_array(flat_path, "Flat")
+            if flat_arr is not None:
+                flat_arr = np.asarray(flat_arr, dtype=np.float64)
+                self._assert_same_shape(d_std, flat_arr, "std", "flat")
+            polarization_applied, polarization_factor = self.resolve_t2_polarization()
 
             bg_paths = self.split_path_list(files["bg"])
             if not bg_paths:
                 raise ValueError("未提供背景图像。")
 
             # --- 2D Subtraction (Physics Correct) ---
-            norm_std = self.compute_norm_factor(
-                p["std_exp"], p["std_i0"], p["std_t"], monitor_mode
+            if normalize_detector_frame is None:
+                raise RuntimeError("shared detector reduction support is unavailable")
+            std_frame = normalize_detector_frame(
+                d_std,
+                d_dark,
+                image_exposure_s=p["std_exp"],
+                dark_exposure_s=dark_exposure_s,
+                monitor=p["std_i0"],
+                transmission=p["std_t"],
+                monitor_mode=monitor_mode,
             )
+            norm_std = std_frame.normalization_factor
             bg_net, bg_norms, bg_used_paths = self.build_composite_bg_net(
                 bg_paths=bg_paths,
                 d_dark=d_dark,
                 monitor_mode=monitor_mode,
                 fallback_triplet=(p["bg_exp"], p["bg_i0"], p["bg_t"]),
+                dark_exposure_s=dark_exposure_s,
                 ref_shape=d_std.shape,
             )
             norm_bg = float(np.nanmedian(np.asarray(bg_norms, dtype=np.float64)))
@@ -5292,16 +5603,22 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 )
             
             # Net Signal 2D (Intensity/sec/unit_flux)
-            img_net = (d_std - d_dark)/norm_std - bg_net
+            img_net = std_frame.image - bg_net
             
             # Integrate (Enable Error Propagation via Azimuthal Variance)
             # error_model="azimuthal" computes the sigma (std dev) of pixels in bin
+            calibration_integration_kwargs = self.build_integration_correction_kwargs(
+                correct_solid_angle=apply_solid_angle,
+                error_model="azimuthal",
+                mask=mask_arr,
+                flat=flat_arr,
+                polarization_factor=polarization_factor if polarization_applied else None,
+            )
             res = ai.integrate1d(
                 img_net,
                 1000,
                 unit="q_A^-1",
-                error_model="azimuthal",
-                correctSolidAngle=apply_solid_angle,
+                **calibration_integration_kwargs,
             )
 
             q = np.asarray(res.radial, dtype=np.float64)
@@ -5321,6 +5638,10 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             q_ref, i_ref = self._get_std_reference_data()
             std_key = self.t1_std_type.get()
             is_water = (std_key == "Water_20C")
+            k_statistical_u = None
+            k_standard_u = None
+            k_expanded_u = None
+            k_coverage_factor = None
 
             if is_water:
                 # Water: flat signal — use median in q_window
@@ -5343,6 +5664,9 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         ratios_used = ratios[inlier]
                 k_val = float(np.nanmedian(ratios_used))
                 k_std = float(np.nanstd(ratios_used))
+                k_statistical_u = float(
+                    np.sqrt(np.pi / 2.0) * k_std / np.sqrt(ratios_used.size)
+                )
                 q_min = float(q[win_mask][0])
                 q_max = float(q[win_mask][-1])
                 points_total = int(win_mask.sum())
@@ -5360,17 +5684,25 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     raise ValueError("与参考曲线的 q 重叠区间不足，无法可靠标定。")
 
                 if estimate_k_factor_robust is not None:
-                    k_res = estimate_k_factor_robust(
-                        q_meas=q,
-                        i_meas_per_cm=i_net_vol,
-                        q_ref=q_ref_used,
-                        i_ref=i_ref_used,
-                        q_window=(float(np.nanmin(q_ref_used)), float(np.nanmax(q_ref_used))),
-                        positive_floor=1e-9,
-                        min_points=3,
-                    )
+                    estimate_kwargs = {
+                        "q_meas": q,
+                        "i_meas_per_cm": i_net_vol,
+                        "q_window": (
+                            float(np.nanmin(q_ref_used)),
+                            float(np.nanmax(q_ref_used)),
+                        ),
+                        "positive_floor": 1e-9,
+                        "min_points": 3,
+                    }
+                    if std_key != "SRM3600":
+                        estimate_kwargs.update(q_ref=q_ref_used, i_ref=i_ref_used)
+                    k_res = estimate_k_factor_robust(**estimate_kwargs)
                     k_val = float(k_res.k_factor)
                     k_std = float(k_res.k_std)
+                    k_statistical_u = float(k_res.k_statistical_standard_uncertainty)
+                    k_standard_u = k_res.k_standard_uncertainty
+                    k_expanded_u = k_res.k_expanded_uncertainty
+                    k_coverage_factor = k_res.coverage_factor
                     q_min = float(k_res.q_min_overlap)
                     q_max = float(k_res.q_max_overlap)
                     ratios_used = np.asarray(k_res.ratios_used, dtype=np.float64)
@@ -5394,11 +5726,27 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                             ratios_used = ratios[inlier]
                     k_val = np.nanmedian(ratios_used)
                     k_std = np.nanstd(ratios_used)
+                    k_statistical_u = float(
+                        np.sqrt(np.pi / 2.0) * k_std / np.sqrt(len(ratios_used))
+                    )
                     points_total = len(q_ref_used)
 
             if k_val <= 0:
                 raise ValueError(f"计算得到的 K <= 0 ({k_val})，请检查本底缩放和参数。")
 
+            if CalibrationContext is None:
+                raise RuntimeError("CalibrationContext support is unavailable")
+            calibration_context = CalibrationContext(
+                formula_version=WORKBENCH_FORMULA_VERSION,
+                monitor_mode=monitor_mode,
+                poni_sha256=self._optional_file_sha256(files["poni"]),
+                mask_sha256=self._optional_file_sha256(mask_path),
+                flat_sha256=self._optional_file_sha256(flat_path),
+                correct_solid_angle=apply_solid_angle,
+                polarization_factor=polarization_factor if polarization_applied else None,
+                standard_key=std_key,
+                standard_thickness_cm=float(thk_cm),
+            )
             self.global_vars["k_factor"].set(k_val)
             self.global_vars["k_solid_angle"].set("on" if apply_solid_angle else "off")
             
@@ -5411,6 +5759,19 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             self.report(f"BG files used: {len(bg_used_paths)}")
             rel_std = (k_std / k_val * 100) if k_val != 0 else np.nan
             self.report(f"Std Dev : {k_std:.4f} ({rel_std:.1f}%)")
+            if k_standard_u is not None:
+                self.report(f"K standard uncertainty: {k_standard_u:.6g}")
+                if k_expanded_u is not None and k_coverage_factor is not None:
+                    self.report(
+                        f"K expanded uncertainty: {k_expanded_u:.6g} "
+                        f"(coverage factor={k_coverage_factor:.4g})"
+                    )
+                else:
+                    self.report("K expanded uncertainty: unknown (coverage factor unavailable)")
+            else:
+                self.report(
+                    "[警告] 参考标准系统不确定度未知；当前仅报告 K 点间统计分量。"
+                )
             self.report("-" * 30)
             
             # Plot
@@ -5460,13 +5821,49 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             calibration_output_dir = self.get_calibration_output_dir(files["std"])
             save_path = calibration_output_dir / f"calibration_check_{run_id}.csv"
             # We save the full profile with error bars
+            statistical_error = sigma_net_vol * k_val
+            if k_standard_u is None:
+                partial_error = np.full_like(statistical_error, np.nan)
+            else:
+                partial_error = np.sqrt(
+                    np.square(statistical_error) + np.square(i_net_vol * k_standard_u)
+                )
+            calibration_uncertainty = self.build_calibration_uncertainty_payload(
+                k_statistical_u,
+                k_standard_u,
+                k_expanded_u,
+                k_coverage_factor,
+            )
             df = pd.DataFrame({
                 "Q": q,
                 "I_Abs": i_net_vol * k_val,
-                "Error": sigma_net_vol * k_val
+                "Error_Statistical": statistical_error,
+                "Error_Partial_K_Included": partial_error,
+                "CalibrationContextFingerprint": calibration_context.fingerprint(),
             })
             df.to_csv(save_path, index=False)
+            context_path = calibration_output_dir / f"calibration_context_{run_id}.json"
+            context_path.write_text(
+                json.dumps(calibration_context.to_dict(), indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            record_path = calibration_output_dir / f"calibration_record_{run_id}.json"
+            self.save_calibration_record(
+                record_path,
+                k_factor=k_val,
+                calibration_context=calibration_context,
+                calibration_uncertainty=calibration_uncertainty,
+                poni_path=files["poni"],
+                mask_path=mask_path,
+                flat_path=flat_path,
+            )
+            self.calibration_context = calibration_context
+            self.calibration_k_value = float(k_val)
+            self.calibration_uncertainty = calibration_uncertainty
+            self.calibration_record_path = record_path
             self.report(f"Saved profile: {save_path.name}")
+            self.report(f"Saved calibration context: {context_path.name}")
+            self.report(f"Saved complete calibration record: {record_path.name}")
 
             self.append_k_history(
                 files=files,
@@ -5481,6 +5878,10 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 output_dir=calibration_output_dir,
                 run_id=run_id,
                 calibration_check_path=save_path,
+                calibration_context=calibration_context,
+                calibration_context_path=context_path,
+                calibration_record_path=record_path,
+                calibration_uncertainty=calibration_uncertainty,
             )
             self.report("K history updated.")
             
@@ -5529,6 +5930,10 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         output_dir=None,
         run_id=None,
         calibration_check_path=None,
+        calibration_context=None,
+        calibration_context_path=None,
+        calibration_record_path=None,
+        calibration_uncertainty=None,
     ):
         if output_dir is None:
             output_dir = self.get_calibration_output_dir(files.get("std", ""))
@@ -5546,9 +5951,21 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         bg_norm = self.compute_norm_factor(
             params.get("bg_exp", np.nan),
             params.get("bg_i0", np.nan),
-            params.get("bg_t", np.nan),
+            1.0,
             monitor_mode,
         )
+        uncertainty = calibration_uncertainty or {}
+
+        def history_optional_number(key):
+            value = uncertainty.get(key)
+            if value is None:
+                return np.nan
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return np.nan
+            return number if np.isfinite(number) else np.nan
+
         row = {
             "Timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
             "Run_ID": run_id or datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
@@ -5569,6 +5986,23 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             "Std_Norm": float(std_norm) if np.isfinite(std_norm) else np.nan,
             "BG_Norm": float(bg_norm) if np.isfinite(bg_norm) else np.nan,
             "Calibration_Check": str(calibration_check_path or ""),
+            "CalibrationContextFingerprint": (
+                calibration_context.fingerprint() if calibration_context is not None else ""
+            ),
+            "CalibrationContextFile": str(calibration_context_path or ""),
+            "CalibrationRecordSchema": (
+                CALIBRATION_RECORD_SCHEMA if calibration_record_path else ""
+            ),
+            "CalibrationRecordFile": str(calibration_record_path or ""),
+            "K_StandardUncertaintyStatus": uncertainty.get(
+                "standard_uncertainty_status", "unknown"
+            ),
+            "K_StatisticalStandardUncertainty": history_optional_number(
+                "k_statistical_standard_uncertainty"
+            ),
+            "K_StandardUncertainty": history_optional_number("k_standard_uncertainty"),
+            "K_ExpandedUncertainty": history_optional_number("k_expanded_uncertainty"),
+            "K_CoverageFactor": history_optional_number("coverage_factor"),
         }
         df_row = pd.DataFrame([row])
         if hist_path.exists():
@@ -5836,6 +6270,9 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         "Status": status,
                         "Reason": reason,
                         "K_Factor": context.get("k_factor", ""),
+                        "CalibrationContextFingerprint": context.get(
+                            "calibration_context_fingerprint", ""
+                        ),
                         "SolidAngle": "ON" if context.get("apply_solid_angle") else "OFF",
                         "Polarization_Applied": bool(context.get("polarization_applied")),
                         "Polarization_Factor": context.get("polarization"),
@@ -5874,21 +6311,21 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             exp, mon, trans = self.parse_header(fpath, header_dict=sample_header)
             monitor_mode = context["monitor_mode"]
             missing = []
+            if exp is None:
+                missing.append("exp")
             if mon is None:
                 missing.append("mon")
             if trans is None:
                 missing.append("trans")
-            if monitor_mode == "rate" and exp is None:
-                missing.append("exp")
             if missing:
                 raise ValueError(f"文件头缺少关键字段: {', '.join(missing)}")
 
             exp = float(exp) if exp is not None else np.nan
             mon = float(mon)
             trans = float(trans)
-            if not (np.isfinite(mon) and np.isfinite(trans) and (np.isfinite(exp) or monitor_mode == "integrated")):
+            if not (np.isfinite(exp) and np.isfinite(mon) and np.isfinite(trans)):
                 raise ValueError("文件头参数存在非法值（非有限数）")
-            if monitor_mode == "rate" and exp <= 0:
+            if exp <= 0:
                 raise ValueError(f"曝光时间非法: exp={exp}")
             if mon <= 0:
                 raise ValueError(f"I0 非法: mon={mon}")
@@ -5905,6 +6342,9 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
 
             if context["ref_mode"] == "fixed":
                 d_dark = context["fixed_dark_data"]
+                dark_exposure_s = context.get("fixed_dark_exposure_s")
+                if dark_exposure_s is None:
+                    raise ValueError("dark exposure metadata is required for absolute reduction")
                 bg_norm = context["fixed_bg_norm"]
                 img_bg_net = context["fixed_bg_net"]
                 bg_path_used = context["fixed_bg_path"]
@@ -5931,16 +6371,23 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 dark_path_used = dark_ref["path"]
                 d_bg = load_data(bg_path_used)
                 d_dark = load_data(dark_path_used)
-                bg_norm = self.compute_norm_factor(
-                    bg_ref.get("exp"),
-                    bg_ref.get("mon"),
-                    bg_ref.get("trans"),
-                    monitor_mode,
+                dark_exposure_s = dark_ref.get("exp")
+                if dark_exposure_s is None:
+                    raise ValueError("matched dark exposure metadata is required")
+                if validate_blank_transmission is None or normalize_detector_frame is None:
+                    raise RuntimeError("shared detector reduction support is unavailable")
+                validate_blank_transmission(bg_ref.get("trans"))
+                bg_frame = normalize_detector_frame(
+                    d_bg,
+                    d_dark,
+                    image_exposure_s=bg_ref.get("exp"),
+                    dark_exposure_s=dark_exposure_s,
+                    monitor=bg_ref.get("mon"),
+                    transmission=1.0,
+                    monitor_mode=monitor_mode,
                 )
-                if not np.isfinite(bg_norm) or bg_norm <= 0:
-                    bg_norm = context["fixed_bg_norm"]
-                    log_line(f"[警告] {fname}: 匹配到的 BG 头参数不完整，回退全局 BG 归一化因子")
-                img_bg_net = (d_bg - d_dark) / bg_norm
+                bg_norm = bg_frame.normalization_factor
+                img_bg_net = bg_frame.image
 
             self._assert_same_shape(d_s, d_dark, "sample", "dark")
             self._assert_same_shape(d_s, img_bg_net, "sample", "bg_net")
@@ -5963,23 +6410,32 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             if not np.isfinite(thk_cm) or thk_cm <= 0:
                 raise ValueError(f"厚度计算结果非法: {thk_cm}")
 
-            norm_s = self.compute_norm_factor(exp if np.isfinite(exp) else None, mon, trans, monitor_mode)
-            if not np.isfinite(norm_s) or norm_s <= 0:
-                raise ValueError(f"样品归一化因子非法: {norm_s}")
+            if normalize_detector_frame is None:
+                raise RuntimeError("shared detector reduction support is unavailable")
+            sample_frame = normalize_detector_frame(
+                d_s,
+                d_dark,
+                image_exposure_s=exp,
+                dark_exposure_s=dark_exposure_s,
+                monitor=mon,
+                transmission=trans,
+                monitor_mode=monitor_mode,
+            )
+            norm_s = sample_frame.normalization_factor
+            alpha = float(context.get("bg_alpha", 1.0))
+            if not np.isfinite(alpha) or alpha <= 0:
+                raise ValueError("background alpha must be finite and > 0")
+            img_net = sample_frame.image - alpha * img_bg_net
 
-            img_net = (d_s - d_dark) / norm_s - context.get("bg_alpha", 1.0) * img_bg_net
-
-            integ_kwargs_common = {
-                "correctSolidAngle": context["apply_solid_angle"],
-            }
-            if context["error_model"] != "none":
-                integ_kwargs_common["error_model"] = context["error_model"]
-            if mask_arr is not None:
-                integ_kwargs_common["mask"] = mask_arr
-            if flat_arr is not None:
-                integ_kwargs_common["flat"] = flat_arr
-            if context.get("polarization_applied") and context["polarization"] is not None:
-                integ_kwargs_common["polarization_factor"] = context["polarization"]
+            integ_kwargs_common = self.build_integration_correction_kwargs(
+                correct_solid_angle=context["apply_solid_angle"],
+                error_model=context["error_model"],
+                mask=mask_arr,
+                flat=flat_arr,
+                polarization_factor=(
+                    context["polarization"] if context.get("polarization_applied") else None
+                ),
+            )
 
             mode_success = 0
             mode_skip = 0
@@ -6017,6 +6473,13 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                             apply_flat=bool(context.get("cal2d_apply_flat")) and flat_arr is not None,
                         )
                         cal2d_meta = {
+                            "calibration_context": context.get("calibration_context", {}),
+                            "calibration_context_fingerprint": context.get(
+                                "calibration_context_fingerprint", ""
+                            ),
+                            "calibration_record_path": context.get(
+                                "calibration_record_path", ""
+                            ),
                             "normalization": {
                                 "mode": monitor_mode,
                                 "formula": self.monitor_norm_formula(monitor_mode),
@@ -6347,6 +6810,9 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             "Status": status,
             "Reason": reason,
             "K_Factor": context.get("k_factor", ""),
+            "CalibrationContextFingerprint": context.get(
+                "calibration_context_fingerprint", ""
+            ),
             "SolidAngle": "ON" if context.get("apply_solid_angle") else "OFF",
             "Polarization_Applied": bool(context.get("polarization_applied")),
             "Polarization_Factor": context.get("polarization"),
@@ -6365,6 +6831,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             "BG_Reject_Reason": bg_reject_reason,
             "Dark_Reject_Reason": dark_reject_reason,
             "ModesSelected": ",".join(context["selected_modes"]),
+            "ProfileErrorSemantics": "statistical_only",
+            "CombinedStandardUncertaintyStatus": "unknown",
             "Outputs": " | ".join(outputs),
             "OutputDir": str(context.get("save_dirs", {}).get("1d_full", "")) if "1d_full" in context.get("selected_modes", []) else "",
             "Cal2D_Status": cal2d_status,
@@ -6444,6 +6912,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 raise ValueError("织构 q 范围无效：qmin 必须 < qmax。")
 
             fixed_dark_data = fabio.open(dk_p).data.astype(np.float64)
+            fixed_dark_exposure_s = self.read_required_dark_exposure(dk_p)
             bg_paths = self.split_path_list(bg_p)
             if not bg_paths:
                 raise ValueError("缺少背景文件。")
@@ -6456,6 +6925,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     self.global_vars["bg_i0"].get(),
                     self.global_vars["bg_t"].get(),
                 ),
+                dark_exposure_s=fixed_dark_exposure_s,
                 ref_shape=fixed_dark_data.shape,
             )
             fixed_bg_norm = float(np.nanmedian(np.asarray(bg_norm_list, dtype=np.float64)))
@@ -6527,6 +6997,22 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             cal2d_dtype = self.t2_cal2d_dtype.get().strip().lower() if hasattr(self, "t2_cal2d_dtype") else "float32"
             if export_cal2d and cal2d_dtype not in ("float32", "float64"):
                 raise ValueError("Cal2D dtype 仅支持 float32 / float64。")
+            active_calibration_context = self.require_calibration_context_for_batch(
+                k_factor=k,
+                monitor_mode=monitor_mode,
+                poni_path=poni,
+                mask_path=self.t2_mask_path.get().strip(),
+                flat_path=self.t2_flat_path.get().strip(),
+                correct_solid_angle=apply_solid_angle,
+                polarization_factor=pol if polarization_applied else None,
+            )
+            thickness_config = self.resolve_sample_thickness_config(
+                mode=self.t2_calc_mode.get(),
+                mu_value=self.t2_mu.get(),
+                fixed_thickness_mm=self.t2_fixed_thk.get(),
+            )
+            mu = thickness_config["mu_cm_inv"]
+            fixed_thk_cm = thickness_config["fixed_thickness_cm"]
 
             custom_out_root = self.t2_output_root.get().strip() if hasattr(self, "t2_output_root") else ""
             if custom_out_root:
@@ -6566,12 +7052,6 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
 
             self.prog_bar["maximum"] = len(files)
             self.prog_bar["value"] = 0
-            mu = self.t2_mu.get()
-            if self.t2_calc_mode.get() == "auto" and mu <= 0:
-                raise ValueError("自动厚度模式要求 mu > 0。")
-            if self.t2_calc_mode.get() == "fixed" and self.t2_fixed_thk.get() <= 0:
-                raise ValueError("固定厚度必须 > 0 mm。")
-            fixed_thk_cm = self.t2_fixed_thk.get() / 10.0
 
             try:
                 workers = max(1, int(self.t2_workers.get()))
@@ -6605,6 +7085,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 "fixed_thk_cm": fixed_thk_cm,
                 "fixed_bg_net": fixed_bg_net,
                 "fixed_dark_data": fixed_dark_data,
+                "fixed_dark_exposure_s": fixed_dark_exposure_s,
                 "fixed_bg_norm": fixed_bg_norm,
                 "fixed_bg_path": ";".join(bg_used_paths),
                 "fixed_dark_path": dk_p,
@@ -6634,6 +7115,11 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 "cal2d_dtype": cal2d_dtype,
                 "cal2d_apply_flat": bool(self.t2_cal2d_apply_flat.get()) if hasattr(self, "t2_cal2d_apply_flat") else True,
                 "flat_path": self.t2_flat_path.get().strip(),
+                "calibration_context": active_calibration_context.to_dict(),
+                "calibration_context_fingerprint": active_calibration_context.fingerprint(),
+                "calibration_record_path": str(
+                    getattr(self, "calibration_record_path", None) or ""
+                ),
             }
 
             rows = []
@@ -6752,6 +7238,11 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     },
                     "global_settings": {
                         "k_factor": k,
+                        "calibration_context": active_calibration_context.to_dict(),
+                        "calibration_context_fingerprint": active_calibration_context.fingerprint(),
+                        "calibration_record_path": str(
+                            getattr(self, "calibration_record_path", None) or ""
+                        ),
                         "solid_angle": "ON" if apply_solid_angle else "OFF",
                         "polarization_applied": polarization_applied,
                         "polarization_factor": pol,
@@ -6769,6 +7260,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     "bg_dark": {
                         "bg_paths": bg_paths,
                         "dark_path": dk_p,
+                        "dark_exposure_s": fixed_dark_exposure_s,
                         "fixed_bg_norm": fixed_bg_norm,
                         "bg_library_count": len(bg_library) if 'bg_library' in locals() else 0,
                         "dark_library_count": len(dark_library) if 'dark_library' in locals() else 0,
@@ -6840,6 +7332,11 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 "files_total": len(files),
                 "workers": workers,
                 "k_factor": k,
+                "calibration_context": active_calibration_context.to_dict(),
+                "calibration_context_fingerprint": active_calibration_context.fingerprint(),
+                "calibration_record_path": str(
+                    getattr(self, "calibration_record_path", None) or ""
+                ),
                 "monitor_mode": monitor_mode,
                 "norm_formula": self.monitor_norm_formula(monitor_mode),
                 "calc_mode": self.t2_calc_mode.get(),
@@ -7030,17 +7527,32 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         rows = []
         failed_files = 0
         risky_files = 0
-        mu = self.t2_mu.get()
         monitor_mode = self.get_monitor_mode()
         mode = self.t2_calc_mode.get()
         selected_modes = self.get_selected_modes()
         warnings = []
+        try:
+            thickness_config = self.resolve_sample_thickness_config(
+                mode=mode,
+                mu_value=self.t2_mu.get(),
+                fixed_thickness_mm=self.t2_fixed_thk.get(),
+            )
+            thickness_config_error = ""
+        except (TypeError, ValueError) as exc:
+            thickness_config = {
+                "mode": mode,
+                "mu_cm_inv": None,
+                "fixed_thickness_cm": None,
+            }
+            thickness_config_error = str(exc)
+            warnings.append(thickness_config_error)
+        mu = thickness_config["mu_cm_inv"]
         inst_issues = []
         sample_norms = []
         bg_norm = self.compute_norm_factor(
             self.global_vars["bg_exp"].get(),
             self.global_vars["bg_i0"].get(),
-            self.global_vars["bg_t"].get(),
+            1.0,
             monitor_mode,
         )
 
@@ -7056,10 +7568,6 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 warnings.append(self.tr("warn_sector_angle_invalid").format(e=e))
         if "radial_chi" in selected_modes and self.t2_rad_qmin.get() >= self.t2_rad_qmax.get():
             warnings.append(self.tr("warn_texture_q_invalid"))
-        if mode == "auto" and mu <= 0:
-            warnings.append(self.tr("warn_auto_thk_mu"))
-        if self.t2_calc_mode.get() == "fixed" and self.t2_fixed_thk.get() <= 0:
-            warnings.append(self.tr("warn_fix_thk_le_zero"))
         if self.t2_ref_mode.get() == "auto":
             if not self.t2_bg_candidates:
                 warnings.append(self.tr("warn_auto_bg_empty"))
@@ -7103,12 +7611,12 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             dark_reject_reason = ""
 
             missing = []
+            if e is None:
+                missing.append("EXP")
             if m is None:
                 missing.append("MON")
             if t is None:
                 missing.append("T")
-            if monitor_mode == "rate" and e is None:
-                missing.append("EXP")
 
             if missing:
                 stat = f"Missing header fields: {','.join(missing)}" if self.language == "en" else f"缺少文件头字段: {','.join(missing)}"
@@ -7120,21 +7628,24 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 n = self.compute_norm_factor(e if e is not None else None, m, t, monitor_mode)
                 if np.isfinite(n) and n > 0:
                     sample_norms.append(float(n))
-                if monitor_mode == "rate" and e <= 0:
+                if e <= 0:
                     stat = "Error: EXP <= 0" if self.language == "en" else "错误: EXP <= 0"
                 elif m <= 0:
                     stat = "Error: MON <= 0" if self.language == "en" else "错误: MON <= 0"
                 elif not (0 < t <= 1):
                     stat = "Error: T outside (0,1]" if self.language == "en" else "错误: T 超出 (0,1]"
                 elif mode == "auto":
-                    if mu <= 0:
+                    if thickness_config_error or mu is None:
                         stat = "Error: MU <= 0" if self.language == "en" else "错误: MU <= 0"
                     elif t >= 0.999 or t <= 0.001:
                         stat = "Error: T unsuitable for auto-thickness" if self.language == "en" else "错误: T 不适合自动厚度"
                     else:
                         d_mm = (-math.log(t) / mu) * 10.0
                 else:
-                    d_mm = self.t2_fixed_thk.get()
+                    if thickness_config_error:
+                        stat = thickness_config_error
+                    else:
+                        d_mm = float(thickness_config["fixed_thickness_cm"]) * 10.0
 
             if self.t2_ref_mode.get() == "auto":
                 try:
@@ -7683,6 +8194,12 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         sel_text = self.t1_std_combo.get()
         key = self._t1_std_option_map.get(sel_text, "SRM3600")
         self.t1_std_type.set(key)
+        if hasattr(self, "t1_params") and "std_thk" in self.t1_params:
+            # SRM 3600 has a certificate-mandated coupon thickness.  Other
+            # standards require an explicit path length from the operator.
+            self.t1_params["std_thk"].set(
+                DEFAULT_STANDARD_THICKNESS_MM if key == "SRM3600" else 0.0
+            )
 
         # Hide both conditional rows first
         self.t1_water_row.pack_forget()
@@ -7698,7 +8215,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
     def _get_std_reference_data(self):
         """Return (q_ref, i_ref) based on the current standard selection.
 
-        For SRM3600: built-in 15-point curve.
+        For SRM3600: built-in NIST Certificate Table 1 curve.
         For Water: flat curve at user-specified temperature.
         For Lupolen/Custom: load from user-supplied file.
         """
@@ -7879,6 +8396,33 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             self.t1_files["std"].set(candidate_paths["std"])
             self.on_load_std_t1(candidate_paths["std"])
             notes.append(f"Std image loaded from session std_path: {Path(candidate_paths['std']).name}")
+
+        record_value = cal.get(
+            "calibration_record_path",
+            cal.get("record_path", sess.get("calibration_record_path", "")),
+        )
+        record_text = str(record_value or "").strip()
+        if record_text:
+            record_path = Path(record_text).expanduser()
+            if not record_path.is_absolute():
+                record_path = Path(session_path).resolve().parent / record_path
+            try:
+                self.load_calibration_record(record_path)
+                notes.append(f"Complete calibration record loaded: {record_path.name}")
+            except Exception as exc:
+                self.calibration_context = None
+                self.calibration_k_value = None
+                self.calibration_uncertainty = None
+                self.calibration_record_path = None
+                notes.append(f"Calibration record rejected: {exc}")
+        elif "k_factor" in cal or "k_factor" in sess:
+            self.calibration_context = None
+            self.calibration_k_value = None
+            self.calibration_uncertainty = None
+            self.calibration_record_path = None
+            notes.append(
+                "Legacy/manual K ignored because the session has no complete CalibrationContext record."
+            )
 
         data_path = str(sess.get("data_path", "")).strip()
         if data_path:

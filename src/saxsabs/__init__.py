@@ -20,6 +20,15 @@ from .core.session_grouper import (
     AcquisitionGroup,
     cluster_by_acquisition_time,
 )
+from .core.detector_reduction import (
+    NetDetectorImage,
+    NormalizedDetectorFrame,
+    build_nist_net_image,
+    normalize_detector_frame,
+    validate_blank_transmission,
+)
+from .core.calibration_context import CalibrationContext, sha256_file
+from .core.uncertainty import AbsoluteUncertaintyBudget, propagate_absolute_uncertainty
 from .io.parsers import (
     parse_header_values,
     parse_header_values_with_meta,
@@ -36,6 +45,8 @@ from .io.calibrated2d import (
 )
 from .constants import (
     NIST_SRM3600_DATA,
+    NIST_SRM3600_UNCERTAINTY,
+    NIST_SRM3600_COVERAGE_FACTOR,
     STANDARD_REGISTRY,
     StandardReference,
     get_reference_data,
@@ -54,6 +65,8 @@ __all__ = [
     "estimate_k_factor_robust",
     # standards
     "NIST_SRM3600_DATA",
+    "NIST_SRM3600_UNCERTAINTY",
+    "NIST_SRM3600_COVERAGE_FACTOR",
     "STANDARD_REGISTRY",
     "StandardReference",
     "get_reference_data",
@@ -89,6 +102,16 @@ __all__ = [
     "reference_score",
     "select_best_reference",
     "ReferenceEntry",
+    # detector reduction and calibration provenance
+    "NetDetectorImage",
+    "NormalizedDetectorFrame",
+    "build_nist_net_image",
+    "normalize_detector_frame",
+    "validate_blank_transmission",
+    "CalibrationContext",
+    "sha256_file",
+    "AbsoluteUncertaintyBudget",
+    "propagate_absolute_uncertainty",
     # 机时 / session grouping
     "AcquisitionGroup",
     "cluster_by_acquisition_time",

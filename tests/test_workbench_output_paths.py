@@ -1,3 +1,4 @@
+import csv
 import importlib.util
 from pathlib import Path
 import sys
@@ -98,6 +99,36 @@ def test_workbench_save_profile_table_uses_rerun_suffix_policy(tmp_path):
     assert original.read_text(encoding="utf-8") == "old result"
 
 
+@pytest.mark.parametrize(
+    ("output_format", "suffix", "delimiter"),
+    [("tsv", ".dat", "\t"), ("csv", ".csv", ",")],
+)
+def test_workbench_text_profile_labels_statistical_and_unknown_combined_errors(
+    tmp_path,
+    output_format,
+    suffix,
+    delimiter,
+):
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+
+    written = app.save_profile_table(
+        tmp_path / "absolute.dat",
+        np.array([0.01, 0.02]),
+        np.array([10.0, 9.0]),
+        np.array([0.1, 0.2]),
+        "Q_A^-1",
+        output_format=output_format,
+    )
+
+    assert written.suffix == suffix
+    with written.open("r", encoding="utf-8-sig", newline="") as stream:
+        rows = list(csv.DictReader(stream, delimiter=delimiter))
+    assert rows[0]["Error_cm^-1"] == rows[0]["Error_Statistical_cm^-1"] == "0.1"
+    assert rows[1]["Error_cm^-1"] == rows[1]["Error_Statistical_cm^-1"] == "0.2"
+    assert all(row["Error_CombinedStandard_cm^-1"] == "NaN" for row in rows)
+
+
 def test_workbench_cal2d_export_uses_explicit_overwrite_policy(tmp_path, monkeypatch):
     module = _load_workbench_module()
     app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
@@ -140,6 +171,7 @@ def test_workbench_cal2d_export_uses_explicit_overwrite_policy(tmp_path, monkeyp
         "poni_path": poni,
         "ref_mode": "fixed",
         "fixed_dark_data": np.zeros((2, 2), dtype=np.float64),
+        "fixed_dark_exposure_s": 1.0,
         "fixed_bg_norm": 1.0,
         "fixed_bg_net": np.zeros((2, 2), dtype=np.float64),
         "fixed_bg_path": "bg.tif",
@@ -194,6 +226,14 @@ def test_workbench_k_history_uses_calibration_output_directory(tmp_path):
         output_dir=tmp_path / "saxsabs_calibration_outputs",
         run_id="run001",
         calibration_check_path=calibration_check,
+        calibration_record_path=tmp_path / "saxsabs_calibration_outputs" / "calibration_record_run001.json",
+        calibration_uncertainty={
+            "standard_uncertainty_status": "unknown",
+            "k_statistical_standard_uncertainty": 0.01,
+            "k_standard_uncertainty": None,
+            "k_expanded_uncertainty": None,
+            "coverage_factor": None,
+        },
     )
 
     history = tmp_path / "saxsabs_calibration_outputs" / "k_factor_history.csv"
@@ -201,3 +241,8 @@ def test_workbench_k_history_uses_calibration_output_directory(tmp_path):
     text = history.read_text(encoding="utf-8-sig")
     assert "run001" in text
     assert "calibration_check_run001.csv" in text
+    assert "CalibrationRecordFile" in text
+    assert "calibration_record_run001.json" in text
+    assert "K_StandardUncertaintyStatus" in text
+    assert "unknown" in text
+    assert "None" not in text
