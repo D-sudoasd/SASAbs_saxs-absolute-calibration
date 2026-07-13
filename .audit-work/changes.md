@@ -1,6 +1,6 @@
 # 修改账本
 
-本账本描述 v2 发布硬化的代码闭环；最终冻结门禁为 `500 passed in 19.00s`，ruff/compileall/diff-check 通过，版本 `2.0.0`，wheel/sdist 与隔离安装 smoke 通过，独立 QA 无新增 P0/P1/P2。所有修改均应在精确暂存前再次由 `git diff` 核对。
+本账本描述 v2 发布硬化及首次远端 CI follow-up。release commit `cfad783` 已合并并 push；follow-up 本地门禁通过，但最终完成以第二轮远端 CI 成功为条件。
 
 ## CHG-001｜AUD-001
 
@@ -15,7 +15,7 @@
 
 - 范围：Workbench Cal2D 五件套、事务提交、resume 与 rerun。
 - 修改前：仅主 EDF 存在即可 skip；写入中断会留残包；并发冲突 rollback 可能误删后来者文件。
-- 修改后：image/mask NPY/mask EDF/PONI/metadata 及 shape/context/参数联合验证；staging 后 no-overwrite 提交；rollback 仅在目标仍与本事务 staged 文件 `samefile` 时清理；整包使用同一 rerun ID。
+- 修改后：image/mask NPY/mask EDF/PONI/metadata 及 shape/context/参数联合验证；staging 后以 create-if-absent 发布；no-overwrite 后续冲突不删除已发布成员，残片由完整性门拒绝；overwrite 模式使用 backup rollback；整包使用同一 rerun ID。
 - 兼容性：完整且身份一致的包仍可 resume；残缺、损坏、错配或竞争目标明确失败。
 - QA 补充：Cal2D rollback 竞态闭环归入 AUD-011。
 - 验证：fault injection、并发替换、残包、目录 PONI、package-level rerun 聚焦测试。
@@ -104,13 +104,24 @@
 - 修改后：`pyproject.toml`、package、legacy launcher、CITATION、codemeta、根 `.zenodo.json` 统一 2.0.0；README、architecture、runbook、CHANGELOG 更新安全边界、六子命令、legacy 迁移和 provenance 合同；新增 `MANIFEST.in` 将 CHANGELOG/CITATION/codemeta/.zenodo/tests/conftest 纳入 sdist；新增 `.audit-work/sdist-*/` ignore。
 - 历史边界：submission/software paper 的既有 1.1.1 内容保留为历史快照并明确说明，不伪造回溯版本。
 - 验证：根 metadata 版本一致性、CLI version、文档核对；sdist 解包根包含 release metadata 与 `tests/conftest.py`，解包内 version tests `2 passed`。
-- 最终构建：`.audit-work/dist-release-final-v4/` 中 wheel 与 sdist 构建通过；wheel 隔离 smoke、sdist 解包与 version tests 通过。
+- 最终构建：`.audit-work/dist-release-final-v5/` 中 wheel 与 sdist 构建通过；wheel 隔离 smoke、sdist 解包与 version tests 通过。
 
-## 最终门禁状态
+## CHG-CI-001｜AUD-024
 
-- 全量 pytest：`500 passed in 19.00s`；`.audit-work/pytest-release-final-v6.xml`
+- 触发：首轮 GitHub Actions `ci` run `29228584901` 最终 failure；除 ubuntu 3.11 外的 Ubuntu/macOS/Windows 矩阵均失败。
+- 根因 1：`tests/test_version_metadata.py` 在 Python 3.10 collection 直接依赖不存在的 `tomllib`。
+- 根因 2：wheel 内容测试运行 `pip wheel --no-build-isolation`，但 dev extra 未显式安装 `setuptools>=69` 与 `wheel`；旧测试捕获 stderr，失败日志不透明。
+- 修改：version test 改用 Python 3.10 兼容 regex；dev extra 加入 `setuptools>=69` 与 `wheel`；wheel test 失败信息同时显示 stdout/stderr。
+- 本地验证：focused `18 passed`；全量 `500 passed in 19.48s`；ruff、compileall、diff-check；final-v5 wheel/sdist build 与 smokes；sdist 解包 version tests `2 passed`。
+- 兼容性：测试不再要求 Python 3.11 `tomllib`；no-build-isolation 所需 build tools 成为显式 dev 合同；不改变运行时科研 API。
+- 审计截止：follow-up 尚未 commit/merge/push，第二轮远端 CI 尚未触发；不得把本地通过写成远端已绿。
+
+## Follow-up 本地门禁状态
+
+- 全量 pytest：`500 passed in 19.48s`；`.audit-work/pytest-release-final-v7.xml`
 - ruff/compileall/diff-check：`全部通过`
 - wheel/sdist build：通过；wheel 隔离 target import/CLI/launcher/entry points 通过；sdist 解包 metadata/conftest 完整，解包内 version tests `2 passed`
-- wheel SHA-256：`154AF0ECC504619DED8C7C23BC2C43C208E047FAEC9C751394BE49EF025C4A9F`
-- sdist SHA-256：`7080CC47DB13B9DCBEED448AA4F3D1F234AC506C66AFB76D3D98867ED4CE9DCC`
-- 独立最终 QA：A/B/C/D/resume 与 release metadata/packaging 全部 PASS；无新增 P0/P1/P2
+- wheel SHA-256：`7081EA14E70CE317DCAA125C7131EFA3C4E5BBB51F25A4CC582215A8857DD281`
+- sdist SHA-256：`E569AA62C980963F06A96047A310D2E580AB6AEDD516F59870E8907ADBFE0595`
+- 独立最终 QA：A/B/C/D/resume 与 release metadata/packaging PASS；CI follow-up focused `18 passed`；无新增 P0/P1/P2
+- 远端 CI：首轮 run `29228584901` failure 已诊断；第二轮 CI 待 follow-up commit/merge/push 后触发。

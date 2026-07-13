@@ -49,6 +49,8 @@ dev = [
   "matplotlib>=3.7",
   "pytest>=8.0",
   "ruff>=0.5",
+  "setuptools>=69",
+  "wheel",
 ]
 
 [project.scripts]

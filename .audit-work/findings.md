@@ -1,7 +1,7 @@
 # 问题账本
 
 结论：原始 24 项问题的优先级分布为 P0/P1/P2/P3 = **0/10/12/2**；当前状态为
-**verified=21、blocked=0、open=3**。最终门禁全部通过，**建议快进合并/push**。
+**verified=21、blocked=0、open=3**。follow-up 本地门禁通过；**最终完成以第二轮远端 CI 成功为条件**。
 
 | ID | 优先级 | 分类 | 状态 | 路径/符号 | 触发条件与影响 | 修复闭环 | 证据 | 剩余边界 |
 |---|---|---|---|---|---|---|---|---|
@@ -15,7 +15,7 @@
 | AUD-008 | P1 | SRM 科研约束 | verified | SRM 3600/K QC | 错厚度或不平行 ratio 会造成绝对标度偏差 | SRM 别名统一；锁定 0.1055 cm；证书约束与保守平行性门 | EV-020/025/029 | 更严格阈值可配置，不允许放宽证书边界 |
 | AUD-009 | P1 | μ 输入 | verified | μ calculator/GUI | `Fe:95` 等比例尺度含糊可放大 μ | 仅接受总和约 1 或约 100，并精确归一化到 1；其他 fail-closed | EV-024 | 化学式/单元素兼容路径保留 |
 | AUD-010 | P1 | GUI 信任/单位 | verified | Tab3/formal export | 默认 K、raw 缺 provenance、2θ 冒充 Q 或自产 1D 回读丢上下文 | 正式导出要求当前 record/context；Q/2θ/χ 严格处理；自产文本/canSAS/NXcanSAS provenance 可写回重读 | EV-025/029 | 可见 GUI 尚未完成视觉验收 |
-| AUD-011 | P2 | 多文件输出安全 | verified | Cal2D transaction | 中途失败、目标冲突或并发替换会留下混合包/误删外部文件 | staging + no-overwrite 提交 + rollback；rollback 只删除仍与本事务 staged 文件 samefile 的目标 | EV-009/025/029 | 跨文件系统不保证单一原子系统调用，但失败保持既有目标 |
+| AUD-011 | P2 | 多文件输出安全 | verified | Cal2D transaction | 中途失败、目标冲突或并发替换会留下混合包/误删外部文件 | staging + create-if-absent no-overwrite 发布；后续冲突不删除已发布成员，残片由完整性门拒绝；overwrite 模式使用 backup rollback | EV-009/025/029 | 多文件包不具备全局单一原子提交；no-overwrite 冲突可保守保留残片，但不会覆盖或删除竞争者文件 |
 | AUD-012 | P2 | RunPolicy | verified | Cal2D always-run | 目标存在时缺 package-level rerun 身份 | 整包分配统一 rerun ID，成员不会跨运行混合 | EV-025 | 无已知阻塞 |
 | AUD-013 | P2 | monitor provenance | verified | monitor mode builders/run | 合法大小写/空白输入曾导致计算、签名和脚本漂移 | 单一边界规范化并贯通主入口、签名与重放 | EV-014/018 | 无已知阻塞 |
 | AUD-014 | P2 | Tab2 控制流 | verified | auto-reference | auto 模式仍先强制加载 fixed BG/Dark | reference 分支前移，共享验证按实际模式执行 | EV-025 | 无已知阻塞 |
@@ -28,11 +28,11 @@
 | AUD-021 | P2 | 输入快照/TOCTOU | verified | read→hash | 采集或同步中文件变化会使哈希不代表已分析数据 | 读前/读后双哈希与 stat 一致性门；resume 验证不改写创建 provenance | EV-015/025/029 | 持续变化输入会明确失败 |
 | AUD-022 | P2 | launcher 隔离 | verified | workbench launcher | cwd 阴影模块或不可写 cwd 可启动错版/无法记录日志 | package source 优先；用户/临时日志目录 fallback；启动脚本去 cwd 注入 | EV-025 | 可见启动窗口未被自动化接管 |
 | AUD-023 | P3 | metadata/version | verified | release metadata/CLI/docs | `.zenodo.json` 等版本元数据或迁移说明可能陈旧 | pyproject/package/CITATION/codemeta/`.zenodo.json` 统一 2.0.0 并纳入 version test；六子命令与 legacy 边界同步 | EV-026/030/032 | submission 快照明确保留历史版本 |
-| AUD-024 | P3 | 文档/打包质量 | verified | README/MANIFEST/.gitignore | 重复提示或 sdist 缺 release metadata/conftest 会使解包内验证失败 | README 去重；`MANIFEST.in` 纳入 CHANGELOG/CITATION/codemeta/.zenodo/tests/conftest；忽略 `.audit-work/sdist-*/` | EV-026/032 | 无已知阻塞 |
+| AUD-024 | P3 | 文档/打包/CI 质量 | verified | README/MANIFEST/dev tests | sdist 缺 metadata/conftest、Python 3.10 无 `tomllib` 或 no-isolation dev 环境缺 build tools 会使发布矩阵失败 | README 去重；`MANIFEST.in` 纳入 release files；忽略 sdist 工作目录；version test 使用 3.10 兼容 regex；dev extra 显式含 `setuptools>=69` 与 `wheel`；wheel test 失败显示 stdout/stderr | EV-026/032/034/035 | 第二轮远端 CI 待 follow-up push 后复验 |
 
 ## 状态核对
 
 - verified：AUD-001～AUD-014、AUD-016、AUD-018、AUD-019、AUD-021～AUD-024，共 21 项。
 - open：AUD-015、AUD-017、AUD-020，共 3 项。
 - blocked：无。
-- 最终冻结门禁：`500 passed in 19.00s`；ruff/compileall/diff-check 通过；版本 `2.0.0`；wheel/sdist 构建与隔离 smoke 通过；sdist 解包 metadata/conftest 完整且 version tests `2 passed`；artifact SHA-256 已记录；独立 QA 全部 PASS，且无新增 P0/P1/P2。
+- follow-up 本地冻结门禁：focused `18 passed`；全量 `500 passed in 19.48s`；ruff/compileall/diff-check 通过；版本 `2.0.0`；final-v5 wheel/sdist 与 smokes 通过并记录 SHA-256。首轮 `ci` run `29228584901` 为 failure；截至本地冻结点，follow-up 尚未 commit/merge/push，第二轮 CI 尚未触发。

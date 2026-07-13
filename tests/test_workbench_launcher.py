@@ -70,7 +70,7 @@ def test_resolve_app_source_uses_source_tree_not_cwd_shadow(
 
 
 def test_wheel_includes_legacy_gui_module(tmp_path: Path):
-    subprocess.run(
+    completed = subprocess.run(
         [
             sys.executable,
             "-m",
@@ -83,10 +83,15 @@ def test_wheel_includes_legacy_gui_module(tmp_path: Path):
             "-w",
             str(tmp_path),
         ],
-        check=True,
+        check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+    )
+    assert completed.returncode == 0, (
+        "wheel build failed\n"
+        f"stdout:\n{completed.stdout}\n"
+        f"stderr:\n{completed.stderr}"
     )
     wheels = list(tmp_path.glob("saxsabs-*.whl"))
     assert len(wheels) == 1

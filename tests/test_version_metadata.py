@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-import tomllib
 
 from saxsabs import __version__
 
@@ -12,14 +11,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_release_version_metadata_is_consistent():
-    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     citation = (ROOT / "CITATION.cff").read_text(encoding="utf-8")
     codemeta = json.loads((ROOT / "codemeta.json").read_text(encoding="utf-8"))
     zenodo = json.loads((ROOT / ".zenodo.json").read_text(encoding="utf-8"))
     workbench = (ROOT / "SASAbs.py").read_text(encoding="utf-8")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
-    assert pyproject["project"]["version"] == __version__
+    project_version = re.search(
+        r'(?ms)^\[project\]\s*$.*?^version\s*=\s*"([^\"]+)"\s*$', pyproject
+    )
+    assert project_version is not None
+    assert project_version.group(1) == __version__
     assert re.search(rf'^version: "{re.escape(__version__)}"$', citation, re.MULTILINE)
     assert codemeta["version"] == __version__
     assert zenodo["version"] == __version__
