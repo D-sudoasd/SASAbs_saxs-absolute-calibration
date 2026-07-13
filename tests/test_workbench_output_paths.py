@@ -1,5 +1,6 @@
 import csv
 import importlib.util
+import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -246,3 +247,311 @@ def test_workbench_k_history_uses_calibration_output_directory(tmp_path):
     assert "K_StandardUncertaintyStatus" in text
     assert "unknown" in text
     assert "None" not in text
+
+
+def _cal2d_resume_contract(sample_id):
+    return {
+        "calibration_context_fingerprint": "ctx-current",
+        "normalization": {
+            "mode": "rate",
+            "formula": "exp * I0 * T",
+            "k_factor": 2.5,
+            "thickness_cm": 0.1,
+        },
+        "background": {"alpha": 1.0, "bg_norm": 4.0},
+        "integration_policy": {
+            "correctSolidAngle": True,
+            "polarization_factor": 0.95,
+            "flat_applied_in_image": False,
+        },
+        "flat_path": "flat.edf",
+        "source": {
+            "output_stem": sample_id.removesuffix("_deadbeef"),
+            "cal2d_dtype": "float32",
+        },
+    }
+
+
+def _append_history_row(app, output_dir, run_id):
+    app.append_k_history(
+        files={
+            "std": str(output_dir.parent / "std.tif"),
+            "bg": str(output_dir.parent / "bg.tif"),
+            "dark": str(output_dir.parent / "dark.tif"),
+            "poni": str(output_dir.parent / "geometry.poni"),
+        },
+        params={
+            "std_exp": 1.0,
+            "std_i0": 10.0,
+            "std_t": 0.5,
+            "std_thk": 1.055,
+            "bg_exp": 1.0,
+            "bg_i0": 8.0,
+            "bg_t": 1.0,
+        },
+        monitor_mode="integrated",
+        apply_solid_angle=True,
+        k_val=2.5,
+        k_std=0.1,
+        points_used=12,
+        q_min=0.01,
+        q_max=0.2,
+        output_dir=output_dir,
+        run_id=run_id,
+        calibration_check_path=output_dir / f"calibration_check_{run_id}.csv",
+        calibration_context_path=output_dir / f"calibration_context_{run_id}.json",
+        calibration_record_path=output_dir / f"calibration_record_{run_id}.json",
+    )
+
+
+def test_workbench_k_history_refuses_to_replace_unreadable_history(tmp_path):
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    output_dir = tmp_path / "saxsabs_calibration_outputs"
+    output_dir.mkdir()
+    history = output_dir / "k_factor_history.csv"
+    original = b"BROKEN_HISTORY\x00\xff"
+    history.write_bytes(original)
+
+    with pytest.raises(ValueError, match="unreadable.*refusing to overwrite"):
+        _append_history_row(app, output_dir, "run002")
+
+    assert history.read_bytes() == original
+
+
+def test_workbench_k_history_atomic_failure_preserves_original(
+    tmp_path, monkeypatch
+):
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    output_dir = tmp_path / "saxsabs_calibration_outputs"
+    _append_history_row(app, output_dir, "run001")
+    history = output_dir / "k_factor_history.csv"
+    original = history.read_bytes()
+
+    def fail_replace(_source, _target):
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(module.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="injected replace failure"):
+        _append_history_row(app, output_dir, "run002")
+
+    assert history.read_bytes() == original
+    assert not list(output_dir.glob(".k_factor_history.csv.*.tmp"))
+
+
+def test_workbench_k_history_paths_are_relative_to_history_directory(tmp_path):
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    output_dir = tmp_path / "saxsabs_calibration_outputs"
+    _append_history_row(app, output_dir, "run001")
+
+    row = __import__("pandas").read_csv(output_dir / "k_factor_history.csv").iloc[0]
+    for field in (
+        "Std_File",
+        "BG_File",
+        "Dark_File",
+        "Poni_File",
+        "Calibration_Check",
+        "CalibrationContextFile",
+        "CalibrationRecordFile",
+    ):
+        assert not Path(str(row[field])).is_absolute(), field
+
+def _write_complete_cal2d_resume_package(module, root, sample_id):
+    from fabio.edfimage import EdfImage
+
+    paths = module._calibrated2d_package_paths(root, sample_id)
+    image = np.arange(12, dtype=np.float32).reshape(3, 4)
+    mask = np.zeros((3, 4), dtype=np.uint8)
+    paths["image"].parent.mkdir(parents=True, exist_ok=True)
+    EdfImage(data=image).write(str(paths["image"]))
+    paths["mask_npy"].parent.mkdir(parents=True, exist_ok=True)
+    np.save(paths["mask_npy"], mask)
+    EdfImage(data=mask).write(str(paths["mask_edf"]))
+    paths["poni"].parent.mkdir(parents=True, exist_ok=True)
+    paths["poni"].write_text(
+        "poni_version: 2\nDetector: Detector\nDistance: 1\n",
+        encoding="utf-8",
+    )
+    paths["metadata"].parent.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "schema": "saxsabs.calibrated2d.v1",
+        "files": {
+            "calibrated_image": f"../images/{sample_id}_cal2d.edf",
+            "mask_npy": f"../masks/{sample_id}_mask.npy",
+            "mask_edf": f"../masks/{sample_id}_mask.edf",
+            "poni": f"../geometry/{sample_id}.poni",
+        },
+        "qc": {"image_shape": [3, 4], "mask_shape": [3, 4]},
+        **_cal2d_resume_contract(sample_id),
+    }
+    paths["metadata"].write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    return paths
+
+
+def test_workbench_cal2d_resume_validation_rejects_incomplete_package(tmp_path):
+    module = _load_workbench_module()
+    sample_id = "sample001_deadbeef"
+    paths = module._calibrated2d_package_paths(tmp_path / "cal2d", sample_id)
+    paths["image"].parent.mkdir(parents=True, exist_ok=True)
+    paths["image"].write_bytes(b"partial-edf")
+
+    with pytest.raises(ValueError, match="incomplete existing calibrated 2D package"):
+        module._validate_existing_calibrated2d_package(tmp_path / "cal2d", sample_id)
+
+
+def test_workbench_cal2d_resume_validation_accepts_complete_consistent_package(tmp_path):
+    module = _load_workbench_module()
+    sample_id = "sample001_deadbeef"
+    root = tmp_path / "cal2d"
+    paths = _write_complete_cal2d_resume_package(module, root, sample_id)
+
+    validated = module._validate_existing_calibrated2d_package(root, sample_id)
+
+    assert validated == paths
+
+
+def test_workbench_cal2d_resume_validation_rejects_truncated_complete_package(tmp_path):
+    module = _load_workbench_module()
+    sample_id = "sample001_deadbeef"
+    root = tmp_path / "cal2d"
+    paths = _write_complete_cal2d_resume_package(module, root, sample_id)
+    paths["mask_npy"].write_bytes(b"")
+
+    with pytest.raises(ValueError, match="truncated.*mask_npy"):
+        module._validate_existing_calibrated2d_package(root, sample_id)
+
+
+def test_workbench_cal2d_resume_validation_rejects_shape_mismatch(tmp_path):
+    module = _load_workbench_module()
+    sample_id = "sample001_deadbeef"
+    root = tmp_path / "cal2d"
+    paths = _write_complete_cal2d_resume_package(module, root, sample_id)
+    np.save(paths["mask_npy"], np.zeros((2, 4), dtype=np.uint8))
+
+    with pytest.raises(ValueError, match="shape mismatch"):
+        module._validate_existing_calibrated2d_package(root, sample_id)
+
+
+def test_workbench_cal2d_resume_validation_rejects_same_shape_mask_content_mismatch(
+    tmp_path,
+):
+    module = _load_workbench_module()
+    sample_id = "sample001_deadbeef"
+    root = tmp_path / "cal2d"
+    paths = _write_complete_cal2d_resume_package(module, root, sample_id)
+    np.save(paths["mask_npy"], np.ones((3, 4), dtype=np.uint8))
+
+    with pytest.raises(ValueError, match="mask.*content mismatch"):
+        module._validate_existing_calibrated2d_package(root, sample_id)
+
+
+def test_workbench_cal2d_resume_binds_current_image_mask_poni_context_and_parameters(
+    tmp_path,
+):
+    module = _load_workbench_module()
+    sample_id = "sample001_deadbeef"
+    root = tmp_path / "cal2d"
+    paths = _write_complete_cal2d_resume_package(module, root, sample_id)
+    current_poni = tmp_path / "current.poni"
+    current_poni.write_bytes(paths["poni"].read_bytes())
+    expected_metadata = _cal2d_resume_contract(sample_id)
+    expected_image = np.arange(12, dtype=np.float32).reshape(3, 4)
+    expected_mask = np.zeros((3, 4), dtype=np.uint8)
+
+    validated = module._validate_existing_calibrated2d_package(
+        root,
+        sample_id,
+        expected_image=expected_image,
+        expected_mask=expected_mask,
+        expected_poni_path=current_poni,
+        expected_metadata=expected_metadata,
+    )
+    assert validated == paths
+
+    stale_context = json.loads(json.dumps(expected_metadata))
+    stale_context["calibration_context_fingerprint"] = "ctx-stale"
+    with pytest.raises(ValueError, match="calibration_context_fingerprint"):
+        module._validate_existing_calibrated2d_package(
+            root,
+            sample_id,
+            expected_image=expected_image,
+            expected_mask=expected_mask,
+            expected_poni_path=current_poni,
+            expected_metadata=stale_context,
+        )
+
+    changed_parameters = json.loads(json.dumps(expected_metadata))
+    changed_parameters["normalization"]["k_factor"] = 9.0
+    with pytest.raises(ValueError, match="normalization"):
+        module._validate_existing_calibrated2d_package(
+            root,
+            sample_id,
+            expected_image=expected_image,
+            expected_mask=expected_mask,
+            expected_poni_path=current_poni,
+            expected_metadata=changed_parameters,
+        )
+
+    changed_poni = tmp_path / "changed.poni"
+    changed_poni.write_text(
+        "poni_version: 2\nDetector: DifferentDetector\nDistance: 2\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="PONI content mismatch"):
+        module._validate_existing_calibrated2d_package(
+            root,
+            sample_id,
+            expected_image=expected_image,
+            expected_mask=expected_mask,
+            expected_poni_path=changed_poni,
+            expected_metadata=expected_metadata,
+        )
+
+def test_workbench_rejects_out_of_range_batch_workers():
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+
+    assert app.validate_batch_workers(1) == 1
+    assert app.validate_batch_workers(module.MAX_BATCH_WORKERS) == module.MAX_BATCH_WORKERS
+    for invalid in (0, module.MAX_BATCH_WORKERS + 1, 1000, 1.5, True, "nan"):
+        with pytest.raises(ValueError):
+            app.validate_batch_workers(invalid)
+
+
+def test_workbench_output_stems_are_bounded_unique_and_stable(tmp_path):
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    long_stem = "sample_" + ("verylong" * 40)
+    files = [
+        str(tmp_path / "run_a" / f"{long_stem}.tif"),
+        str(tmp_path / "run_b" / f"{long_stem}.tif"),
+    ]
+
+    first = app.build_output_stem_map(files)
+    second = app.build_output_stem_map(files)
+
+    assert first == second
+    assert len(set(value.casefold() for value in first.values())) == len(files)
+    assert all(len(value) <= module.MAX_OUTPUT_STEM_LENGTH for value in first.values())
+    assert all(not value.endswith((" ", ".")) for value in first.values())
+
+
+def test_workbench_allocates_one_rerun_id_for_entire_cal2d_package(tmp_path):
+    module = _load_workbench_module()
+    root = tmp_path / "cal2d"
+    sample_id = "sample001_deadbeef"
+    base_paths = module._calibrated2d_package_paths(root, sample_id)
+    base_paths["image"].parent.mkdir(parents=True, exist_ok=True)
+    base_paths["image"].write_bytes(b"existing")
+    rerun1_paths = module._calibrated2d_package_paths(root, f"{sample_id}_rerun1")
+    rerun1_paths["metadata"].parent.mkdir(parents=True, exist_ok=True)
+    rerun1_paths["metadata"].write_bytes(b"existing")
+
+    allocated = module._allocate_calibrated2d_rerun_id(root, sample_id)
+
+    assert allocated == f"{sample_id}_rerun2"
+    allocated_paths = module._calibrated2d_package_paths(root, allocated)
+    assert all(allocated in path.name for path in allocated_paths.values())
+    assert not any(path.exists() for path in allocated_paths.values())

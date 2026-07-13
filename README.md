@@ -40,6 +40,13 @@ scattering (SAXS) absolute-intensity calibration workflows. It provides:
 - **Bilingual GUI** (中文 / English) with Sun Valley (Win 11) theme and
   light / dark mode toggle
 
+## Version 2.0 safety boundaries
+
+- Formal Tab 2/Tab 3 output requires a source-verified calibration record; legacy v1, incomplete v2, manually entered K, and operator-incompatible external 1D profiles are inspection-only.
+- Q, 2theta, and chi axes are unit-checked. Named-axis conflicts and cross-axis subtraction fail closed; `q_nm^-1` is converted explicitly to `A^-1`.
+- BL19B2 reports a partial uncertainty budget while shared calibration-background raw-count and dark covariance remain unquantified. It never substitutes the NIST certificate coverage factor for a system coverage factor.
+- Calibrated-2D multi-file packages use transactional publication and content-bound resume validation.
+
 ## GUI Workflow Overview
 
 The **SAXSAbs Workbench** has four main tabs with a clear division of labor:
@@ -71,8 +78,6 @@ The **SAXSAbs Workbench** has four main tabs with a clear division of labor:
 3. Use **Tab 3** when collaborating with people who only provide integrated 1D curves.
 
 ### 快速选择路径（新用户必看）
-
-请根据下图快速判断自己应该使用哪些 Tab：
 
 请根据下图快速判断自己应该使用哪些 Tab：
 
@@ -201,6 +206,11 @@ repository workspace.
 
 ## Quick CLI examples
 
+The CLI exposes six subcommands: four focused utilities (`norm-factor`,
+`parse-header`, `parse-external1d`, and `estimate-k`), the safety-first
+`bl19b2-abs2d` workflow, and the explicit `bl19b2-abs2d-v1-legacy` migration
+entry.
+
 Compute normalization factor:
 
 ```bash
@@ -224,6 +234,19 @@ Estimate robust K-factor from measured/reference curves:
 ```bash
 saxsabs estimate-k --meas examples/k_measured.csv --ref examples/k_reference.csv --qmin 0.01 --qmax 0.2
 ```
+
+Run the safety-first BL19B2 absolute-2D workflow with explicit scientific
+semantics:
+
+```bash
+saxsabs bl19b2-abs2d --input-root DATA --poni geometry.poni --monitor-mode rate --mu 20.2 --standard-key SRM3600 --correct-solid-angle-for-k --no-polarization-correction
+```
+
+Historical v1 commands must use the dedicated `bl19b2-abs2d-v1-legacy`
+migration entry. It requires explicit monitor and thickness choices (or explicit
+acknowledgement of the former rate-monitor and `mu=20.2 cm^-1` assumptions); old
+unsafe defaults are never restored silently. See
+`docs/bl19b2_abs2d_batch_runbook.md` for the migration command.
 
 ## Public API
 

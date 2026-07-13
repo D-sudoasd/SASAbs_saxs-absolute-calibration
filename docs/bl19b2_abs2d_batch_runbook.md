@@ -90,16 +90,24 @@ Optional uncertainty inputs are
 `--monitor-relative-standard-uncertainty`,
 `--sample-thickness-relative-standard-uncertainty` (fixed-thickness mode),
 `--standard-thickness-relative-standard-uncertainty` (calibration coupon),
+`--standard-transmission-abs-uncertainty`,
+`--standard-monitor-relative-standard-uncertainty`,
+`--calibration-background-monitor-relative-standard-uncertainty`,
 `--mu-relative-standard-uncertainty` (Beer--Lambert mode), and
-`--alpha-standard-uncertainty`. Unknown values must be omitted and remain
-`null`; they are never treated as zero. BL19B2 output records these components
-and the K standard/expanded uncertainty, but leaves the combined per-pixel
-uncertainty `null` until all statistical and systematic inputs are available.
-The monitor value is interpreted as the same relative standard uncertainty on
-two independent per-frame readings (sample and blank), so their absolute
-contributions are combined in quadrature rather than treated as a common-mode
-scale error.
-
+`--alpha-standard-uncertainty`. Set `--system-coverage-factor` only for the
+final system expanded uncertainty. The NIST reference certificate coverage
+factor is recorded separately and is never reused as the system coverage
+factor. Unknown values must be omitted and remain
+`null`; they are never treated as zero. BL19B2 output records these components and the K uncertainty subtotal. The
+`--monitor-relative-standard-uncertainty` value applies only to the sample-frame
+monitor. The calibration-background monitor is the same reading reused in K
+estimation and sample-background subtraction, so
+`--calibration-background-monitor-relative-standard-uncertainty` is propagated
+with its signed joint sensitivity rather than as an independent duplicate.
+The calibration background raw counts and dark frame are also reused, but their
+covariance with K is not yet quantified. Therefore the current workflow
+intentionally reports a partial combined budget and does not emit a system
+expanded uncertainty, even when every scalar uncertainty option is supplied.
 The 2D output does not burn in mask, solid-angle, or polarization correction.
 Those corrections are deferred to pyFAI/pydidas reintegration.
 
@@ -181,12 +189,35 @@ python -m saxsabs.cli bl19b2-abs2d `
   --pydidas-cali-yaml '<BL19B2 DATA>\datXXX\reference_saxs\Cali.yaml' `
   --output-root '<BL19B2 DATA>\datXXX_absolute_corrected_2D' `
   --monitor-mode rate `
-  --mu 20.2
+  --mu 20.2 `
+  --standard-key SRM3600 `
+  --correct-solid-angle-for-k `
+  --no-polarization-correction
 ```
 
 The value `20.2` above is an explicit example for one material/energy, not a
-software default. The actual command used for a run is stored in
-`config/run_command.ps1`.
+software default. `--standard-key`, the solid-angle choice, and the polarization
+choice are always written explicitly to `config/run_command.ps1`, so rerunning
+cannot silently change the K-calibration integration settings.
+
+### Migrating historical v1 commands
+
+Historical `bl19b2-abs2d` commands relied on implicit rate-monitor semantics and
+an implicit `mu = 20.2 cm^-1`. The safe command now requires both choices. To
+replay a verified v1 command, use the explicit migration entry and acknowledge
+each historical assumption:
+
+```powershell
+python -m saxsabs.cli bl19b2-abs2d-v1-legacy `
+  --input-root '<BL19B2 DATA>\datXXX' `
+  --poni '<geometry.poni>' `
+  --legacy-assume-monitor-rate `
+  --legacy-assume-mu-20-2
+```
+
+Prefer `--monitor-mode` and either `--mu` or `--sample-thickness-cm` when the
+actual beamline and material values are known. The legacy entry refuses to run
+if either choice is omitted; it never restores the old defaults silently.
 
 ## Downstream pyFAI / pydidas Settings
 

@@ -12,7 +12,6 @@ Elam, W.T., Ravel, B.D. & Sieber, J.R. (2002).
 from __future__ import annotations
 
 import math
-import logging
 import re
 from dataclasses import dataclass, field
 
@@ -23,8 +22,6 @@ except ImportError as _exc:  # pragma: no cover
         "The 'xraydb' package is required for the universal μ calculator.  "
         "Install it with:  pip install xraydb>=4.5"
     ) from _exc
-
-logger = logging.getLogger(__name__)
 
 
 def _coerce_positive_finite_scalar(name: str, value: float) -> float:
@@ -37,7 +34,23 @@ def _coerce_positive_finite_scalar(name: str, value: float) -> float:
     return out
 
 
+_COMPOSITION_FRACTION_SUM_TOLERANCE = 0.02
+_COMPOSITION_PERCENT_SUM_TOLERANCE = 2.0
+
+
+def _sum_is_within(value: float, expected: float, tolerance: float) -> bool:
+    """Compare composition totals while tolerating binary rounding at the boundary."""
+    return abs(value - expected) <= tolerance + 1e-12
+
+
 def _validate_composition_fractions(composition: dict[str, float]) -> dict[str, float]:
+    """Validate a composition and return canonical weight fractions.
+
+    Values must unambiguously use either the fractional scale (total near 1) or
+    the weight-percent scale (total near 100). Accepted totals are normalized
+    to exact unit sum. Incomplete totals are rejected instead of being used to compute
+    a proportionally inflated or deflated attenuation coefficient.
+    """
     validated: dict[str, float] = {}
     for elem, fraction in composition.items():
         try:
@@ -50,9 +63,30 @@ def _validate_composition_fractions(composition: dict[str, float]) -> dict[str, 
             raise ValueError(f"Weight fraction for {elem!r} cannot be negative")
         validated[elem] = frac
 
-    if sum(validated.values()) <= 0:
-        raise ValueError("Composition weight fractions must sum to > 0")
-    return validated
+    total = math.fsum(validated.values())
+    is_fraction_scale = _sum_is_within(
+        total,
+        1.0,
+        _COMPOSITION_FRACTION_SUM_TOLERANCE,
+    )
+    is_percent_scale = _sum_is_within(
+        total,
+        100.0,
+        _COMPOSITION_PERCENT_SUM_TOLERANCE,
+    )
+    if is_fraction_scale or is_percent_scale:
+        items = list(validated.items())
+        normalized = {
+            elem: value / total
+            for elem, value in items[:-1]
+        }
+        normalized[items[-1][0]] = 1.0 - sum(normalized.values())
+        return normalized
+
+    raise ValueError(
+        "Composition values must sum to approximately 1 (weight fractions) "
+        f"or 100 (weight percent); got {total:.6g}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -160,8 +194,8 @@ def calculate_mu(
     Parameters
     ----------
     composition : dict[str, float]
-        Element symbol → weight fraction (0–1 scale).  The sum should be
-        close to 1.0 (a warning is issued if the deviation exceeds 2 %).
+        Element symbols mapped to weight fractions (sum within 2 % of 1) or weight
+        percent (sum within 2 of 100). Accepted values are normalized to sum to 1.
     density_g_cm3 : float
         Bulk density (g/cm³).  Must be > 0.
     energy_keV : float
@@ -174,7 +208,7 @@ def calculate_mu(
     Raises
     ------
     ValueError
-        On invalid energy, density, or empty composition.
+        On invalid energy, density, empty composition, or ambiguous composition scale.
     """
     if not composition:
         raise ValueError("Composition dict is empty")
@@ -182,13 +216,6 @@ def calculate_mu(
     energy_keV = _coerce_positive_finite_scalar("Energy", energy_keV)
     density_g_cm3 = _coerce_positive_finite_scalar("Density", density_g_cm3)
     composition = _validate_composition_fractions(composition)
-
-    wt_sum = sum(composition.values())
-    if abs(wt_sum - 1.0) > 0.02:
-        logger.warning(
-            "Weight fractions sum to %.4f (expected ~1.0); results may be inaccurate",
-            wt_sum,
-        )
 
     energy_eV = energy_keV * 1000.0
     contributions: dict[str, float] = {}
@@ -223,8 +250,10 @@ _COMP_RE = re.compile(
 def parse_composition_string(text: str) -> dict[str, float]:
     """Parse ``"Fe:0.69, Cr:0.19, Ni:0.10"`` or ``"Fe:69, Cr:19, Ni:10"`` notation.
 
-    If all values > 1 (and sum ≈ 100), they are treated as **weight percent**
-    and divided by 100.  Otherwise they are taken as weight fractions.
+    A total within 2 % of 1 is treated as weight fractions. A total within
+    2 of 100 is treated as weight percent. Accepted values are normalized to
+    exact unit sum. Other totals
+    are rejected as incomplete or scale-ambiguous.
 
     Returns
     -------
@@ -250,9 +279,4 @@ def parse_composition_string(text: str) -> dict[str, float]:
             raise ValueError(f"Negative value for element {elem}: {val}")
         comp[elem] = value
 
-    # Auto-detect percent vs fraction
-    vals = list(comp.values())
-    if any(v > 1 for v in vals) and abs(sum(vals) - 100.0) < 5.0:
-        comp = {k: v / 100.0 for k, v in comp.items()}
-
-    return comp
+    return _validate_composition_fractions(comp)

@@ -32,6 +32,46 @@ FLOAT_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 COMMA_THOUSANDS_PATTERN = re.compile(r"(?<!\d)[-+]?\d{1,3}(?:,\d{3})+(?:[eE][-+]?\d+)?(?!\d)")
 
 
+_OPERATOR_PROVENANCE_ALIASES = {
+    "calibrationcontextfingerprint": "calibration_context_fingerprint",
+    "contextfingerprint": "calibration_context_fingerprint",
+    "formulaversion": "formula_version",
+    "monitormode": "monitor_mode",
+    "correctsolidangle": "correct_solid_angle",
+    "polarizationfactor": "polarization_factor",
+    "ponisha256": "poni_sha256",
+    "geometrysha256": "poni_sha256",
+    "masksha256": "mask_sha256",
+    "flatsha256": "flat_sha256",
+}
+
+
+def _operator_provenance_key(value: object) -> str | None:
+    normalized = re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
+    return _OPERATOR_PROVENANCE_ALIASES.get(normalized)
+
+
+def _read_text_operator_provenance(path: str | Path) -> dict[str, str]:
+    try:
+        lines = Path(path).read_text(encoding="utf-8-sig", errors="strict").splitlines()
+    except (OSError, UnicodeError):
+        return {}
+    provenance: dict[str, str] = {}
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        match = re.match(
+            r"^([^:=]+)\s*[:=]\s*(.*?)\s*$",
+            stripped.lstrip("#").strip(),
+        )
+        if match is None:
+            continue
+        key = _operator_provenance_key(match.group(1))
+        if key is not None:
+            provenance[key] = match.group(2).strip()
+    return provenance
+
 def _clean_column_name(name: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(name).strip().lower())
 
@@ -104,7 +144,7 @@ def _comment_header_score(tokens: list[str]) -> int:
 
 def _read_comment_header_dataframe(path: str | Path) -> pd.DataFrame | None:
     try:
-        lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
+        lines = Path(path).read_text(encoding="utf-8-sig", errors="ignore").splitlines()
     except Exception:
         return None
 
@@ -115,7 +155,7 @@ def _read_comment_header_dataframe(path: str | Path) -> pd.DataFrame | None:
             continue
         if stripped.startswith("#"):
             candidate = stripped.lstrip("#").strip()
-            if not candidate:
+            if not candidate or ":" in candidate or "=" in candidate:
                 continue
             tokens = [token for token in re.split(r"[,\s;]+", candidate) if token]
             if len(tokens) >= 2 and any(FLOAT_PATTERN.fullmatch(token) is None for token in tokens):
@@ -308,7 +348,7 @@ def read_external_1d_profile(path: str | Path) -> dict[str, Any]:
 
     for kw in read_trials:
         try:
-            df = pd.read_csv(path, **kw)
+            df = pd.read_csv(path, encoding="utf-8-sig", **kw)
             if df is not None and not df.empty and df.shape[1] >= 2:
                 dfs.append(df)
         except Exception as exc:
@@ -400,6 +440,7 @@ def read_external_1d_profile(path: str | Path) -> dict[str, Any]:
 
     if best is None:
         raise ValueError(f"Cannot identify valid numeric columns in {Path(path).name}")
+    best["operator_provenance"] = _read_text_operator_provenance(p)
     return best
 
 
@@ -455,6 +496,12 @@ def read_cansas1d_xml(path: str | Path) -> dict[str, Any]:
     i_rel = np.asarray(i_vals, dtype=np.float64)
     err = np.asarray(e_vals, dtype=np.float64) if e_vals else np.full_like(x, np.nan)
 
+    operator_provenance: dict[str, str] = {}
+    for process in root.iter(f"{ns}SASprocess"):
+        for term in process.iter(f"{ns}term"):
+            key = _operator_provenance_key(term.attrib.get("name", ""))
+            if key is not None and term.text is not None:
+                operator_provenance[key] = term.text.strip()
     order = np.argsort(x)
     return {
         "x": x[order],
@@ -463,6 +510,7 @@ def read_cansas1d_xml(path: str | Path) -> dict[str, Any]:
         "x_col": "Q",
         "i_col": "I",
         "err_col": "Idev",
+        "operator_provenance": operator_provenance,
     }
 
 
@@ -485,6 +533,7 @@ def read_nxcansas_h5(path: str | Path) -> dict[str, Any]:
         ) from exc
 
     p = Path(path)
+    operator_provenance: dict[str, str] = {}
     with h5py.File(str(p), "r") as f:
         # Walk groups to find the first SASdata containing Q and I datasets.
         q_ds = None
@@ -512,6 +561,29 @@ def read_nxcansas_h5(path: str | Path) -> dict[str, Any]:
 
         _find_sasdata(f)
 
+        def _collect_operator_provenance(_name: str, item: Any) -> None:
+            if not isinstance(item, h5py.Group):
+                return
+            cls = item.attrs.get("canSAS_class", "")
+            if isinstance(cls, bytes):
+                cls = cls.decode("utf-8", errors="replace")
+            group_name = item.name.rsplit("/", 1)[-1].lower()
+            if cls != "SASprocess" and not group_name.startswith("sasprocess"):
+                return
+            for dataset_name, dataset in item.items():
+                key = _operator_provenance_key(dataset_name)
+                if key is None or not isinstance(dataset, h5py.Dataset):
+                    continue
+                raw = dataset[()]
+                if isinstance(raw, np.ndarray) and raw.shape == ():
+                    raw = raw.item()
+                if isinstance(raw, bytes):
+                    value = raw.decode("utf-8", errors="strict")
+                else:
+                    value = str(raw)
+                operator_provenance[key] = value.strip()
+
+        f.visititems(_collect_operator_provenance)
     if q_ds is None or i_ds is None:
         raise ValueError(f"Cannot find SASdata/Q,I datasets in {p.name}")
 
@@ -542,6 +614,7 @@ def read_nxcansas_h5(path: str | Path) -> dict[str, Any]:
         "x_col": "Q",
         "i_col": "I",
         "err_col": "Idev" if e_ds is not None else "",
+        "operator_provenance": operator_provenance,
     }
 
 

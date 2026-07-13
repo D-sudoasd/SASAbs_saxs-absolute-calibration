@@ -30,6 +30,8 @@ class AbsoluteUncertaintyBudget:
     expanded_uncertainty: np.ndarray
     coverage_factor: float | None
     unknown_components: tuple[str, ...]
+    status: str
+    expanded_status: str
 
 
 def _broadcast_uncertainty(
@@ -59,7 +61,7 @@ def propagate_absolute_uncertainty(
     mu_relative_standard_uncertainty: float | np.ndarray | None = None,
     alpha_standard_uncertainty: float | np.ndarray | None = None,
     buffer_intensity: np.ndarray | None = None,
-    coverage_factor: float | None = 2.0,
+    coverage_factor: float | None = None,
 ) -> AbsoluteUncertaintyBudget:
     """Build and combine an absolute-intensity uncertainty budget.
 
@@ -167,6 +169,19 @@ def propagate_absolute_uncertainty(
             raise ValueError("coverage_factor must be finite and > 0")
         expanded = combined * coverage_factor
 
+    status = (
+        "complete"
+        if not unknown and np.all(np.isfinite(combined))
+        else "partial"
+    )
+    expanded_status = (
+        "available"
+        if status == "complete"
+        and coverage_factor is not None
+        and np.all(np.isfinite(expanded))
+        else "unavailable"
+    )
+
     return AbsoluteUncertaintyBudget(
         statistical=statistical,
         k=k_component,
@@ -180,4 +195,6 @@ def propagate_absolute_uncertainty(
         expanded_uncertainty=expanded,
         coverage_factor=coverage_factor,
         unknown_components=tuple(unknown),
+        status=status,
+        expanded_status=expanded_status,
     )

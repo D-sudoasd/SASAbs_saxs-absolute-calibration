@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -188,13 +189,92 @@ def _raw_sample_reference(path: Path, mode: str) -> str:
     raise ValueError("raw_sample_path_mode must be 'basename_hash' or 'absolute'")
 
 
+def _transaction_path(target: Path, *, kind: str, token: str) -> Path:
+    return target.with_name(f".saxsabs-{kind}-{token}-{target.name}")
+
+
+def _unlink_if_present(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _publish_calibrated2d_package(
+    staged: dict[Path, Path],
+    *,
+    overwrite: bool,
+) -> None:
+    """Publish staged package members with no-clobber or rollback semantics."""
+    targets = list(staged)
+    published: list[Path] = []
+    backups: dict[Path, Path] = {}
+    rollback_failed = False
+    token = uuid.uuid4().hex
+    try:
+        if not overwrite:
+            for target in targets:
+                # A same-directory hard link is an atomic, Windows-safe
+                # create-if-absent operation; it never replaces a racer.
+                os.link(staged[target], target)
+            # Do not path-delete earlier members after a later collision:
+            # portable filesystems provide no atomic conditional unlink, so a
+            # competing writer could be deleted between any identity check and
+            # unlink.  The package completeness gate rejects retained fragments.
+            return
+
+        for target in targets:
+            if not target.exists():
+                continue
+            if not target.is_file() or target.is_symlink():
+                raise FileExistsError(
+                    f"calibrated 2D overwrite target is not a regular file: {target}"
+                )
+            backup = _transaction_path(target, kind="backup", token=token)
+            try:
+                os.link(target, backup)
+            except OSError:
+                shutil.copy2(target, backup)
+            backups[target] = backup
+
+        try:
+            for target in targets:
+                os.replace(staged[target], target)
+                published.append(target)
+        except BaseException as publish_error:
+            rollback_errors: list[str] = []
+            for target in reversed(published):
+                backup = backups.get(target)
+                try:
+                    if backup is None:
+                        _unlink_if_present(target)
+                    else:
+                        os.replace(backup, target)
+                except OSError as rollback_error:
+                    rollback_errors.append(f"{target}: {rollback_error}")
+            if rollback_errors:
+                rollback_failed = True
+                raise RuntimeError(
+                    "calibrated 2D package publish failed and rollback was incomplete; "
+                    "backup files were retained: "
+                    + "; ".join(rollback_errors)
+                ) from publish_error
+            raise
+    finally:
+        for stage in staged.values():
+            _unlink_if_present(stage)
+        if not rollback_failed:
+            for backup in backups.values():
+                _unlink_if_present(backup)
+
+
 def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2DExportResult:
     """Write one calibrated 2D image package for pyFAI/pydidas reintegration."""
     root = Path(config.root_dir)
     raw_sample_id = str(config.sample_id)
     sample_id = make_sample_id(raw_sample_id, config.raw_sample_path)
     # Keep caller-provided hashed ids stable; avoid double-hashing.
-    if re.search(r"_[0-9a-f]{8}$", raw_sample_id):
+    if re.search(r"_[0-9a-f]{8}(?:_rerun[1-9][0-9]*)?$", raw_sample_id):
         if "/" in raw_sample_id or "\\" in raw_sample_id:
             raise ValueError("sample_id must not contain path separators")
         sample_id = raw_sample_id
@@ -225,8 +305,6 @@ def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2D
         "masks": root / "masks",
         "metadata": root / "metadata",
     }
-    for directory in dirs.values():
-        directory.mkdir(parents=True, exist_ok=True)
 
     image_path = dirs["images"] / f"{sample_id}_cal2d.edf"
     mask_npy_path = dirs["masks"] / f"{sample_id}_mask.npy"
@@ -243,8 +321,10 @@ def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2D
     raw_sample = Path(config.raw_sample_path)
     raw_sample_ref = _raw_sample_reference(raw_sample, config.raw_sample_path_mode)
     poni_src = Path(config.poni_path)
-    if not poni_src.exists():
-        raise FileNotFoundError(f"PONI file not found: {poni_src}")
+    if not poni_src.is_file():
+        raise FileNotFoundError(f"PONI file not found or not a regular file: {poni_src}")
+    for directory in dirs.values():
+        directory.mkdir(parents=True, exist_ok=True)
 
     header = {
         "SAXSAbsSchema": SCHEMA_VERSION,
@@ -252,11 +332,6 @@ def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2D
         "IntensityUnit": "cm^-1",
         "MaskConvention": MASK_CONVENTION,
     }
-    _write_edf(image_path, image_out, header=header)
-    np.save(mask_npy_path, mask_out)
-    _write_edf(mask_edf_path, mask_out, header={"MaskConvention": MASK_CONVENTION})
-    shutil.copy2(poni_src, poni_out_path)
-
     metadata_dir = metadata_path.parent
     user_meta = _json_safe(dict(config.metadata or {}))
     integration_policy = dict(user_meta.get("integration_policy", {}))
@@ -290,6 +365,9 @@ def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2D
         },
         "integration_policy": {
             "correctSolidAngle": correct_solid,
+            "polarization_applied": bool(
+                integration_policy.get("polarization_applied", False)
+            ),
             "polarization_factor": polarization,
             "flat_applied_in_image": flat_applied,
             "mask_convention": MASK_CONVENTION,
@@ -315,10 +393,29 @@ def write_calibrated2d_package(config: Calibrated2DExportConfig) -> Calibrated2D
         if key not in meta and key not in ("integration_policy",):
             meta[key] = value
 
-    metadata_path.write_text(
-        json.dumps(_json_safe(meta), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    transaction_token = uuid.uuid4().hex
+    staged = {
+        target: _transaction_path(target, kind="stage", token=transaction_token)
+        for target in targets
+    }
+    try:
+        _write_edf(staged[image_path], image_out, header=header)
+        np.save(staged[mask_npy_path], mask_out)
+        _write_edf(
+            staged[mask_edf_path],
+            mask_out,
+            header={"MaskConvention": MASK_CONVENTION},
+        )
+        shutil.copy2(poni_src, staged[poni_out_path])
+        staged[metadata_path].write_text(
+            json.dumps(_json_safe(meta), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except BaseException:
+        for stage in staged.values():
+            _unlink_if_present(stage)
+        raise
+    _publish_calibrated2d_package(staged, overwrite=config.overwrite)
 
     manifest_row = {
         "sample_id": sample_id,

@@ -19,6 +19,14 @@ from saxsabs.constants import (
     NIST_SRM3600_UNCERTAINTY,
 )
 
+SRM3600_CERTIFIED_THICKNESS_CM: float = 0.1055
+"""Certified SRM 3600 thickness used to normalize a measured standard profile."""
+
+_NIST_PARALLELISM_RELATIVE_TOLERANCE: float = float(
+    np.max(NIST_SRM3600_UNCERTAINTY[:, 1] / NIST_SRM3600_DATA[:, 1])
+)
+"""Certificate-derived expanded relative intensity uncertainty used for SRM QC."""
+
 
 @dataclass(frozen=True)
 class KFactorEstimationResult:
@@ -39,7 +47,14 @@ class KFactorEstimationResult:
             reference standard, or ``None`` when reference uncertainty is unknown.
         k_expanded_uncertainty: Expanded uncertainty, or ``None`` when no
             coverage factor or reference uncertainty is available.
-        coverage_factor: Coverage factor used for the expanded uncertainty.
+coverage_factor: System coverage factor used for the expanded K uncertainty.
+        reference_coverage_factor: Coverage factor reported by the reference certificate;
+            retained as provenance and never applied to the full system budget.
+        standard_thickness_cm: Standard thickness asserted for calibration.
+        parallelism_max_relative_deviation: Largest observed relative deviation
+            of a point-wise ratio from the median ratio.
+        parallelism_relative_tolerance: Limit used for parallelism QC.
+        parallelism_check_passed: QC result, or None when no limit was applied.
     """
     k_factor: float
     k_std: float
@@ -52,6 +67,11 @@ class KFactorEstimationResult:
     k_standard_uncertainty: float | None = None
     k_expanded_uncertainty: float | None = None
     coverage_factor: float | None = None
+    reference_coverage_factor: float | None = None
+    standard_thickness_cm: float | None = None
+    parallelism_max_relative_deviation: float | None = None
+    parallelism_relative_tolerance: float | None = None
+    parallelism_check_passed: bool | None = None
 
 
 def _regularize_profile(q: np.ndarray, i: np.ndarray, min_points: int = 3) -> tuple[np.ndarray, np.ndarray]:
@@ -108,11 +128,14 @@ def estimate_k_factor_robust(
     i_meas_per_cm: np.ndarray,
     q_ref: np.ndarray | None = None,
     i_ref: np.ndarray | None = None,
-    i_ref_standard_uncertainty: np.ndarray | None = None,
-    coverage_factor: float | None = None,
     q_window: tuple[float, float] = (0.01, 0.2),
     positive_floor: float = 1e-9,
     min_points: int = 3,
+    *,
+    i_ref_standard_uncertainty: np.ndarray | None = None,
+    coverage_factor: float | None = None,
+    standard_thickness_cm: float | None = None,
+    parallelism_relative_tolerance: float | None = None,
 ) -> KFactorEstimationResult:
     """Estimate the absolute-intensity K-factor from measured and reference curves.
 
@@ -128,14 +151,18 @@ def estimate_k_factor_robust(
         i_meas_per_cm: Measured intensity in absolute or relative units.
         q_ref: Reference q-values (optional; defaults to SRM 3600).
         i_ref: Reference intensity values (optional; defaults to SRM 3600).
-        i_ref_standard_uncertainty: Point-wise combined standard uncertainty
-            of *i_ref*.  The NIST certificate values are used with the built-in
-            SRM 3600 reference.  Unknown uncertainty must be left as ``None``.
-        coverage_factor: Factor for reporting expanded K uncertainty.  The
-            certificate value is used with the built-in SRM 3600 reference.
         q_window: ``(q_min, q_max)`` bounding the comparison region.
         positive_floor: Threshold below which measured intensity is rejected.
         min_points: Minimum number of valid overlap points required.
+        i_ref_standard_uncertainty: Point-wise combined standard uncertainty
+            of the reference intensity.
+coverage_factor: Explicit system factor for reporting expanded K uncertainty.
+            The reference certificate factor is recorded separately and is not reused.
+        standard_thickness_cm: Thickness used to normalize the standard profile.
+            Built-in SRM 3600 accepts only its certified 0.1055 cm value.
+        parallelism_relative_tolerance: Maximum relative ratio deviation.
+            Built-in SRM 3600 uses its certificate-derived 6.25% expanded
+            relative intensity uncertainty and permits only stricter overrides.
 
     Returns:
         A :class:`KFactorEstimationResult` containing the K-factor and
@@ -144,21 +171,68 @@ def estimate_k_factor_robust(
     Raises:
         ValueError: On insufficient overlap, non-positive result, etc.
     """
+    if isinstance(min_points, (bool, np.bool_)) or not isinstance(
+        min_points, (int, np.integer)
+    ):
+        raise ValueError("min_points must be an integer >= 3")
+    min_points = int(min_points)
+    if min_points < 3:
+        raise ValueError("min_points must be an integer >= 3")
+    positive_floor = float(positive_floor)
+    if not np.isfinite(positive_floor) or positive_floor < 0:
+        raise ValueError("positive_floor must be finite and >= 0")
+    try:
+        q_lo, q_hi = (float(value) for value in q_window)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("q_window must contain two finite increasing values") from exc
+    if not np.isfinite(q_lo) or not np.isfinite(q_hi) or q_lo >= q_hi:
+        raise ValueError("q_window must contain two finite increasing values")
+
     q_m, i_m = _regularize_profile(q_meas, i_meas_per_cm, min_points=min_points)
 
     if (q_ref is None) != (i_ref is None):
         raise ValueError("q_ref and i_ref must be supplied together")
 
     using_builtin_nist = q_ref is None and i_ref is None
+    effective_standard_thickness_cm: float | None
+    reference_coverage_factor: float | None = (
+        NIST_SRM3600_COVERAGE_FACTOR if using_builtin_nist else None
+    )
     if using_builtin_nist:
-        q_ref_all = NIST_SRM3600_DATA[:, 0]
-        i_ref_all = NIST_SRM3600_DATA[:, 1]
+        q_ref_all = NIST_SRM3600_DATA[:, 0].copy()
+        i_ref_all = NIST_SRM3600_DATA[:, 1].copy()
         if i_ref_standard_uncertainty is None:
-            u_ref_all: np.ndarray | None = NIST_SRM3600_UNCERTAINTY[:, 0]
-            if coverage_factor is None:
-                coverage_factor = NIST_SRM3600_COVERAGE_FACTOR
+            u_ref_all: np.ndarray | None = NIST_SRM3600_UNCERTAINTY[:, 0].copy()
         else:
             u_ref_all = np.asarray(i_ref_standard_uncertainty, dtype=np.float64)
+
+        effective_standard_thickness_cm = (
+            SRM3600_CERTIFIED_THICKNESS_CM
+            if standard_thickness_cm is None
+            else float(standard_thickness_cm)
+        )
+        if (
+            not np.isfinite(effective_standard_thickness_cm)
+            or not np.isclose(
+                effective_standard_thickness_cm,
+                SRM3600_CERTIFIED_THICKNESS_CM,
+                rtol=0.0,
+                atol=np.finfo(np.float64).eps,
+            )
+        ):
+            raise ValueError(
+                "SRM 3600 standard_thickness_cm must equal the certified 0.1055 cm"
+            )
+
+        if parallelism_relative_tolerance is None:
+            parallelism_tolerance = _NIST_PARALLELISM_RELATIVE_TOLERANCE
+        else:
+            parallelism_tolerance = float(parallelism_relative_tolerance)
+            if parallelism_tolerance > _NIST_PARALLELISM_RELATIVE_TOLERANCE:
+                raise ValueError(
+                    "SRM 3600 parallelism_relative_tolerance cannot exceed "
+                    f"the certificate-derived {_NIST_PARALLELISM_RELATIVE_TOLERANCE:.7g}"
+                )
     else:
         q_ref_all = np.asarray(q_ref, dtype=np.float64)
         i_ref_all = np.asarray(i_ref, dtype=np.float64)
@@ -167,13 +241,33 @@ def estimate_k_factor_robust(
             if i_ref_standard_uncertainty is None
             else np.asarray(i_ref_standard_uncertainty, dtype=np.float64)
         )
+        effective_standard_thickness_cm = (
+            None if standard_thickness_cm is None else float(standard_thickness_cm)
+        )
+        if effective_standard_thickness_cm is not None and (
+            not np.isfinite(effective_standard_thickness_cm)
+            or effective_standard_thickness_cm <= 0
+        ):
+            raise ValueError("standard_thickness_cm must be finite and > 0")
+        parallelism_tolerance = (
+            None
+            if parallelism_relative_tolerance is None
+            else float(parallelism_relative_tolerance)
+        )
+
+    if parallelism_tolerance is not None and (
+        not np.isfinite(parallelism_tolerance) or parallelism_tolerance < 0
+    ):
+        raise ValueError("parallelism_relative_tolerance must be finite and >= 0")
 
     if q_ref_all.shape != i_ref_all.shape:
         raise ValueError("reference q/intensity shape mismatch")
     if q_ref_all.ndim != 1:
         raise ValueError("reference q and intensity must be 1-D arrays")
-    if not np.all(np.isfinite(q_ref_all)):
-        raise ValueError("reference q must contain only finite values")
+    if not np.all(np.isfinite(q_ref_all)) or np.any(q_ref_all <= 0):
+        raise ValueError("reference q must contain only finite values > 0")
+    if np.unique(q_ref_all).size != q_ref_all.size:
+        raise ValueError("reference q values must be unique")
     if not np.all(np.isfinite(i_ref_all)) or np.any(i_ref_all <= 0):
         raise ValueError("reference intensity must be finite and > 0")
     if u_ref_all is not None:
@@ -181,12 +275,17 @@ def estimate_k_factor_robust(
             raise ValueError("reference intensity/uncertainty shape mismatch")
         if not np.all(np.isfinite(u_ref_all)) or np.any(u_ref_all < 0):
             raise ValueError("reference standard uncertainty must be finite and non-negative")
+
+    reference_order = np.argsort(q_ref_all)
+    q_ref_all = q_ref_all[reference_order]
+    i_ref_all = i_ref_all[reference_order]
+    if u_ref_all is not None:
+        u_ref_all = u_ref_all[reference_order]
     if coverage_factor is not None:
         coverage_factor = float(coverage_factor)
         if not np.isfinite(coverage_factor) or coverage_factor <= 0:
             raise ValueError("coverage_factor must be finite and > 0")
 
-    q_lo, q_hi = q_window
     win = (q_ref_all >= q_lo) & (q_ref_all <= q_hi)
     q_ref_all = q_ref_all[win]
     i_ref_all = i_ref_all[win]
@@ -210,16 +309,43 @@ def estimate_k_factor_robust(
         raise ValueError("measured signal too weak or non-positive in overlap region")
 
     measured_valid = i_meas_interp[valid]
-    ratios = i_ref_used[valid] / measured_valid
-    ratio_valid = np.isfinite(ratios) & (ratios > 0)
-    ratios = ratios[ratio_valid]
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        ratios_all = i_ref_used[valid] / measured_valid
+    if not np.all(np.isfinite(ratios_all)):
+        raise ValueError("derived K ratios must be finite")
+    ratio_valid = ratios_all > 0
+    ratios = ratios_all[ratio_valid]
     reference_ratio_uncertainty = None
     if u_ref_used is not None:
-        reference_ratio_uncertainty = (
-            u_ref_used[valid][ratio_valid] / measured_valid[ratio_valid]
-        )
+        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+            reference_ratio_uncertainty = (
+                u_ref_used[valid][ratio_valid] / measured_valid[ratio_valid]
+            )
+        if not np.all(np.isfinite(reference_ratio_uncertainty)):
+            raise ValueError("derived reference ratio uncertainty must be finite")
     if ratios.size < min_points:
         raise ValueError("insufficient valid ratio points for robust K estimation")
+
+    parallelism_max_relative_deviation: float | None = None
+    parallelism_check_passed: bool | None = None
+    if parallelism_tolerance is not None:
+        ratio_center = float(np.median(ratios))
+        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+            relative_deviation = np.abs(ratios / ratio_center - 1.0)
+        if not np.all(np.isfinite(relative_deviation)):
+            raise ValueError("derived parallelism deviation must be finite")
+        parallelism_max_relative_deviation = float(np.max(relative_deviation))
+        parallelism_check_passed = bool(
+            parallelism_max_relative_deviation
+            <= parallelism_tolerance + np.finfo(np.float64).eps
+        )
+        if not parallelism_check_passed:
+            standard_label = "SRM 3600" if using_builtin_nist else "reference"
+            raise ValueError(
+                f"{standard_label} parallelism QC failed: "
+                f"observed={parallelism_max_relative_deviation:.7g}, "
+                f"tolerance={parallelism_tolerance:.7g}"
+            )
 
     r_med = float(np.nanmedian(ratios))
     r_mad = float(np.nanmedian(np.abs(ratios - r_med)))
@@ -239,13 +365,14 @@ def estimate_k_factor_robust(
         if reference_ratio_uncertainty is not None:
             reference_ratio_uncertainty = reference_ratio_uncertainty[inlier]
 
-    k_val = float(np.nanmedian(ratios_used))
-    k_std = float(np.nanstd(ratios_used))
-    # The estimator is a median, whose normal-approximation standard error is
-    # sqrt(pi/2) times the standard error of a mean from the same distribution.
-    k_statistical_u = float(
-        np.sqrt(np.pi / 2.0) * k_std / np.sqrt(ratios_used.size)
-    )
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        k_val = float(np.nanmedian(ratios_used))
+        k_std = float(np.nanstd(ratios_used))
+        # The estimator is a median, whose normal-approximation standard error is
+        # sqrt(pi/2) times the standard error of a mean from the same distribution.
+        k_statistical_u = float(
+            np.sqrt(np.pi / 2.0) * k_std / np.sqrt(ratios_used.size)
+        )
     k_standard_u: float | None = None
     k_expanded_u: float | None = None
     if reference_ratio_uncertainty is not None:
@@ -253,7 +380,13 @@ def estimate_k_factor_robust(
         k_standard_u = float(np.hypot(k_statistical_u, reference_u))
         if coverage_factor is not None:
             k_expanded_u = float(coverage_factor * k_standard_u)
-    if not np.isfinite(k_val) or k_val <= 0:
+    derived_statistics = [k_val, k_std, k_statistical_u]
+    derived_statistics.extend(
+        value for value in (k_standard_u, k_expanded_u) if value is not None
+    )
+    if not np.all(np.isfinite(derived_statistics)):
+        raise ValueError("derived K statistics must be finite")
+    if k_val <= 0:
         raise ValueError("estimated K factor is non-positive")
 
     return KFactorEstimationResult(
@@ -268,4 +401,11 @@ def estimate_k_factor_robust(
         k_standard_uncertainty=k_standard_u,
         k_expanded_uncertainty=k_expanded_u,
         coverage_factor=coverage_factor if k_standard_u is not None else None,
+        reference_coverage_factor=(
+            reference_coverage_factor if k_standard_u is not None else None
+        ),
+        standard_thickness_cm=effective_standard_thickness_cm,
+        parallelism_max_relative_deviation=parallelism_max_relative_deviation,
+        parallelism_relative_tolerance=parallelism_tolerance,
+        parallelism_check_passed=parallelism_check_passed,
     )

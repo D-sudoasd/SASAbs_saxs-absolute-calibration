@@ -1,11 +1,7 @@
 """Command-line interface for headless SAXS calibration operations.
 
-Provides four sub-commands:
-
-* ``norm-factor``      – compute a normalization factor
-* ``parse-header``     – extract exp / monitor / transmission from JSON header
-* ``parse-external1d`` – parse an external 1-D profile file
-* ``estimate-k``       – robust K-factor estimation against a reference curve
+Provides six subcommands: four small utilities plus the safe BL19B2 workflow
+and its explicit v1 migration entry.
 """
 
 from __future__ import annotations
@@ -129,6 +125,165 @@ def _read_profile_for_estimate(
     return q, intensity
 
 
+def _add_bl19b2_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    legacy_v1: bool = False,
+) -> None:
+    parser.add_argument("--input-root", required=True, type=Path)
+    geometry = parser.add_mutually_exclusive_group(required=True)
+    geometry.add_argument("--poni", type=Path)
+    geometry.add_argument("--pydidas-cali-yaml", type=Path)
+    parser.add_argument("--mask", type=Path, default=None)
+    parser.add_argument("--dark", type=Path, default=None, help="Explicit BL19B2 dark reference TIFF")
+    parser.add_argument(
+        "--background",
+        type=Path,
+        default=None,
+        help="Explicit BL19B2 background TIFF",
+    )
+    parser.add_argument(
+        "--standard",
+        type=Path,
+        default=None,
+        help="Explicit BL19B2 standard TIFF",
+    )
+    parser.add_argument(
+        "--direct-beam",
+        type=Path,
+        default=None,
+        help="Optional direct-beam provenance TIFF (no transmission QC is applied)",
+    )
+    parser.add_argument("--output-root", type=Path, default=None)
+
+    thickness_mode = parser.add_mutually_exclusive_group(required=not legacy_v1)
+    thickness_mode.add_argument(
+        "--mu",
+        type=float,
+        default=None,
+        help=(
+            "mu in cm^-1 for Beer-Lambert thickness d=-ln(ABS)/mu; "
+            "must match material and X-ray energy"
+        ),
+    )
+    thickness_mode.add_argument(
+        "--sample-thickness-cm",
+        type=float,
+        default=None,
+        help="Fixed sample thickness in cm; mutually exclusive with --mu",
+    )
+    if legacy_v1:
+        thickness_mode.add_argument(
+            "--legacy-assume-mu-20-2",
+            action="store_const",
+            const=20.2,
+            dest="mu",
+            help=(
+                "Explicitly reproduce the historical v1 implicit mu=20.2 cm^-1; "
+                "use only when material and X-ray energy match that assumption"
+            ),
+        )
+
+    if legacy_v1:
+        monitor_mode = parser.add_mutually_exclusive_group()
+        monitor_mode.add_argument("--monitor-mode", choices=["rate", "integrated"])
+        monitor_mode.add_argument(
+            "--legacy-assume-monitor-rate",
+            action="store_const",
+            const="rate",
+            dest="monitor_mode",
+            help="Explicitly reproduce the historical v1 rate-monitor assumption",
+        )
+    else:
+        parser.add_argument(
+            "--monitor-mode",
+            choices=["rate", "integrated"],
+            required=True,
+            help="Whether MON is a rate (normalization exp*MON*T) or integrated counts (MON*T)",
+        )
+
+    parser.add_argument("--transmission-abs-uncertainty", type=float, default=None)
+    parser.add_argument("--monitor-relative-standard-uncertainty", type=float, default=None)
+    parser.add_argument(
+        "--sample-thickness-relative-standard-uncertainty",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--standard-thickness-relative-standard-uncertainty",
+        type=float,
+        default=None,
+        help="Relative standard uncertainty of the calibration-standard thickness",
+    )
+    parser.add_argument(
+        "--standard-transmission-abs-uncertainty",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--standard-monitor-relative-standard-uncertainty",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--calibration-background-monitor-relative-standard-uncertainty",
+        type=float,
+        default=None,
+    )
+    parser.add_argument("--system-coverage-factor", type=float, default=None)
+    parser.add_argument("--mu-relative-standard-uncertainty", type=float, default=None)
+    parser.add_argument("--alpha-standard-uncertainty", type=float, default=None)
+    parser.add_argument("--alpha", type=float, default=1.0, help="background scaling factor")
+    parser.add_argument("--qmin", type=float, default=0.01)
+    parser.add_argument("--qmax", type=float, default=0.2)
+    parser.add_argument("--npt", type=int, default=1000)
+    parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--no-preview", action="store_true")
+    parser.add_argument("--dtype", choices=["float32", "float64"], default="float32")
+    parser.add_argument("--standard-thickness-cm", type=float, default=None)
+    parser.add_argument(
+        "--standard-key",
+        default="SRM3600",
+        help="Reference-curve key used for standard calibration (default: SRM3600)",
+    )
+    solid_angle = parser.add_mutually_exclusive_group()
+    solid_angle.add_argument(
+        "--correct-solid-angle-for-k",
+        action="store_true",
+        dest="correct_solid_angle_for_k",
+        help="Apply solid-angle correction during 1D integration used to estimate K",
+    )
+    solid_angle.add_argument(
+        "--no-correct-solid-angle-for-k",
+        action="store_false",
+        dest="correct_solid_angle_for_k",
+        help="Do not apply solid-angle correction during K estimation",
+    )
+    polarization = parser.add_mutually_exclusive_group()
+    polarization.add_argument(
+        "--polarization-factor",
+        type=float,
+        default=None,
+        help="Polarization factor applied during 1D integration used to estimate K",
+    )
+    polarization.add_argument(
+        "--no-polarization-correction",
+        action="store_const",
+        const=None,
+        dest="polarization_factor",
+        help="Explicitly disable polarization correction during K estimation",
+    )
+    parser.set_defaults(correct_solid_angle_for_k=True, polarization_factor=None)
+    parser.add_argument(
+        "--dark-hot-pixel-threshold",
+        type=float,
+        default=10.0,
+        help="Dark pixels with abs(dark) greater than this detector count value are added to the mask",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="saxsabs", description="SAXS absolute intensity utilities")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -158,77 +313,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_bl = sub.add_parser(
         "bl19b2-abs2d",
-        help="Process BL19B2 dat001 TIFFs into absolute corrected 2D HDF5/EDF outputs",
-    )
-    p_bl.add_argument("--input-root", required=True, type=Path)
-    geometry = p_bl.add_mutually_exclusive_group(required=True)
-    geometry.add_argument("--poni", type=Path)
-    geometry.add_argument("--pydidas-cali-yaml", type=Path)
-    p_bl.add_argument("--mask", type=Path, default=None)
-    p_bl.add_argument("--dark", type=Path, default=None, help="Explicit BL19B2 dark reference TIFF")
-    p_bl.add_argument("--background", type=Path, default=None, help="Explicit BL19B2 background TIFF")
-    p_bl.add_argument("--standard", type=Path, default=None, help="Explicit BL19B2 standard TIFF")
-    p_bl.add_argument(
-        "--direct-beam",
-        type=Path,
-        default=None,
-        help="Optional direct-beam provenance TIFF (no transmission QC is applied)",
-    )
-    p_bl.add_argument("--output-root", type=Path, default=None)
-    thickness_mode = p_bl.add_mutually_exclusive_group(required=True)
-    thickness_mode.add_argument(
-        "--mu",
-        type=float,
-        default=None,
-        help=(
-            "mu in cm^-1 for Beer-Lambert thickness d=-ln(ABS)/mu; "
-            "must match material and X-ray energy"
+        help="Process BL19B2 data with explicit monitor and thickness semantics",
+        epilog=(
+            "Historical v1 commands must use bl19b2-abs2d-v1-legacy and explicitly "
+            "select the former monitor and attenuation assumptions."
         ),
     )
-    thickness_mode.add_argument(
-        "--sample-thickness-cm",
-        type=float,
-        default=None,
-        help="Fixed sample thickness in cm; mutually exclusive with --mu",
-    )
-    p_bl.add_argument(
-        "--monitor-mode",
-        choices=["rate", "integrated"],
-        required=True,
-        help="Whether MON is a rate (normalization exp*MON*T) or integrated counts (MON*T)",
-    )
-    p_bl.add_argument("--transmission-abs-uncertainty", type=float, default=None)
-    p_bl.add_argument("--monitor-relative-standard-uncertainty", type=float, default=None)
-    p_bl.add_argument(
-        "--sample-thickness-relative-standard-uncertainty",
-        type=float,
-        default=None,
-    )
-    p_bl.add_argument(
-        "--standard-thickness-relative-standard-uncertainty",
-        type=float,
-        default=None,
-        help="Relative standard uncertainty of the calibration-standard thickness",
-    )
-    p_bl.add_argument("--mu-relative-standard-uncertainty", type=float, default=None)
-    p_bl.add_argument("--alpha-standard-uncertainty", type=float, default=None)
-    p_bl.add_argument("--alpha", type=float, default=1.0, help="background scaling factor")
-    p_bl.add_argument("--qmin", type=float, default=0.01)
-    p_bl.add_argument("--qmax", type=float, default=0.2)
-    p_bl.add_argument("--npt", type=int, default=1000)
-    p_bl.add_argument("--max-frames", type=int, default=None)
-    p_bl.add_argument("--dry-run", action="store_true")
-    p_bl.add_argument("--overwrite", action="store_true")
-    p_bl.add_argument("--no-preview", action="store_true")
-    p_bl.add_argument("--dtype", choices=["float32", "float64"], default="float32")
-    p_bl.add_argument("--standard-thickness-cm", type=float, default=None)
-    p_bl.add_argument(
-        "--dark-hot-pixel-threshold",
-        type=float,
-        default=10.0,
-        help="Dark pixels with abs(dark) greater than this detector count value are added to the mask",
-    )
+    _add_bl19b2_arguments(p_bl)
 
+    p_bl_legacy = sub.add_parser(
+        "bl19b2-abs2d-v1-legacy",
+        help="Migrate historical BL19B2 v1 commands without silently restoring old defaults",
+        description=(
+            "Legacy migration entry. Monitor semantics and thickness must still be explicit; "
+            "the legacy-assume flags document the historical v1 assumptions in provenance."
+        ),
+    )
+    _add_bl19b2_arguments(p_bl_legacy, legacy_v1=True)
     return p
 
 
@@ -311,8 +412,20 @@ def main() -> None:
         )
         return
 
-    if args.command == "bl19b2-abs2d":
+    if args.command in {"bl19b2-abs2d", "bl19b2-abs2d-v1-legacy"}:
         from .workflows.bl19b2_abs2d import BL19B2Abs2DConfig, run_bl19b2_abs2d
+
+        if args.command == "bl19b2-abs2d-v1-legacy" and (
+            args.monitor_mode is None
+            or (args.mu is None and args.sample_thickness_cm is None)
+        ):
+            print(
+                "Legacy v1 migration requires explicit monitor and thickness semantics. "
+                "Provide --monitor-mode/--mu/--sample-thickness-cm, or explicitly select "
+                "--legacy-assume-monitor-rate and --legacy-assume-mu-20-2.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
 
         out = run_bl19b2_abs2d(
             BL19B2Abs2DConfig(
@@ -338,7 +451,16 @@ def main() -> None:
                 standard_thickness_relative_standard_uncertainty=(
                     args.standard_thickness_relative_standard_uncertainty
                 ),
-                mu_relative_standard_uncertainty=args.mu_relative_standard_uncertainty,
+                standard_transmission_abs_uncertainty=(
+                    args.standard_transmission_abs_uncertainty
+                ),
+                standard_monitor_relative_standard_uncertainty=(
+                    args.standard_monitor_relative_standard_uncertainty
+                ),
+                calibration_background_monitor_relative_standard_uncertainty=(
+                    args.calibration_background_monitor_relative_standard_uncertainty
+                ),
+                system_coverage_factor=args.system_coverage_factor,                mu_relative_standard_uncertainty=args.mu_relative_standard_uncertainty,
                 alpha_standard_uncertainty=args.alpha_standard_uncertainty,
                 alpha=args.alpha,
                 q_window=(args.qmin, args.qmax),
@@ -349,6 +471,9 @@ def main() -> None:
                 overwrite=args.overwrite,
                 write_preview=not args.no_preview,
                 standard_thickness_cm=args.standard_thickness_cm,
+                standard_key=args.standard_key,
+                correct_solid_angle_for_k=args.correct_solid_angle_for_k,
+                polarization_factor=args.polarization_factor,
                 dark_hot_pixel_threshold=args.dark_hot_pixel_threshold,
             )
         )

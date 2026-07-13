@@ -26,6 +26,36 @@ _CANSAS_SCHEMA = (
 )
 
 
+_OPERATOR_PROVENANCE_KEYS = (
+    "calibration_context_fingerprint",
+    "formula_version",
+    "monitor_mode",
+    "correct_solid_angle",
+    "polarization_factor",
+    "poni_sha256",
+    "mask_sha256",
+    "flat_sha256",
+)
+
+
+def _operator_provenance_from_metadata(metadata: dict[str, Any]) -> dict[str, str]:
+    """Normalize portable operator provenance carried by a 1-D writer."""
+    nested = metadata.get("operator_provenance")
+    nested_values = nested if isinstance(nested, dict) else {}
+    provenance: dict[str, str] = {}
+    for key in _OPERATOR_PROVENANCE_KEYS:
+        source = nested_values if key in nested_values else metadata
+        if key not in source:
+            continue
+        value = source[key]
+        if value is None:
+            provenance[key] = "null"
+        elif isinstance(value, bool):
+            provenance[key] = "true" if value else "false"
+        else:
+            provenance[key] = str(value).strip()
+    return provenance
+
 def _prepare_profile_arrays(
     q: np.ndarray,
     i_abs: np.ndarray,
@@ -125,6 +155,8 @@ def write_cansas1d_xml(
     ET.SubElement(sasproc, "name").text = meta.get(
         "process_name", "SAXSAbs absolute calibration"
     )
+    for key, value in _operator_provenance_from_metadata(meta).items():
+        ET.SubElement(sasproc, "term", name=key).text = value
 
     # Write
     tree = ET.ElementTree(root)
@@ -214,6 +246,13 @@ def write_nxcansas_h5(
             )
             ds_wl.attrs["units"] = "angstrom"
 
+        # SASprocess
+        process = entry.create_group("sasprocess01")
+        process.attrs["NX_class"] = "NXprocess"
+        process.attrs["canSAS_class"] = "SASprocess"
+        process["name"] = meta.get("process_name", "SAXSAbs absolute calibration")
+        for key, value in _operator_provenance_from_metadata(meta).items():
+            process[key] = value
         # SASsample
         sample = entry.create_group("sassample01")
         sample.attrs["NX_class"] = "NXsample"

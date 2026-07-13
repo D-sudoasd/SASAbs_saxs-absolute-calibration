@@ -7,6 +7,8 @@ import importlib
 import importlib.util
 import inspect
 import logging
+import os
+import tempfile
 import traceback
 from collections.abc import Callable
 from pathlib import Path
@@ -21,44 +23,67 @@ APP_NAME = "SAXSAbs Workbench"
 APP_VERSION = __version__
 SUPPORTED_LANGUAGES = ("en", "zh")
 GUI_DEPENDENCIES = ("fabio", "pyFAI", "matplotlib")
+_LOGGER = logging.getLogger(__name__)
+_ACTIVE_LOG_PATH: Path | None = None
 
 
-def _setup_logging() -> None:
-    log_path = Path.cwd() / "logs" / "saxsabs_workbench.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        filename=str(log_path),
-        filemode="a",
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
+def _candidate_log_directories() -> tuple[Path, ...]:
+    """Return user-scoped log locations without consulting the working directory."""
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        primary = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+    elif os.environ.get("XDG_STATE_HOME"):
+        primary = Path(os.environ["XDG_STATE_HOME"])
+    else:
+        primary = Path.home() / ".local" / "state"
+
+    candidates = (
+        primary / "SAXSAbs" / "logs",
+        Path(tempfile.gettempdir()) / "SAXSAbs" / "logs",
     )
+    # Environment variables can make the two locations identical.
+    return tuple(dict.fromkeys(candidate.resolve(strict=False) for candidate in candidates))
 
 
-def _installed_module_source() -> Path | None:
-    spec = importlib.util.find_spec("SASAbs")
-    origin = getattr(spec, "origin", None)
-    if not origin or origin in {"built-in", "frozen"}:
-        return None
-    path = Path(origin)
-    if path.exists():
-        return path
+def _setup_logging() -> Path | None:
+    """Configure a launcher-owned file logger, falling back without aborting startup."""
+    global _ACTIVE_LOG_PATH
+
+    for handler in _LOGGER.handlers:
+        if getattr(handler, "_saxsabs_launcher_file", False):
+            return _ACTIVE_LOG_PATH
+
+    for directory in _candidate_log_directories():
+        log_path = directory / "saxsabs_workbench.log"
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+        except OSError:
+            continue
+        handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+        setattr(handler, "_saxsabs_launcher_file", True)
+        _LOGGER.addHandler(handler)
+        _LOGGER.setLevel(logging.INFO)
+        _ACTIVE_LOG_PATH = log_path
+        return log_path
+
+    _ACTIVE_LOG_PATH = None
     return None
 
 
 def _resolve_app_source() -> Path:
-    candidates = [
-        Path.cwd() / "SASAbs.py",
-        Path(__file__).resolve().parents[2] / "SASAbs.py",
-    ]
-    installed_source = _installed_module_source()
-    if installed_source is not None:
-        candidates.append(installed_source)
+    """Resolve only the GUI module shipped beside this package/source checkout."""
+    package_dir = Path(__file__).resolve().parent
+    package_parent = package_dir.parent
+    candidates = [package_parent / "SASAbs.py"]
+    if package_parent.name.casefold() == "src":
+        candidates.append(package_parent.parent / "SASAbs.py")
     for candidate in candidates:
-        if candidate.exists():
-            return candidate
+        if candidate.is_file():
+            return candidate.resolve()
     raise FileNotFoundError(
-        "Cannot find SASAbs.py. Reinstall the package with the workbench files included, "
-        "or launch the GUI from the repository with: python saxsabs_workbench.py"
+        "Cannot find the SASAbs.py shipped with this launcher. Reinstall the package with "
+        "the workbench files included, or launch the repository's saxsabs_workbench.py."
     )
 
 
@@ -112,18 +137,38 @@ def _create_app(app_cls: type, root: tk.Tk, language: str):
     return app_cls(root)
 
 
-def _show_launch_error(error_path: Path) -> None:
+def _show_launch_error(error_path: Path | None) -> None:
+    if error_path is None:
+        details = "No writable user or temporary log directory was available."
+    else:
+        details = f"See {error_path} for details."
     try:
         root = tk.Tk()
         root.withdraw()
         messagebox.showerror(
             APP_NAME,
-            "Workbench launch failed. See "
-            f"{error_path} for details.\n\n启动失败。请查看 {error_path} 获取详细错误信息。",
+            f"Workbench launch failed. {details}\n\n工作台启动失败。{details}",
         )
         root.destroy()
     except Exception:
         pass
+
+
+def _write_launch_error(error_text: str) -> Path | None:
+    directories = []
+    if _ACTIVE_LOG_PATH is not None:
+        directories.append(_ACTIVE_LOG_PATH.parent)
+    directories.extend(_candidate_log_directories())
+
+    for directory in dict.fromkeys(directories):
+        error_path = directory / "launch_error.log"
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            error_path.write_text(error_text, encoding="utf-8")
+        except OSError:
+            continue
+        return error_path
+    return None
 
 
 def run_with_error_handling(entrypoint: Callable[[], None] | None = None) -> None:
@@ -133,12 +178,8 @@ def run_with_error_handling(entrypoint: Callable[[], None] | None = None) -> Non
         entrypoint()
     except Exception:
         err = traceback.format_exc()
-        logging.exception("Launcher failed")
-        error_path = Path.cwd() / "launch_error.log"
-        try:
-            error_path.write_text(err, encoding="utf-8")
-        except OSError:
-            logging.exception("Failed to write launch_error.log")
+        _LOGGER.exception("Launcher failed")
+        error_path = _write_launch_error(err)
         _show_launch_error(error_path)
         raise
 
@@ -148,7 +189,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     _setup_logging()
-    logging.info("Launcher started | lang=%s", args.lang)
+    _LOGGER.info("Launcher started | lang=%s", args.lang)
     _require_gui_dependencies()
 
     mod = _load_legacy_module()
@@ -159,7 +200,7 @@ def main(argv: list[str] | None = None) -> None:
     root = tk.Tk()
     app = _create_app(app_cls, root, args.lang)
     if args.session:
-        logging.info("Applying session: %s", args.session)
+        _LOGGER.info("Applying session: %s", args.session)
         root.after(80, lambda: app.apply_session(args.session))
     root.mainloop()
 

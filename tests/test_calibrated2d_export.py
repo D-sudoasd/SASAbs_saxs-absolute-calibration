@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import saxsabs.io.calibrated2d as calibrated2d
 from saxsabs.io.calibrated2d import (
     Calibrated2DExportConfig,
     build_absolute_detector_image,
@@ -346,3 +347,218 @@ def test_real_float32_export_reopens_and_reintegrates_like_direct_absolute_2d(
         rtol=3e-6,
         atol=2e-6,
     )
+
+
+def test_write_calibrated2d_package_rejects_nonfile_poni_before_writing(tmp_path: Path):
+    pytest.importorskip("fabio", reason="fabio is required for EDF calibrated 2D export")
+    poni_dir = tmp_path / "geometry.poni"
+    poni_dir.mkdir()
+    raw = tmp_path / "raw.tif"
+    raw.write_text("placeholder", encoding="utf-8")
+    root = tmp_path / "processed_calibrated_2d"
+    config = Calibrated2DExportConfig(
+        root_dir=root,
+        sample_id="sample001",
+        raw_sample_path=raw,
+        poni_path=poni_dir,
+        image=np.ones((2, 2), dtype=float),
+    )
+
+    with pytest.raises(FileNotFoundError, match="PONI file"):
+        write_calibrated2d_package(config)
+
+    assert not any(path.is_file() for path in root.rglob("*"))
+
+
+def test_overwrite_publish_failure_restores_complete_previous_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    pytest.importorskip("fabio", reason="fabio is required for EDF calibrated 2D export")
+    raw = tmp_path / "raw.tif"
+    raw.write_text("placeholder", encoding="utf-8")
+    old_poni = tmp_path / "old.poni"
+    old_poni.write_text("poni_version: 2\nDetector: OldDetector\n", encoding="utf-8")
+    new_poni = tmp_path / "new.poni"
+    new_poni.write_text("poni_version: 2\nDetector: NewDetector\n", encoding="utf-8")
+    root = tmp_path / "processed_calibrated_2d"
+
+    original = write_calibrated2d_package(
+        Calibrated2DExportConfig(
+            root_dir=root,
+            sample_id="sample001",
+            raw_sample_path=raw,
+            poni_path=old_poni,
+            image=np.ones((3, 4), dtype=np.float32),
+            mask=np.zeros((3, 4), dtype=np.uint8),
+            metadata={"calibration_context_fingerprint": "old-context"},
+        )
+    )
+    targets = (
+        original.image_path,
+        original.mask_npy_path,
+        original.mask_edf_path,
+        original.poni_path,
+        original.metadata_path,
+    )
+    original_bytes = {path: path.read_bytes() for path in targets}
+
+    real_replace = calibrated2d.os.replace
+    publish_calls = 0
+
+    def fail_during_second_publish(source, target):
+        nonlocal publish_calls
+        if ".saxsabs-stage-" in Path(source).name:
+            publish_calls += 1
+            if publish_calls == 2:
+                raise OSError("simulated publish failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(calibrated2d.os, "replace", fail_during_second_publish)
+    with pytest.raises(OSError, match="simulated publish failure"):
+        write_calibrated2d_package(
+            Calibrated2DExportConfig(
+                root_dir=root,
+                sample_id="sample001",
+                raw_sample_path=raw,
+                poni_path=new_poni,
+                image=np.full((3, 4), 9.0, dtype=np.float32),
+                mask=np.ones((3, 4), dtype=np.uint8),
+                overwrite=True,
+                metadata={"calibration_context_fingerprint": "new-context"},
+            )
+        )
+
+    assert publish_calls == 2
+    assert {path: path.read_bytes() for path in targets} == original_bytes
+    assert not [path for path in root.rglob("*") if ".saxsabs-" in path.name]
+
+
+def test_no_overwrite_publish_race_never_clobbers_competing_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    pytest.importorskip("fabio", reason="fabio is required for EDF calibrated 2D export")
+    raw = tmp_path / "raw.tif"
+    raw.write_text("placeholder", encoding="utf-8")
+    poni = tmp_path / "geometry.poni"
+    poni.write_text("poni_version: 2\nDetector: Detector\n", encoding="utf-8")
+    root = tmp_path / "processed_calibrated_2d"
+    sample_id = make_sample_id("sample001", raw)
+    competing_target = root / "images" / f"{sample_id}_cal2d.edf"
+    real_link = calibrated2d.os.link
+    injected = False
+
+    def inject_competing_file(source, target):
+        nonlocal injected
+        if not injected and ".saxsabs-stage-" in Path(source).name:
+            injected = True
+            Path(target).write_bytes(b"concurrent-writer")
+            raise FileExistsError("simulated no-clobber race")
+        return real_link(source, target)
+
+    monkeypatch.setattr(calibrated2d.os, "link", inject_competing_file)
+    with pytest.raises(FileExistsError, match="no-clobber race"):
+        write_calibrated2d_package(
+            Calibrated2DExportConfig(
+                root_dir=root,
+                sample_id="sample001",
+                raw_sample_path=raw,
+                poni_path=poni,
+                image=np.ones((3, 4), dtype=np.float32),
+            )
+        )
+
+    assert injected is True
+    assert competing_target.read_bytes() == b"concurrent-writer"
+    assert not [path for path in root.rglob("*") if ".saxsabs-" in path.name]
+
+
+def test_no_overwrite_rollback_preserves_replaced_earlier_package_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    pytest.importorskip("fabio", reason="fabio is required for EDF calibrated 2D export")
+    raw = tmp_path / "raw.tif"
+    raw.write_text("placeholder", encoding="utf-8")
+    poni = tmp_path / "geometry.poni"
+    poni.write_text("poni_version: 2\nDetector: Detector\n", encoding="utf-8")
+    root = tmp_path / "processed_calibrated_2d"
+    sample_id = make_sample_id("sample001", raw)
+    first_target = root / "images" / f"{sample_id}_cal2d.edf"
+    second_target = root / "masks" / f"{sample_id}_mask.npy"
+    real_link = calibrated2d.os.link
+    real_samefile = calibrated2d.os.path.samefile
+    publish_calls = 0
+
+    def forbid_check_then_unlink(first, second):
+        if first_target in (Path(first), Path(second)):
+            raise AssertionError(
+                "no-overwrite rollback must not inspect a target before unlink"
+            )
+        return real_samefile(first, second)
+
+    def replace_first_then_collide_on_second(source, target):
+        nonlocal publish_calls
+        if ".saxsabs-stage-" not in Path(source).name:
+            return real_link(source, target)
+        publish_calls += 1
+        if publish_calls == 1:
+            real_link(source, target)
+            competing_source = first_target.with_name("concurrent-replacement.edf")
+            competing_source.write_bytes(b"concurrent-replacement")
+            calibrated2d.os.replace(competing_source, first_target)
+            return None
+        if publish_calls == 2:
+            Path(target).write_bytes(b"second-member-racer")
+            raise FileExistsError("simulated second-member collision")
+        return real_link(source, target)
+
+    monkeypatch.setattr(calibrated2d.os.path, "samefile", forbid_check_then_unlink)
+    monkeypatch.setattr(
+        calibrated2d.os,
+        "link",
+        replace_first_then_collide_on_second,
+    )
+    with pytest.raises(FileExistsError, match="second-member collision"):
+        write_calibrated2d_package(
+            Calibrated2DExportConfig(
+                root_dir=root,
+                sample_id="sample001",
+                raw_sample_path=raw,
+                poni_path=poni,
+                image=np.ones((3, 4), dtype=np.float32),
+            )
+        )
+
+    assert publish_calls == 2
+    assert first_target.read_bytes() == b"concurrent-replacement"
+    assert second_target.read_bytes() == b"second-member-racer"
+    assert not [path for path in root.rglob("*") if ".saxsabs-" in path.name]
+
+
+def test_write_calibrated2d_package_preserves_rerun_sample_id(tmp_path: Path):
+    pytest.importorskip("fabio", reason="fabio is required for EDF calibrated 2D export")
+    raw = tmp_path / "raw.tif"
+    raw.write_text("placeholder", encoding="utf-8")
+    poni = tmp_path / "geometry.poni"
+    poni.write_text("poni_version: 2\nDetector: Detector\n", encoding="utf-8")
+    root = tmp_path / "processed_calibrated_2d"
+    rerun_id = f"{make_sample_id('sample001', raw)}_rerun1"
+
+    result = write_calibrated2d_package(
+        Calibrated2DExportConfig(
+            root_dir=root,
+            sample_id=rerun_id,
+            raw_sample_path=raw,
+            poni_path=poni,
+            image=np.ones((3, 4), dtype=np.float32),
+        )
+    )
+
+    assert result.sample_id == rerun_id
+    assert result.image_path.name == f"{rerun_id}_cal2d.edf"
+    assert result.mask_npy_path.name == f"{rerun_id}_mask.npy"
+    assert result.mask_edf_path.name == f"{rerun_id}_mask.edf"
+    assert result.poni_path.name == f"{rerun_id}.poni"
+    assert result.metadata_path.name == f"{rerun_id}_cal2d.json"

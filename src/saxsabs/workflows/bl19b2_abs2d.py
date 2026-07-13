@@ -18,20 +18,22 @@ import re
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from saxsabs.core.calibration import estimate_k_factor_robust
+from saxsabs.core.calibration_context import normalize_standard_key
 from saxsabs.core.detector_reduction import normalize_detector_frame, validate_blank_transmission
 from saxsabs.core.normalization import compute_norm_factor as _core_compute_norm_factor
 from saxsabs.core.uncertainty import AbsoluteUncertaintyBudget, propagate_absolute_uncertainty
 from saxsabs.constants import get_reference_data
 
 
-SCHEMA_VERSION = "saxsabs.bl19b2_abs2d.v3"
+SCHEMA_VERSION = "saxsabs.bl19b2_abs2d.v4"
 FORMULA_VERSION = "v3_monitor_mode_background_i0_only"
 INTENSITY_UNIT = "cm^-1"
 SRM3600_THICKNESS_CM = 0.1055
@@ -81,6 +83,20 @@ class ReferencePaths:
     mask: Path | None = None
 
 
+class SourceChangedDuringReadError(RuntimeError):
+    """Raised when a detector source is not stable across one logical read."""
+
+
+@dataclass(frozen=True)
+class DetectorSourceSnapshot:
+    """Pixels, header, and identity captured from the same stable source state."""
+
+    path: Path
+    image: np.ndarray
+    header: BL19B2Header
+    identity: dict[str, Any]
+
+
 @dataclass(frozen=True)
 class PydidasCalibration:
     source_path: Path
@@ -115,6 +131,7 @@ class BL19B2Abs2DConfig:
     monitor_relative_standard_uncertainty: float | None = None
     sample_thickness_relative_standard_uncertainty: float | None = None
     standard_thickness_relative_standard_uncertainty: float | None = None
+
     mu_relative_standard_uncertainty: float | None = None
     alpha_standard_uncertainty: float | None = None
     alpha: float = 1.0
@@ -130,7 +147,10 @@ class BL19B2Abs2DConfig:
     correct_solid_angle_for_k: bool = True
     polarization_factor: float | None = None
     dark_hot_pixel_threshold: float = 10.0
-
+    standard_transmission_abs_uncertainty: float | None = None
+    standard_monitor_relative_standard_uncertainty: float | None = None
+    calibration_background_monitor_relative_standard_uncertainty: float | None = None
+    system_coverage_factor: float | None = None
     def resolved_output_root(self) -> Path:
         if self.output_root is not None:
             return Path(self.output_root)
@@ -155,6 +175,17 @@ class StandardCalibration:
     k_standard_uncertainty: float | None = None
     k_expanded_uncertainty: float | None = None
     coverage_factor: float | None = None
+    reference_coverage_factor: float | None = None
+    uncertainty_status: str = "partial"
+    expanded_uncertainty_status: str = "unavailable"
+    k_independent_standard_uncertainty: float | None = None
+    k_alpha_relative_sensitivity: float | None = None
+    k_calibration_background_monitor_relative_sensitivity: float | None = None
+    uncertainty_components: dict[str, float | None] = field(default_factory=dict)
+    uncertainty_unknown_components: tuple[str, ...] = ()
+    parallelism_max_relative_deviation: float | None = None
+    parallelism_relative_tolerance: float | None = None
+    parallelism_check_passed: bool | None = None
 
 
 K_STD_SEMANTICS = "inlier ratio scatter; not combined K uncertainty"
@@ -166,6 +197,17 @@ _K_CALIBRATION_KEYS = (
     "k_standard_uncertainty",
     "k_expanded_uncertainty",
     "coverage_factor",
+    "reference_coverage_factor",
+    "uncertainty_status",
+    "expanded_uncertainty_status",
+    "k_independent_standard_uncertainty",
+    "k_alpha_relative_sensitivity",
+    "k_calibration_background_monitor_relative_sensitivity",
+    "uncertainty_components",
+    "uncertainty_unknown_components",
+    "parallelism_max_relative_deviation",
+    "parallelism_relative_tolerance",
+    "parallelism_check_passed",
 )
 _UNCERTAINTY_DATASETS = {
     "statistical": "statistical",
@@ -197,6 +239,21 @@ def _k_calibration_contract(
             "k_standard_uncertainty": calibration.k_standard_uncertainty,
             "k_expanded_uncertainty": calibration.k_expanded_uncertainty,
             "coverage_factor": calibration.coverage_factor,
+            "reference_coverage_factor": calibration.reference_coverage_factor,
+            "uncertainty_status": calibration.uncertainty_status,
+            "expanded_uncertainty_status": calibration.expanded_uncertainty_status,
+            "k_independent_standard_uncertainty": calibration.k_independent_standard_uncertainty,
+            "k_alpha_relative_sensitivity": calibration.k_alpha_relative_sensitivity,
+            "k_calibration_background_monitor_relative_sensitivity": (
+                calibration.k_calibration_background_monitor_relative_sensitivity
+            ),
+            "uncertainty_components": calibration.uncertainty_components,
+            "uncertainty_unknown_components": list(calibration.uncertainty_unknown_components),
+            "parallelism_max_relative_deviation": (
+                calibration.parallelism_max_relative_deviation
+            ),
+            "parallelism_relative_tolerance": calibration.parallelism_relative_tolerance,
+            "parallelism_check_passed": calibration.parallelism_check_passed,
         }
     else:
         payload = {key: calibration.get(key) for key in _K_CALIBRATION_KEYS}
@@ -224,6 +281,8 @@ def _k_calibration_contract(
             "k_standard_uncertainty": False,
             "k_expanded_uncertainty": False,
             "coverage_factor": True,
+            "reference_coverage_factor": True,
+            "k_independent_standard_uncertainty": False,
         }
         for key, strictly_positive in numeric_rules.items():
             value = payload[key]
@@ -233,6 +292,98 @@ def _k_calibration_contract(
             if not math.isfinite(numeric) or (numeric <= 0 if strictly_positive else numeric < 0):
                 comparison = "> 0" if strictly_positive else ">= 0"
                 raise ValueError(f"{key} must be finite and {comparison}")
+        for key in (
+            "k_alpha_relative_sensitivity",
+            "k_calibration_background_monitor_relative_sensitivity",
+        ):
+            value = payload[key]
+            if value is not None and not math.isfinite(float(value)):
+                raise ValueError(f"{key} must be finite")
+
+        uncertainty_status = payload["uncertainty_status"]
+        if uncertainty_status not in {"complete", "partial"}:
+            raise ValueError("uncertainty_status must be 'complete' or 'partial'")
+        expanded_status = payload["expanded_uncertainty_status"]
+        if expanded_status not in {"available", "unavailable"}:
+            raise ValueError(
+                "expanded_uncertainty_status must be 'available' or 'unavailable'"
+            )
+
+        components = payload["uncertainty_components"]
+        if not isinstance(components, dict):
+            raise ValueError("uncertainty_components must be a mapping")
+        for name, value in components.items():
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("uncertainty_components keys must be non-empty strings")
+            if value is None:
+                continue
+            if isinstance(value, (bool, np.bool_)):
+                raise ValueError(
+                    f"uncertainty_components.{name} must be finite and >= 0 or null"
+                )
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"uncertainty_components.{name} must be finite and >= 0 or null"
+                ) from exc
+            if not math.isfinite(numeric) or numeric < 0:
+                raise ValueError(
+                    f"uncertainty_components.{name} must be finite and >= 0 or null"
+                )
+
+        unknown_components = payload["uncertainty_unknown_components"]
+        if not isinstance(unknown_components, (list, tuple)):
+            raise ValueError("uncertainty_unknown_components must be a list of strings")
+        if any(
+            not isinstance(name, str) or not name.strip()
+            for name in unknown_components
+        ):
+            raise ValueError(
+                "uncertainty_unknown_components must contain non-empty strings"
+            )
+        if len(set(unknown_components)) != len(unknown_components):
+            raise ValueError("uncertainty_unknown_components must not contain duplicates")
+
+        parallelism_max = payload["parallelism_max_relative_deviation"]
+        parallelism_tolerance = payload["parallelism_relative_tolerance"]
+        for key, value, strictly_positive in (
+            ("parallelism_max_relative_deviation", parallelism_max, False),
+            ("parallelism_relative_tolerance", parallelism_tolerance, True),
+        ):
+            if value is None:
+                continue
+            if isinstance(value, (bool, np.bool_)):
+                raise ValueError(f"{key} must be a finite numeric value")
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{key} must be a finite numeric value") from exc
+            if not math.isfinite(numeric) or (
+                numeric <= 0 if strictly_positive else numeric < 0
+            ):
+                comparison = "> 0" if strictly_positive else ">= 0"
+                raise ValueError(f"{key} must be finite and {comparison}")
+        if (parallelism_max is None) != (parallelism_tolerance is None):
+            raise ValueError(
+                "parallelism_max_relative_deviation and "
+                "parallelism_relative_tolerance must be provided together"
+            )
+        parallelism_passed = payload["parallelism_check_passed"]
+        if parallelism_passed is not None and not isinstance(
+            parallelism_passed, (bool, np.bool_)
+        ):
+            raise ValueError("parallelism_check_passed must be boolean or null")
+        if parallelism_passed is not None:
+            if parallelism_max is None or parallelism_tolerance is None:
+                raise ValueError(
+                    "parallelism_check_passed requires both parallelism metrics"
+                )
+            expected_passed = float(parallelism_max) <= float(parallelism_tolerance)
+            if bool(parallelism_passed) is not expected_passed:
+                raise ValueError(
+                    "parallelism_check_passed is inconsistent with the recorded metrics"
+                )
     return _json_safe(payload)
 
 
@@ -248,10 +399,260 @@ def _uncertainty_input_payload(config: BL19B2Abs2DConfig) -> dict[str, float | N
         "standard_thickness_relative_standard_uncertainty": (
             config.standard_thickness_relative_standard_uncertainty
         ),
+        "standard_transmission_abs_standard_uncertainty": (
+            config.standard_transmission_abs_uncertainty
+        ),
+        "standard_monitor_relative_standard_uncertainty": (
+            config.standard_monitor_relative_standard_uncertainty
+        ),
+        "calibration_background_monitor_relative_standard_uncertainty": (
+            config.calibration_background_monitor_relative_standard_uncertainty
+        ),
+        "system_coverage_factor": config.system_coverage_factor,
         "mu_relative_standard_uncertainty": config.mu_relative_standard_uncertainty,
         "alpha_standard_uncertainty": config.alpha_standard_uncertainty,
     }
 
+
+def _standard_side_relative_sensitivities(
+    *,
+    standard_profile: np.ndarray,
+    background_profile: np.ndarray,
+    alpha: float,
+    standard_transmission: float,
+    standard_thickness_cm: float,
+    k_factor: float,
+    estimate_k_for_profile: Callable[[np.ndarray], float],
+) -> dict[str, float]:
+    """Differentiate the actual robust K estimator with central differences."""
+    standard = np.asarray(standard_profile, dtype=np.float64)
+    background = np.asarray(background_profile, dtype=np.float64)
+    if standard.shape != background.shape or standard.ndim != 1:
+        raise ValueError("standard and background profiles must be matching 1-D arrays")
+    if not np.any(np.isfinite(standard) & np.isfinite(background)):
+        raise ValueError("standard and background profiles have no jointly finite points")
+    alpha_value = float(alpha)
+    transmission = float(standard_transmission)
+    thickness = float(standard_thickness_cm)
+    nominal_k = float(k_factor)
+    positive_inputs = {
+        "alpha": alpha_value,
+        "standard_transmission": transmission,
+        "standard_thickness_cm": thickness,
+        "k_factor": nominal_k,
+    }
+    for name, value in positive_inputs.items():
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be finite and > 0")
+
+    def _estimate(profile_per_cm: np.ndarray) -> float:
+        value = float(estimate_k_for_profile(np.asarray(profile_per_cm, dtype=np.float64)))
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("perturbed robust K estimate must be finite and > 0")
+        return value
+
+    net = standard - alpha_value * background
+    base_profile = net / thickness
+    estimated_nominal_k = _estimate(base_profile)
+    if not math.isclose(estimated_nominal_k, nominal_k, rel_tol=1e-10, abs_tol=0.0):
+        raise ValueError(
+            "uncertainty sensitivity estimator does not reproduce the nominal K factor"
+        )
+
+    relative_step = 1e-6
+
+    def _relative_k_derivative(
+        plus_profile: np.ndarray,
+        minus_profile: np.ndarray,
+        input_step: float,
+    ) -> float:
+        k_plus = _estimate(plus_profile)
+        k_minus = _estimate(minus_profile)
+        return (k_plus - k_minus) / (2.0 * input_step * nominal_k)
+
+    transmission_step = relative_step * transmission
+    alpha_step = relative_step * alpha_value
+    return {
+        "standard_transmission_per_abs": _relative_k_derivative(
+            (
+                standard * transmission / (transmission + transmission_step)
+                - alpha_value * background
+            )
+            / thickness,
+            (
+                standard * transmission / (transmission - transmission_step)
+                - alpha_value * background
+            )
+            / thickness,
+            transmission_step,
+        ),
+        "standard_monitor_per_relative": _relative_k_derivative(
+            (standard / (1.0 + relative_step) - alpha_value * background)
+            / thickness,
+            (standard / (1.0 - relative_step) - alpha_value * background)
+            / thickness,
+            relative_step,
+        ),
+        "calibration_background_monitor_per_relative": _relative_k_derivative(
+            (standard - alpha_value * background / (1.0 + relative_step))
+            / thickness,
+            (standard - alpha_value * background / (1.0 - relative_step))
+            / thickness,
+            relative_step,
+        ),
+        "standard_thickness_per_relative": _relative_k_derivative(
+            net / (thickness * (1.0 + relative_step)),
+            net / (thickness * (1.0 - relative_step)),
+            relative_step,
+        ),
+        "alpha_per_abs": _relative_k_derivative(
+            (standard - (alpha_value + alpha_step) * background) / thickness,
+            (standard - (alpha_value - alpha_step) * background) / thickness,
+            alpha_step,
+        ),
+    }
+
+
+def _build_standard_uncertainty_contract(
+    config: BL19B2Abs2DConfig,
+    *,
+    k_result: Any,
+    standard_profile: np.ndarray,
+    background_profile: np.ndarray,
+    standard_transmission: float,
+    standard_thickness_cm: float,
+    estimate_k_for_profile: Callable[[np.ndarray], float] | None = None,
+) -> dict[str, Any]:
+    """Build a fail-closed standard-side K uncertainty contract."""
+    k_value = float(k_result.k_factor)
+    k_stat = float(k_result.k_statistical_standard_uncertainty)
+    sensitivity_keys = (
+        "standard_transmission_per_abs",
+        "standard_monitor_per_relative",
+        "calibration_background_monitor_per_relative",
+        "standard_thickness_per_relative",
+        "alpha_per_abs",
+    )
+    sensitivities: dict[str, float | None]
+    if estimate_k_for_profile is None:
+        sensitivities = {key: None for key in sensitivity_keys}
+    else:
+        sensitivities = _standard_side_relative_sensitivities(
+            standard_profile=standard_profile,
+            background_profile=background_profile,
+            alpha=config.alpha,
+            standard_transmission=standard_transmission,
+            standard_thickness_cm=standard_thickness_cm,
+            k_factor=k_value,
+            estimate_k_for_profile=estimate_k_for_profile,
+        )
+
+    partial_k_u = getattr(k_result, "k_standard_uncertainty", None)
+    reference_u = None
+    if partial_k_u is not None:
+        reference_u = math.sqrt(max(float(partial_k_u) ** 2 - k_stat**2, 0.0))
+
+    inputs = {
+        "standard_transmission": config.standard_transmission_abs_uncertainty,
+        "standard_monitor": config.standard_monitor_relative_standard_uncertainty,
+        "calibration_background_monitor": (
+            config.calibration_background_monitor_relative_standard_uncertainty
+        ),
+        "standard_thickness": config.standard_thickness_relative_standard_uncertainty,
+        "alpha": config.alpha_standard_uncertainty,
+    }
+    unknown = [name for name, value in inputs.items() if value is None]
+    if reference_u is None:
+        unknown.insert(0, "reference_standard")
+    if estimate_k_for_profile is None:
+        unknown.append("estimator_consistency")
+    unknown.extend(
+        (
+            "calibration_background_raw_counts_covariance",
+            "calibration_dark_raw_counts_covariance",
+        )
+    )
+
+    def _component(input_name: str, sensitivity_name: str) -> float | None:
+        uncertainty = inputs[input_name]
+        sensitivity = sensitivities[sensitivity_name]
+        if uncertainty is None:
+            return None
+        uncertainty_value = float(uncertainty)
+        if uncertainty_value == 0:
+            return 0.0
+        if sensitivity is None:
+            return None
+        return abs(k_value * float(sensitivity)) * uncertainty_value
+
+    components: dict[str, float | None] = {
+        "ratio_scatter": k_stat,
+        "reference_standard": reference_u,
+        "standard_transmission": _component(
+            "standard_transmission", "standard_transmission_per_abs"
+        ),
+        "standard_monitor": _component(
+            "standard_monitor", "standard_monitor_per_relative"
+        ),
+        "calibration_background_monitor": _component(
+            "calibration_background_monitor",
+            "calibration_background_monitor_per_relative",
+        ),
+        "standard_thickness": _component(
+            "standard_thickness", "standard_thickness_per_relative"
+        ),
+        "alpha": _component("alpha", "alpha_per_abs"),
+    }
+    independent_names = (
+        "ratio_scatter",
+        "reference_standard",
+        "standard_transmission",
+        "standard_monitor",
+        "standard_thickness",
+    )
+    independent = None
+    if all(components[name] is not None for name in independent_names):
+        independent = math.sqrt(
+            sum(float(components[name]) ** 2 for name in independent_names)
+        )
+    combined = None
+    shared_k_names = ("calibration_background_monitor", "alpha")
+    if independent is not None and all(
+        components[name] is not None for name in shared_k_names
+    ):
+        combined = math.sqrt(
+            independent**2
+            + sum(float(components[name]) ** 2 for name in shared_k_names)
+        )
+
+    reference_coverage = getattr(k_result, "reference_coverage_factor", None)
+    if reference_coverage is None:
+        # Compatibility with pre-v4 estimator results: their coverage factor
+        # described the reference certificate and is never reused system-wide.
+        reference_coverage = getattr(k_result, "coverage_factor", None)
+    return {
+        "status": "partial",
+        "expanded_status": "unavailable",
+        "unknown_components": list(dict.fromkeys(unknown)),
+        "components": components,
+        "sensitivities": sensitivities,
+        "k_independent_standard_uncertainty": independent,
+        "k_standard_uncertainty": combined,
+        "k_expanded_uncertainty": None,
+        "k_alpha_relative_sensitivity": sensitivities["alpha_per_abs"],
+        "k_calibration_background_monitor_relative_sensitivity": sensitivities[
+            "calibration_background_monitor_per_relative"
+        ],
+        "reference_coverage_factor": reference_coverage,
+        "system_coverage_factor": config.system_coverage_factor,
+        "assumptions": {
+            "combination": "first_order_with_shared_joint_sensitivities",
+            "reference_q_covariance": "unknown_no_averaging_reduction",
+            "calibration_background_monitor": "shared_joint_sensitivity",
+            "alpha": "shared_joint_sensitivity",
+            "shared_background_dark_covariance": "unquantified",
+        },
+    }
 
 def _uncertainty_array_summary(values: np.ndarray) -> dict[str, Any]:
     arr = np.asarray(values, dtype=np.float64)
@@ -274,9 +675,16 @@ def _frame_uncertainty_metadata(
 ) -> dict[str, Any]:
     inputs = _uncertainty_input_payload(config)
     k_contract = _k_calibration_contract(calibration)
-    unknown = list(budget.unknown_components)
-    if budget.coverage_factor is None:
-        unknown.append("coverage_factor")
+    calibration_unknown = list(calibration.uncertainty_unknown_components)
+    unknown: list[str] = []
+    for name in budget.unknown_components:
+        if name == "standard" and calibration_unknown:
+            unknown.extend(calibration_unknown)
+        else:
+            unknown.append(name)
+    unknown.extend(calibration_unknown)
+    unknown = list(dict.fromkeys(unknown))
+
     component_summaries = {
         name: _uncertainty_array_summary(getattr(budget, attribute))
         for name, attribute in _UNCERTAINTY_DATASETS.items()
@@ -284,9 +692,27 @@ def _frame_uncertainty_metadata(
     }
     combined_known = bool(np.all(np.isfinite(budget.combined_standard_uncertainty)))
     expanded_known = bool(np.all(np.isfinite(budget.expanded_uncertainty)))
-    status = "complete" if not unknown and combined_known and expanded_known else "partial"
+    status = "complete" if not unknown and combined_known else "partial"
+    expanded_status = (
+        "available"
+        if status == "complete" and expanded_known and budget.coverage_factor is not None
+        else "unavailable"
+    )
     return {
         "status": status,
+        "expanded_status": expanded_status,
+        "reference_coverage_factor": calibration.reference_coverage_factor,
+        "system_coverage_factor": calibration.coverage_factor,
+        "missing_for_expanded": (
+            []
+            if expanded_status == "available"
+            else [
+                *unknown,
+                *(["system_coverage_factor"] if budget.coverage_factor is None else []),
+            ]
+        ),
+        "calibration_status": calibration.uncertainty_status,
+        "calibration_components": calibration.uncertainty_components,
         **inputs,
         "k_statistical_standard_uncertainty": k_contract[
             "k_statistical_standard_uncertainty"
@@ -450,13 +876,10 @@ def _poni_detector_name(detector_name: str) -> str:
     return normalized or "Pilatus2M"
 
 
-def write_pydidas_poni(cali_yaml: str | Path, poni_path: str | Path) -> Path:
-    """Write a pyFAI PONI file from pydidas calibration YAML."""
+def _render_pydidas_poni(cali_yaml: str | Path) -> str:
     geometry = parse_pydidas_cali_yaml(cali_yaml)
     detector_config = {"pixel1": geometry.pixel1_m, "pixel2": geometry.pixel2_m}
-    target = Path(poni_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    text = "\n".join(
+    return "\n".join(
         [
             "# Nota: C-Order, 1 refers to the Y axis, 2 to the X axis",
             f"# Calibration imported from {geometry.source_path}",
@@ -475,9 +898,15 @@ def write_pydidas_poni(cali_yaml: str | Path, poni_path: str | Path) -> Path:
             "",
         ]
     )
-    target.write_text(text, encoding="utf-8")
-    return target
 
+
+def write_pydidas_poni(cali_yaml: str | Path, poni_path: str | Path) -> Path:
+    """Write a pyFAI PONI file from pydidas calibration YAML."""
+    rendered = _render_pydidas_poni(cali_yaml)
+    target = Path(poni_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(rendered, encoding="utf-8")
+    return target
 
 def parse_bl19b2_description(description: str) -> BL19B2Header:
     """Parse BL19B2 Pilatus TIFF ImageDescription text."""
@@ -612,12 +1041,32 @@ def compute_norm_factor(
     return float(norm)
 
 
+def _resolve_standard_reference_data(
+    standard_key: str,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    canonical_key = normalize_standard_key(standard_key)
+    if canonical_key == "SRM3600":
+        return None, None
+    return get_reference_data(canonical_key)
+
 def _resolve_standard_thickness_cm(config: BL19B2Abs2DConfig) -> tuple[float, str]:
-    if config.standard_thickness_cm is not None:
-        return float(config.standard_thickness_cm), "user_config"
-    if _norm_key(config.standard_key) == "SRM3600":
+    is_srm3600 = normalize_standard_key(config.standard_key) == "SRM3600"
+    if is_srm3600:
+        if config.standard_thickness_cm is not None and not math.isclose(
+            float(config.standard_thickness_cm),
+            SRM3600_THICKNESS_CM,
+            rel_tol=0.0,
+            abs_tol=np.finfo(np.float64).eps,
+        ):
+            raise ValueError(
+                "SRM 3600 standard_thickness_cm must equal the certified 0.1055 cm"
+            )
         return SRM3600_THICKNESS_CM, "nist_srm3600_certificate"
-    raise ValueError("standard_thickness_cm is required for standards other than SRM 3600")
+    if config.standard_thickness_cm is None:
+        raise ValueError(
+            "standard_thickness_cm is required for standards other than SRM 3600"
+        )
+    return float(config.standard_thickness_cm), "user_config"
 
 
 def validate_config(config: BL19B2Abs2DConfig) -> None:
@@ -650,6 +1099,9 @@ def validate_config(config: BL19B2Abs2DConfig) -> None:
         "monitor_relative_standard_uncertainty",
         "sample_thickness_relative_standard_uncertainty",
         "standard_thickness_relative_standard_uncertainty",
+        "standard_transmission_abs_uncertainty",
+        "standard_monitor_relative_standard_uncertainty",
+        "calibration_background_monitor_relative_standard_uncertainty",
         "mu_relative_standard_uncertainty",
         "alpha_standard_uncertainty",
     )
@@ -657,6 +1109,11 @@ def validate_config(config: BL19B2Abs2DConfig) -> None:
         value = getattr(config, field_name)
         if value is not None and (not math.isfinite(float(value)) or float(value) < 0):
             raise ValueError(f"{field_name} must be finite and >= 0")
+    if config.system_coverage_factor is not None and (
+        not math.isfinite(float(config.system_coverage_factor))
+        or float(config.system_coverage_factor) <= 0
+    ):
+        raise ValueError("system_coverage_factor must be finite and > 0")
     if has_mu and config.sample_thickness_relative_standard_uncertainty is not None:
         raise ValueError(
             "sample_thickness_relative_standard_uncertainty requires sample_thickness_cm"
@@ -740,6 +1197,10 @@ def compute_bl19b2_uncertainty_budget(
     mu_relative_standard_uncertainty: float | None,
     alpha_standard_uncertainty: float | None,
     coverage_factor: float | None,
+    k_independent_standard_uncertainty: float | None = None,
+    k_alpha_relative_sensitivity: float | None = None,
+    k_calibration_background_monitor_relative_sensitivity: float | None = None,
+    calibration_background_monitor_relative_standard_uncertainty: float | None = None,
 ) -> AbsoluteUncertaintyBudget:
     """Propagate BL19B2 raw-count and scale uncertainties to detector pixels."""
     intensity = np.asarray(intensity_abs, dtype=np.float64)
@@ -822,40 +1283,69 @@ def compute_bl19b2_uncertainty_budget(
         if not math.isfinite(k_stat_u) or k_stat_u < 0:
             raise ValueError("k_statistical_standard_uncertainty must be finite and >= 0")
         k_relative = k_stat_u / k_value
-        if (
-            k_standard_uncertainty is None
-            or standard_thickness_relative_standard_uncertainty is None
-        ):
+        if k_independent_standard_uncertainty is None:
+            # Pre-v4 K budgets omit standard T/MON/BG inputs.  Do not infer
+            # completeness from their certificate-plus-scatter subtotal.
             standard_relative = None
         else:
-            k_combined_u = float(k_standard_uncertainty)
-            if not math.isfinite(k_combined_u) or k_combined_u < 0:
-                raise ValueError("k_standard_uncertainty must be finite and >= 0")
-            standard_thickness_relative_u = float(
-                standard_thickness_relative_standard_uncertainty
-            )
-            if (
-                not math.isfinite(standard_thickness_relative_u)
-                or standard_thickness_relative_u < 0
-            ):
+            independent_u = float(k_independent_standard_uncertainty)
+            if not math.isfinite(independent_u) or independent_u < k_stat_u:
                 raise ValueError(
-                    "standard_thickness_relative_standard_uncertainty must be finite and >= 0"
+                    "k_independent_standard_uncertainty must be finite and >= "
+                    "k_statistical_standard_uncertainty"
                 )
-            reference_variance = max(k_combined_u**2 - k_stat_u**2, 0.0)
-            reference_relative_variance = reference_variance / (k_value**2)
             standard_relative = math.sqrt(
-                reference_relative_variance + standard_thickness_relative_u**2
-            )
-
+                max(independent_u**2 - k_stat_u**2, 0.0)
+            ) / k_value
+    sample_monitor_absolute: np.ndarray | None
     if monitor_relative_standard_uncertainty is None:
-        monitor_relative: np.ndarray | None = None
+        sample_monitor_absolute = None
     else:
         monitor_u = float(monitor_relative_standard_uncertainty)
         if not math.isfinite(monitor_u) or monitor_u < 0:
-            raise ValueError("monitor_relative_standard_uncertainty must be finite and >= 0")
-        monitor_absolute = abs(k_value / thickness) * np.sqrt(
-            np.square(sample_normed * monitor_u)
-            + np.square(alpha_value * background_normed * monitor_u)
+            raise ValueError(
+                "monitor_relative_standard_uncertainty must be finite and >= 0"
+            )
+        sample_monitor_absolute = (
+            abs(k_value / thickness) * np.abs(sample_normed) * monitor_u
+        )
+
+    background_monitor_absolute: np.ndarray | None
+    background_monitor_u = calibration_background_monitor_relative_standard_uncertainty
+    if background_monitor_u is None:
+        background_monitor_absolute = None
+    else:
+        background_monitor_u_value = float(background_monitor_u)
+        if not math.isfinite(background_monitor_u_value) or background_monitor_u_value < 0:
+            raise ValueError(
+                "calibration_background_monitor_relative_standard_uncertainty "
+                "must be finite and >= 0"
+            )
+        if background_monitor_u_value == 0:
+            background_monitor_absolute = np.zeros_like(intensity)
+        elif k_calibration_background_monitor_relative_sensitivity is None:
+            background_monitor_absolute = None
+        else:
+            background_k_sensitivity = float(
+                k_calibration_background_monitor_relative_sensitivity
+            )
+            if not math.isfinite(background_k_sensitivity):
+                raise ValueError(
+                    "k_calibration_background_monitor_relative_sensitivity "
+                    "must be finite"
+                )
+            absolute_background = background_normed * (k_value / thickness)
+            background_monitor_absolute = np.abs(
+                intensity * background_k_sensitivity
+                + alpha_value * absolute_background
+            ) * background_monitor_u_value
+
+    if sample_monitor_absolute is None or background_monitor_absolute is None:
+        monitor_relative: np.ndarray | None = None
+    else:
+        monitor_absolute = np.hypot(
+            sample_monitor_absolute,
+            background_monitor_absolute,
         )
         monitor_relative = np.zeros_like(intensity)
         nonzero_intensity = np.abs(intensity) > 0
@@ -864,7 +1354,6 @@ def compute_bl19b2_uncertainty_budget(
         )
         undefined = ~nonzero_intensity & (monitor_absolute > 0)
         monitor_relative[undefined] = np.nan
-
     if mu_cm_inv is None:
         thickness_relative = thickness_relative_standard_uncertainty
         mu_relative = 0.0
@@ -872,6 +1361,25 @@ def compute_bl19b2_uncertainty_budget(
         thickness_relative = 0.0
         mu_relative = mu_relative_standard_uncertainty
     absolute_background = background_normed * (k_value / thickness)
+    alpha_u_for_core = alpha_standard_uncertainty
+    alpha_sensitivity_image = absolute_background
+    if alpha_standard_uncertainty is not None:
+        alpha_u = float(alpha_standard_uncertainty)
+        if not math.isfinite(alpha_u) or alpha_u < 0:
+            raise ValueError("alpha_standard_uncertainty must be finite and >= 0")
+        if alpha_u == 0:
+            alpha_sensitivity_image = np.zeros_like(intensity)
+        elif k_alpha_relative_sensitivity is None:
+            alpha_u_for_core = None
+        else:
+            k_alpha_sensitivity = float(k_alpha_relative_sensitivity)
+            if not math.isfinite(k_alpha_sensitivity):
+                raise ValueError("k_alpha_relative_sensitivity must be finite")
+            # The same alpha appears in K and sample/background subtraction.
+            # Preserve signs so covariance/cancellation is represented.
+            alpha_sensitivity_image = (
+                intensity * k_alpha_sensitivity - absolute_background
+            )
     return propagate_absolute_uncertainty(
         intensity,
         statistical_standard_uncertainty=statistical_abs,
@@ -881,8 +1389,8 @@ def compute_bl19b2_uncertainty_budget(
         monitor_relative_standard_uncertainty=monitor_relative,
         thickness_relative_standard_uncertainty=thickness_relative,
         mu_relative_standard_uncertainty=mu_relative,
-        alpha_standard_uncertainty=alpha_standard_uncertainty,
-        buffer_intensity=absolute_background,
+        alpha_standard_uncertainty=alpha_u_for_core,
+        buffer_intensity=alpha_sensitivity_image,
         coverage_factor=coverage_factor,
     )
 
@@ -1179,6 +1687,30 @@ def _file_sha256(path: str | Path) -> str:
     return h.hexdigest()
 
 
+def _stable_file_fingerprint(path: str | Path) -> dict[str, int | str]:
+    """Hash a file while verifying that its size and mtime stay unchanged."""
+    source = Path(path)
+    try:
+        before = source.stat()
+        sha256 = _file_sha256(source)
+        after = source.stat()
+    except OSError as exc:
+        raise SourceChangedDuringReadError(
+            f"detector source became unavailable while being read: {source}"
+        ) from exc
+    before_stat = (int(before.st_size), int(before.st_mtime_ns))
+    after_stat = (int(after.st_size), int(after.st_mtime_ns))
+    if before_stat != after_stat:
+        raise SourceChangedDuringReadError(
+            f"detector source changed while being hashed: {source}"
+        )
+    return {
+        "sha256": sha256,
+        "size_bytes": after_stat[0],
+        "mtime_ns": after_stat[1],
+    }
+
+
 def _header_identity(header: BL19B2Header) -> dict[str, Any]:
     return {
         "exposure_s": header.exposure_s,
@@ -1194,13 +1726,49 @@ def _header_identity(header: BL19B2Header) -> dict[str, Any]:
 
 
 def _source_identity(path: str | Path, header: BL19B2Header | None = None) -> dict[str, Any]:
+    """Capture a stable source identity without loading detector pixels."""
     source = Path(path)
-    parsed_header = read_tiff_header(source) if header is None else header
+    if header is None:
+        before = _stable_file_fingerprint(source)
+        parsed_header = read_tiff_header(source)
+        after = _stable_file_fingerprint(source)
+        if before != after:
+            raise SourceChangedDuringReadError(
+                f"detector source changed while its header was being read: {source}"
+            )
+        fingerprint = after
+    else:
+        parsed_header = header
+        fingerprint = _stable_file_fingerprint(source)
     return {
-        "sha256": _file_sha256(source),
-        "size_bytes": source.stat().st_size,
+        "sha256": fingerprint["sha256"],
+        "size_bytes": fingerprint["size_bytes"],
         "header": _header_identity(parsed_header),
     }
+
+
+def capture_detector_source(path: str | Path) -> DetectorSourceSnapshot:
+    """Read pixels/header and bind them to one stable, content-hashed source state."""
+    source = Path(path)
+    before = _stable_file_fingerprint(source)
+    header = read_tiff_header(source)
+    image = np.array(read_detector_image(source), dtype=np.float64, copy=True, order="C")
+    after = _stable_file_fingerprint(source)
+    if before != after:
+        raise SourceChangedDuringReadError(
+            f"detector source changed while pixels/header were being read: {source}"
+        )
+    identity = {
+        "sha256": after["sha256"],
+        "size_bytes": after["size_bytes"],
+        "header": _header_identity(header),
+    }
+    return DetectorSourceSnapshot(
+        path=source,
+        image=image,
+        header=header,
+        identity=identity,
+    )
 
 
 def _frame_signature(processing_signature: str, source_identity: dict[str, Any]) -> str:
@@ -1293,20 +1861,34 @@ def build_processing_signature(
     calibration: StandardCalibration,
     safe_poni_path: Path,
     reference_paths: ReferencePaths,
+    reference_identities: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    monitor_mode = str(config.monitor_mode).strip().lower()
+
+    def _reference_sha256(name: str, path: Path) -> str:
+        if reference_identities is not None:
+            identity = reference_identities.get(name)
+            if identity is None or not isinstance(identity.get("sha256"), str):
+                raise ValueError(f"missing captured source identity for {name}")
+            return str(identity["sha256"])
+        return str(_stable_file_fingerprint(path)["sha256"])
+
     reference_payload = {
-        "dark": {"path": str(reference_paths.dark), "sha256": _file_sha256(reference_paths.dark)},
+        "dark": {
+            "path": str(reference_paths.dark),
+            "sha256": _reference_sha256("dark", reference_paths.dark),
+        },
         "background": {
             "path": str(reference_paths.background),
-            "sha256": _file_sha256(reference_paths.background),
+            "sha256": _reference_sha256("background", reference_paths.background),
         },
         "standard": {
             "path": str(reference_paths.standard),
-            "sha256": _file_sha256(reference_paths.standard),
+            "sha256": _reference_sha256("standard", reference_paths.standard),
         },
         "direct": {
             "path": str(reference_paths.direct or ""),
-            "sha256": _file_sha256(reference_paths.direct)
+            "sha256": str(_stable_file_fingerprint(reference_paths.direct)["sha256"])
             if reference_paths.direct is not None and reference_paths.direct.is_file()
             else "",
         },
@@ -1316,9 +1898,9 @@ def build_processing_signature(
         "formula_version": FORMULA_VERSION,
         "geometry_source": "pydidas_cali_yaml" if config.pydidas_cali_yaml is not None else "poni",
         "safe_poni_checksum_sha256": _file_sha256(safe_poni_path),
-        "monitor_mode": config.monitor_mode,
+        "monitor_mode": monitor_mode,
         "normalization_formula": (
-            "exposure_s * MON * ABS" if config.monitor_mode == "rate" else "MON * ABS"
+            "exposure_s * MON * ABS" if monitor_mode == "rate" else "MON * ABS"
         ),
         "dark_scaling": "exposure_matched",
         "mu_cm_inv": config.mu_cm_inv,
@@ -1497,6 +2079,7 @@ def _optional_path_text(value: str | Path | None) -> str:
 
 def build_rerun_command(config: BL19B2Abs2DConfig, *, poni_path: Path | None = None) -> str:
     qmin, qmax = config.q_window
+    monitor_mode = str(config.monitor_mode).strip().lower()
     lines = [
         "$env:PYTHONPATH='src'",
         f"& {_ps_single_quote(sys.executable)} -m saxsabs.cli bl19b2-abs2d `",
@@ -1504,11 +2087,11 @@ def build_rerun_command(config: BL19B2Abs2DConfig, *, poni_path: Path | None = N
     ]
     if config.pydidas_cali_yaml is not None:
         lines.append(f"  --pydidas-cali-yaml {_ps_single_quote(Path(config.pydidas_cali_yaml))} `")
-        if config.mask_path is not None:
-            lines.append(f"  --mask {_ps_single_quote(Path(config.mask_path))} `")
     else:
         source_poni = Path(poni_path) if poni_path is not None else Path(config.poni_path)
         lines.append(f"  --poni {_ps_single_quote(source_poni)} `")
+    if config.mask_path is not None:
+        lines.append(f"  --mask {_ps_single_quote(Path(config.mask_path))} `")
     if config.dark_path is not None:
         lines.append(f"  --dark {_ps_single_quote(Path(config.dark_path))} `")
     if config.background_path is not None:
@@ -1520,12 +2103,23 @@ def build_rerun_command(config: BL19B2Abs2DConfig, *, poni_path: Path | None = N
     lines.extend(
         [
             f"  --output-root {_ps_single_quote(config.resolved_output_root())} `",
-            f"  --monitor-mode {config.monitor_mode} `",
+            f"  --monitor-mode {monitor_mode} `",
             f"  --alpha {float(config.alpha):.10g} `",
             f"  --qmin {float(qmin):.10g} `",
             f"  --qmax {float(qmax):.10g} `",
             f"  --npt {int(config.npt)} `",
             f"  --dtype {config.dtype} `",
+            f"  --standard-key {_ps_single_quote(config.standard_key)} `",
+            (
+                "  --correct-solid-angle-for-k `"
+                if config.correct_solid_angle_for_k
+                else "  --no-correct-solid-angle-for-k `"
+            ),
+            (
+                "  --no-polarization-correction `"
+                if config.polarization_factor is None
+                else f"  --polarization-factor {float(config.polarization_factor):.10g} `"
+            ),
             f"  --dark-hot-pixel-threshold {float(config.dark_hot_pixel_threshold):.10g}",
         ]
     )
@@ -1541,6 +2135,19 @@ def build_rerun_command(config: BL19B2Abs2DConfig, *, poni_path: Path | None = N
             f"{float(config.transmission_abs_uncertainty):.10g}"
         )
     uncertainty_cli = (
+        (
+            "--standard-transmission-abs-uncertainty",
+            config.standard_transmission_abs_uncertainty,
+        ),
+        (
+            "--standard-monitor-relative-standard-uncertainty",
+            config.standard_monitor_relative_standard_uncertainty,
+        ),
+        (
+            "--calibration-background-monitor-relative-standard-uncertainty",
+            config.calibration_background_monitor_relative_standard_uncertainty,
+        ),
+        ("--system-coverage-factor", config.system_coverage_factor),
         (
             "--monitor-relative-standard-uncertainty",
             config.monitor_relative_standard_uncertainty,
@@ -1563,6 +2170,19 @@ def build_rerun_command(config: BL19B2Abs2DConfig, *, poni_path: Path | None = N
     if config.standard_thickness_cm is not None:
         lines[-1] += " `"
         lines.append(f"  --standard-thickness-cm {float(config.standard_thickness_cm):.10g}")
+
+    execution_options = []
+    if config.max_frames is not None:
+        execution_options.append(f"--max-frames {int(config.max_frames)}")
+    if config.dry_run:
+        execution_options.append("--dry-run")
+    if config.overwrite:
+        execution_options.append("--overwrite")
+    if not config.write_preview:
+        execution_options.append("--no-preview")
+    for option in execution_options:
+        lines[-1] += " `"
+        lines.append(f"  {option}")
     return "\n".join(lines) + "\n"
 
 
@@ -1615,15 +2235,7 @@ def write_provenance_package(
         "processing_signature_payload": signature_payload,
         "uncertainty_inputs": _uncertainty_input_payload(config),
         "standard_calibration": {
-            "k_factor": calibration.k_factor,
-            "k_std": calibration.k_std,
-            "k_std_semantics": K_STD_SEMANTICS,
-            "k_statistical_standard_uncertainty": (
-                calibration.k_statistical_standard_uncertainty
-            ),
-            "k_standard_uncertainty": calibration.k_standard_uncertainty,
-            "k_expanded_uncertainty": calibration.k_expanded_uncertainty,
-            "coverage_factor": calibration.coverage_factor,
+            **_k_calibration_contract(calibration, require_complete=True),
             "q_min_overlap": calibration.q_min_overlap,
             "q_max_overlap": calibration.q_max_overlap,
             "points_used": calibration.points_used,
@@ -1678,28 +2290,49 @@ def update_metadata_provenance(
     code_state: dict[str, Any],
 ) -> None:
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    metadata.update(
-        build_provenance_metadata(
+    metadata["last_resume_validation"] = {
+        "validated_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        "validated_by": build_provenance_metadata(
             provenance_paths=provenance_paths,
             software_versions=software_versions,
             code_state=code_state,
-        )
-    )
+        ),
+    }
     _write_json(metadata_path, metadata)
 
 
 def _copy_poni_to_safe_path(config: BL19B2Abs2DConfig) -> Path:
     out_root = config.resolved_output_root()
     target_dir = out_root / "config" / "geometry"
-    target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / "BL19B2_SAXS_Califile.poni"
-    if config.pydidas_cali_yaml is not None:
-        return write_pydidas_poni(config.pydidas_cali_yaml, target)
-    if not target.exists() or config.overwrite:
-        assert config.poni_path is not None
-        shutil.copy2(config.poni_path, target)
-    return target
 
+    if config.pydidas_cali_yaml is not None:
+        desired_text = _render_pydidas_poni(config.pydidas_cali_yaml)
+        if target.exists() and not config.overwrite:
+            if target.read_text(encoding="utf-8") != desired_text:
+                raise ValueError(
+                    "existing safe PONI differs from the current pydidas calibration; "
+                    "use a new output root or explicitly enable overwrite"
+                )
+            return target
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target.write_text(desired_text, encoding="utf-8")
+        return target
+
+    assert config.poni_path is not None
+    source = Path(config.poni_path)
+    if target.exists() and not config.overwrite:
+        if _file_sha256(source) != _file_sha256(target):
+            raise ValueError(
+                "existing safe PONI differs from the current source PONI; "
+                "use a new output root or explicitly enable overwrite"
+            )
+        return target
+    if not source.is_file():
+        raise FileNotFoundError(f"PONI file not found or not a regular file: {source}")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    return target
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1756,6 +2389,13 @@ def _write_processing_config(
         f"{config.sample_thickness_relative_standard_uncertainty}",
         "standard_thickness_relative_standard_uncertainty: "
         f"{config.standard_thickness_relative_standard_uncertainty}",
+        "standard_transmission_abs_uncertainty: "
+        f"{config.standard_transmission_abs_uncertainty}",
+        "standard_monitor_relative_standard_uncertainty: "
+        f"{config.standard_monitor_relative_standard_uncertainty}",
+        "calibration_background_monitor_relative_standard_uncertainty: "
+        f"{config.calibration_background_monitor_relative_standard_uncertainty}",
+        f"system_coverage_factor: {config.system_coverage_factor}",
         f"mu_relative_standard_uncertainty: {config.mu_relative_standard_uncertainty}",
         f"alpha_standard_uncertainty: {config.alpha_standard_uncertainty}",
         f"alpha: {config.alpha}",
@@ -1899,6 +2539,9 @@ def calibrate_standard(
     background: np.ndarray,
     dark_header: BL19B2Header,
     mask: np.ndarray,
+    background_header: BL19B2Header | None = None,
+    standard_image: np.ndarray | None = None,
+    standard_header: BL19B2Header | None = None,
 ) -> tuple[StandardCalibration, np.ndarray]:
     """Estimate K from GC001 and return calibration plus normalized BG image."""
     try:
@@ -1906,8 +2549,16 @@ def calibrate_standard(
     except ImportError as exc:  # pragma: no cover
         raise ImportError("pyFAI is required for BL19B2 K calibration") from exc
 
-    bg_header = read_tiff_header(reference_paths.background)
-    std_header = read_tiff_header(reference_paths.standard)
+    bg_header = (
+        read_tiff_header(reference_paths.background)
+        if background_header is None
+        else background_header
+    )
+    std_header = (
+        read_tiff_header(reference_paths.standard)
+        if standard_header is None
+        else standard_header
+    )
     std_class = classify_sample_frame(std_header, beer_lambert_thickness=False)
     if std_class.status != "ok":
         raise ValueError(f"standard frame is not usable: {std_class.reason}")
@@ -1937,7 +2588,11 @@ def calibrate_standard(
     )
     std_thickness, std_thickness_source = _resolve_standard_thickness_cm(config)
 
-    standard = read_detector_image(reference_paths.standard)
+    standard = (
+        read_detector_image(reference_paths.standard)
+        if standard_image is None
+        else np.asarray(standard_image, dtype=np.float64)
+    )
     if standard.shape != dark.shape or background.shape != dark.shape:
         raise ValueError(
             "reference image shape mismatch: "
@@ -1965,7 +2620,6 @@ def calibrate_standard(
         transmission=std_header.transmission,
         monitor_mode=config.monitor_mode,
     )
-    std_net = std_normed - config.alpha * bg_net
     ai = pyFAI.load(str(safe_poni_path))
     warnings.extend(
         validate_instrument_consistency(
@@ -1982,26 +2636,37 @@ def calibrate_standard(
     }
     if config.polarization_factor is not None:
         kwargs["polarization_factor"] = float(config.polarization_factor)
-    res = ai.integrate1d(std_net, int(config.npt), **kwargs)
-    q = np.asarray(res.radial, dtype=np.float64)
-    i_net_vol = np.asarray(res.intensity, dtype=np.float64) / std_thickness
-    if config.standard_key == "SRM3600":
-        # Let the estimator select the built-in certificate curve so its
-        # point-wise standard uncertainty and coverage factor stay attached.
-        k_result = estimate_k_factor_robust(
+    standard_res = ai.integrate1d(std_normed, int(config.npt), **kwargs)
+    background_res = ai.integrate1d(bg_net, int(config.npt), **kwargs)
+    q = np.asarray(standard_res.radial, dtype=np.float64)
+    standard_profile = np.asarray(standard_res.intensity, dtype=np.float64)
+    background_profile = np.asarray(background_res.intensity, dtype=np.float64)
+    i_net_vol = (standard_profile - config.alpha * background_profile) / std_thickness
+
+    q_ref, i_ref = _resolve_standard_reference_data(config.standard_key)
+
+    def _estimate_profile_result(profile_per_cm: np.ndarray) -> Any:
+        return estimate_k_factor_robust(
             q_meas=q,
-            i_meas_per_cm=i_net_vol,
-            q_window=config.q_window,
-        )
-    else:
-        q_ref, i_ref = get_reference_data(config.standard_key)
-        k_result = estimate_k_factor_robust(
-            q_meas=q,
-            i_meas_per_cm=i_net_vol,
+            i_meas_per_cm=profile_per_cm,
             q_ref=q_ref,
             i_ref=i_ref,
             q_window=config.q_window,
+            standard_thickness_cm=std_thickness,
         )
+
+    k_result = _estimate_profile_result(i_net_vol)
+    uncertainty_contract = _build_standard_uncertainty_contract(
+        config,
+        k_result=k_result,
+        standard_profile=standard_profile,
+        background_profile=background_profile,
+        standard_transmission=std_header.transmission,
+        standard_thickness_cm=std_thickness,
+        estimate_k_for_profile=lambda profile: float(
+            _estimate_profile_result(profile).k_factor
+        ),
+    )
     calibration = StandardCalibration(
         k_factor=float(k_result.k_factor),
         k_std=float(k_result.k_std),
@@ -2018,9 +2683,30 @@ def calibrate_standard(
         k_statistical_standard_uncertainty=float(
             k_result.k_statistical_standard_uncertainty
         ),
-        k_standard_uncertainty=k_result.k_standard_uncertainty,
-        k_expanded_uncertainty=k_result.k_expanded_uncertainty,
-        coverage_factor=k_result.coverage_factor,
+        k_standard_uncertainty=uncertainty_contract["k_standard_uncertainty"],
+        k_expanded_uncertainty=uncertainty_contract["k_expanded_uncertainty"],
+        coverage_factor=uncertainty_contract["system_coverage_factor"],
+        reference_coverage_factor=uncertainty_contract["reference_coverage_factor"],
+        uncertainty_status=uncertainty_contract["status"],
+        expanded_uncertainty_status=uncertainty_contract["expanded_status"],
+        k_independent_standard_uncertainty=uncertainty_contract[
+            "k_independent_standard_uncertainty"
+        ],
+        k_alpha_relative_sensitivity=uncertainty_contract[
+            "k_alpha_relative_sensitivity"
+        ],
+        k_calibration_background_monitor_relative_sensitivity=uncertainty_contract[
+            "k_calibration_background_monitor_relative_sensitivity"
+        ],
+        uncertainty_components=uncertainty_contract["components"],
+        uncertainty_unknown_components=tuple(
+            uncertainty_contract["unknown_components"]
+        ),
+        parallelism_max_relative_deviation=(
+            k_result.parallelism_max_relative_deviation
+        ),
+        parallelism_relative_tolerance=k_result.parallelism_relative_tolerance,
+        parallelism_check_passed=k_result.parallelism_check_passed,
     )
     return calibration, bg_net
 
@@ -2119,6 +2805,9 @@ def write_hdf5_image(
         uncertainty_group.attrs["status"] = str(
             metadata.get("uncertainty", {}).get("status", "unknown")
         )
+        uncertainty_group.attrs["expanded_status"] = str(
+            metadata.get("uncertainty", {}).get("expanded_status", "unavailable")
+        )
         uncertainty_group.attrs["coverage_factor"] = (
             math.nan
             if uncertainty_budget.coverage_factor is None
@@ -2177,6 +2866,9 @@ def write_edf_image(path: Path, image: np.ndarray, metadata: dict[str, Any]) -> 
         "MonitorMode": str(normalization.get("monitor_mode", "unknown")),
         "Normalization": str(normalization.get("formula", "unknown")),
         "UncertaintyStatus": str(metadata.get("uncertainty", {}).get("status", "unknown")),
+        "ExpandedUStatus": str(
+            metadata.get("uncertainty", {}).get("expanded_status", "unavailable")
+        ),
         "UncertaintyHDF5": str(metadata.get("outputs", {}).get("hdf5", "")),
     }
     _write_edf_array(path, image, header=header)
@@ -2347,6 +3039,13 @@ def _validate_existing_outputs(paths: OutputPaths, metadata: dict[str, Any]) -> 
             uncertainty_status = str(metadata.get("uncertainty", {}).get("status", "unknown"))
             if uncertainty_group.attrs.get("status") != uncertainty_status:
                 raise ValueError("existing HDF5 uncertainty status mismatch")
+            expanded_status = str(
+                metadata.get("uncertainty", {}).get(
+                    "expanded_status", "unavailable"
+                )
+            )
+            if uncertainty_group.attrs.get("expanded_status") != expanded_status:
+                raise ValueError("existing HDF5 expanded uncertainty status mismatch")
             for dataset_name in _UNCERTAINTY_DATASETS:
                 uncertainty_ds = uncertainty_group[dataset_name]
                 values = uncertainty_ds[()]
@@ -2366,7 +3065,10 @@ def _validate_existing_outputs(paths: OutputPaths, metadata: dict[str, Any]) -> 
                     raise ValueError(
                         f"existing HDF5 uncertainty values invalid for {dataset_name}"
                     )
-                if uncertainty_status == "complete" and not np.all(np.isfinite(values)):
+                requires_finite = (
+                    uncertainty_status == "complete" and dataset_name != "expanded"
+                ) or (expanded_status == "available" and dataset_name == "expanded")
+                if requires_finite and not np.all(np.isfinite(values)):
                     raise ValueError(
                         f"existing complete HDF5 uncertainty contains unknown {dataset_name}"
                     )
@@ -2408,6 +3110,11 @@ def _validate_existing_outputs(paths: OutputPaths, metadata: dict[str, Any]) -> 
         )
         if header.get("UncertaintyStatus") != expected_uncertainty_status:
             raise ValueError("existing EDF uncertainty status mismatch")
+        expected_expanded_status = str(
+            metadata.get("uncertainty", {}).get("expanded_status", "unavailable")
+        )
+        if header.get("ExpandedUStatus") != expected_expanded_status:
+            raise ValueError("existing EDF expanded uncertainty status mismatch")
         if Path(str(header.get("UncertaintyHDF5", ""))).resolve() != paths.h5.resolve():
             raise ValueError("existing EDF uncertainty HDF5 pointer mismatch")
         edf_image = np.asarray(edf.data)
@@ -2494,6 +3201,7 @@ def _frame_metadata(
     *,
     source: Path,
     header: BL19B2Header,
+    source_identity: dict[str, Any],
     norm_s: float,
     thickness_cm: float,
     calibration: StandardCalibration,
@@ -2513,7 +3221,6 @@ def _frame_metadata(
     image: np.ndarray,
     uncertainty_budget: AbsoluteUncertaintyBudget,
 ) -> dict[str, Any]:
-    source_identity = _source_identity(source, header)
     metadata = {
         "schema": SCHEMA_VERSION,
         "formula_version": FORMULA_VERSION,
@@ -2562,15 +3269,7 @@ def _frame_metadata(
         "absolute_calibration": {
             "standard_file": str(reference_paths.standard),
             "standard_key": config.standard_key,
-            "k_factor": calibration.k_factor,
-            "k_std": calibration.k_std,
-            "k_std_semantics": K_STD_SEMANTICS,
-            "k_statistical_standard_uncertainty": (
-                calibration.k_statistical_standard_uncertainty
-            ),
-            "k_standard_uncertainty": calibration.k_standard_uncertainty,
-            "k_expanded_uncertainty": calibration.k_expanded_uncertainty,
-            "coverage_factor": calibration.coverage_factor,
+            **_k_calibration_contract(calibration, require_complete=True),
             "q_min_overlap": calibration.q_min_overlap,
             "q_max_overlap": calibration.q_max_overlap,
             "points_used": calibration.points_used,
@@ -2712,15 +3411,11 @@ PNG previews are for inspection only and are not scientific data.
 def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
     """Run BL19B2 scan and optional absolute corrected 2D export."""
     validate_config(config)
+    normalized_monitor_mode = str(config.monitor_mode).strip().lower()
+    if config.monitor_mode != normalized_monitor_mode:
+        config = replace(config, monitor_mode=normalized_monitor_mode)
     input_root = Path(config.input_root)
     out_root = config.resolved_output_root()
-    _ensure_output_dirs(out_root)
-    safe_poni = _copy_poni_to_safe_path(config)
-    _write_readme(out_root, config)
-    software_versions = collect_software_versions()
-    code_state = collect_code_state()
-    provenance_paths = _provenance_paths(out_root)
-
     reference_paths = find_reference_paths(
         input_root,
         mask_path=config.mask_path,
@@ -2731,6 +3426,23 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
         direct_path=config.direct_path,
     )
     inventory_rows, sample_paths = scan_inputs(config)
+
+    reference_sources: dict[str, DetectorSourceSnapshot] | None = None
+    if not config.dry_run:
+        # Capture every computational reference before creating run outputs.  Later stages
+        # consume only these arrays, headers, and identities, so provenance cannot drift.
+        reference_sources = {
+            "dark": capture_detector_source(reference_paths.dark),
+            "background": capture_detector_source(reference_paths.background),
+            "standard": capture_detector_source(reference_paths.standard),
+        }
+
+    _ensure_output_dirs(out_root)
+    safe_poni = _copy_poni_to_safe_path(config)
+    _write_readme(out_root, config)
+    software_versions = collect_software_versions()
+    code_state = collect_code_state()
+    provenance_paths = _provenance_paths(out_root)
     _write_csv(out_root / "manifests" / "input_inventory.csv", inventory_rows)
     _write_csv(
         out_root / "config" / "reference_selection.csv",
@@ -2765,9 +3477,13 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
             "run_command": str(provenance_paths.run_command),
         }
 
-    dark = read_detector_image(reference_paths.dark)
-    dark_header = read_tiff_header(reference_paths.dark)
-    background = read_detector_image(reference_paths.background)
+    assert reference_sources is not None
+    dark_source = reference_sources["dark"]
+    background_source = reference_sources["background"]
+    standard_source = reference_sources["standard"]
+    dark = dark_source.image
+    dark_header = dark_source.header
+    background = background_source.image
     mask_info = load_and_write_mask(
         safe_poni_path=safe_poni,
         dark=dark,
@@ -2782,6 +3498,9 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
         background=background,
         dark_header=dark_header,
         mask=mask_info.mask,
+        background_header=background_source.header,
+        standard_image=standard_source.image,
+        standard_header=standard_source.header,
     )
     processing_signature, signature_payload = build_processing_signature(
         config,
@@ -2789,6 +3508,9 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
         calibration=calibration,
         safe_poni_path=safe_poni,
         reference_paths=reference_paths,
+        reference_identities={
+            name: snapshot.identity for name, snapshot in reference_sources.items()
+        },
     )
     _write_processing_config(
         config,
@@ -2810,6 +3532,14 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
             "k_standard_uncertainty": calibration.k_standard_uncertainty,
             "k_expanded_uncertainty": calibration.k_expanded_uncertainty,
             "coverage_factor": calibration.coverage_factor,
+            "reference_coverage_factor": calibration.reference_coverage_factor,
+            "uncertainty_status": calibration.uncertainty_status,
+            "expanded_uncertainty_status": calibration.expanded_uncertainty_status,
+            "parallelism_max_relative_deviation": (
+                calibration.parallelism_max_relative_deviation
+            ),
+            "parallelism_relative_tolerance": calibration.parallelism_relative_tolerance,
+            "parallelism_check_passed": calibration.parallelism_check_passed,
             "q_min_overlap": calibration.q_min_overlap,
             "q_max_overlap": calibration.q_max_overlap,
             "points_used": calibration.points_used,
@@ -2848,8 +3578,8 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
     skipped = 0
     failed = 0
     instrument_ai: Any | None = None
-    standard_instrument_header = read_tiff_header(reference_paths.standard)
-    background_uncertainty_header = read_tiff_header(reference_paths.background)
+    standard_instrument_header = standard_source.header
+    background_uncertainty_header = background_source.header
     if not _is_finite_positive(background_uncertainty_header.exposure_s):
         raise ValueError("background frame requires Exposure_time for uncertainty propagation")
 
@@ -2900,7 +3630,9 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
                 )
 
         try:
-            header = read_tiff_header(source)
+            source_snapshot = capture_detector_source(source)
+            header = source_snapshot.header
+            sample = source_snapshot.image
             frame_class = classify_sample_frame(
                 header,
                 beer_lambert_thickness=config.sample_thickness_cm is None,
@@ -2930,7 +3662,6 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
                         transmission_abs_uncertainty=config.transmission_abs_uncertainty,
                     )
                 )
-            sample = read_detector_image(source)
             if sample.shape != dark.shape:
                 raise ValueError(f"sample shape mismatch: {sample.shape} vs dark{dark.shape}")
             if instrument_ai is None:
@@ -2989,6 +3720,18 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
                 mu_relative_standard_uncertainty=config.mu_relative_standard_uncertainty,
                 alpha_standard_uncertainty=config.alpha_standard_uncertainty,
                 coverage_factor=calibration.coverage_factor,
+                k_independent_standard_uncertainty=(
+                    calibration.k_independent_standard_uncertainty
+                ),
+                k_alpha_relative_sensitivity=(
+                    calibration.k_alpha_relative_sensitivity
+                ),
+                k_calibration_background_monitor_relative_sensitivity=(
+                    calibration.k_calibration_background_monitor_relative_sensitivity
+                ),
+                calibration_background_monitor_relative_standard_uncertainty=(
+                    config.calibration_background_monitor_relative_standard_uncertainty
+                ),
             )
             image_out = _coerce_output_dtype(image_abs, config.dtype, mask=mask_info.mask)
             qc = _qc_stats(image_out)
@@ -3001,6 +3744,7 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
             metadata = _frame_metadata(
                 source=source,
                 header=header,
+                source_identity=source_snapshot.identity,
                 norm_s=norm_s,
                 thickness_cm=thickness,
                 calibration=calibration,
@@ -3135,6 +3879,12 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
         "k_standard_uncertainty": calibration.k_standard_uncertainty,
         "k_expanded_uncertainty": calibration.k_expanded_uncertainty,
         "coverage_factor": calibration.coverage_factor,
+        "reference_coverage_factor": calibration.reference_coverage_factor,
+        "uncertainty_status": calibration.uncertainty_status,
+        "expanded_uncertainty_status": calibration.expanded_uncertainty_status,
+        "parallelism_max_relative_deviation": calibration.parallelism_max_relative_deviation,
+        "parallelism_relative_tolerance": calibration.parallelism_relative_tolerance,
+        "parallelism_check_passed": calibration.parallelism_check_passed,
         "standard_k_report": str(out_root / "qc" / "standard_k_report.csv"),
         "processing_manifest": str(out_root / "manifests" / "processing_manifest.csv"),
         "provenance_summary": str(provenance_paths.provenance_summary),

@@ -40,8 +40,9 @@ def test_default_nist_calibration_reports_certificate_aware_k_uncertainty():
     assert out.k_std == pytest.approx(0.0, abs=1e-12)
     assert out.k_statistical_standard_uncertainty == pytest.approx(0.0, abs=1e-12)
     assert out.k_standard_uncertainty == pytest.approx(true_k * 0.0258, rel=3e-4)
-    assert out.k_expanded_uncertainty == pytest.approx(true_k * 0.0625, rel=3e-4)
-    assert out.coverage_factor == pytest.approx(NIST_SRM3600_COVERAGE_FACTOR)
+    assert out.k_expanded_uncertainty is None
+    assert out.coverage_factor is None
+    assert out.reference_coverage_factor == pytest.approx(NIST_SRM3600_COVERAGE_FACTOR)
 
 
 def test_custom_reference_does_not_treat_unknown_systematic_uncertainty_as_zero():
@@ -81,6 +82,7 @@ def test_custom_reference_uncertainty_and_coverage_are_propagated():
     assert out.k_standard_uncertainty == pytest.approx(0.06)
     assert out.k_expanded_uncertainty == pytest.approx(0.12)
     assert out.coverage_factor == pytest.approx(2.0)
+    assert out.reference_coverage_factor is None
 
 
 def test_estimate_k_factor_robust_with_outlier_still_stable():
@@ -305,3 +307,105 @@ class TestGetReferenceData:
     def test_water_invalid_n_points_raises(self):
         with pytest.raises(ValueError, match="n_points"):
             get_reference_data("Water_20C", q_range=(0.01, 0.30), n_points=1)
+
+
+def test_estimate_k_factor_preserves_legacy_positional_argument_order():
+    q = np.array([0.01, 0.02, 0.03, 0.04], dtype=float)
+    i_ref = np.array([10.0, 8.0, 6.0, 4.0], dtype=float)
+
+    out = estimate_k_factor_robust(
+        q,
+        i_ref / 2.0,
+        q,
+        i_ref,
+        (0.015, 0.04),
+        1e-10,
+        3,
+    )
+
+    assert out.k_factor == pytest.approx(2.0)
+    assert out.q_min_overlap == pytest.approx(0.02)
+
+
+def test_builtin_nist_records_certified_thickness_and_parallelism_qc():
+    q = NIST_SRM3600_DATA[:, 0]
+    out = estimate_k_factor_robust(q, NIST_SRM3600_DATA[:, 1] / 2.0)
+
+    assert out.standard_thickness_cm == pytest.approx(0.1055)
+    assert out.parallelism_max_relative_deviation == pytest.approx(0.0, abs=1e-12)
+    assert out.parallelism_relative_tolerance == pytest.approx(0.0625, rel=3e-6)
+    assert out.parallelism_check_passed is True
+
+
+def test_builtin_nist_rejects_noncertified_standard_thickness():
+    q = NIST_SRM3600_DATA[:, 0]
+
+    with pytest.raises(ValueError, match="SRM 3600.*0.1055"):
+        estimate_k_factor_robust(
+            q,
+            NIST_SRM3600_DATA[:, 1] / 2.0,
+            standard_thickness_cm=0.1,
+        )
+
+
+def test_builtin_nist_parallelism_qc_fails_closed_with_observed_and_limit():
+    q = NIST_SRM3600_DATA[:, 0]
+    ratios = np.linspace(1.0, 1.2, q.size)
+
+    with pytest.raises(
+        ValueError,
+        match=r"parallelism QC failed.*observed=.*tolerance=0\.0625",
+    ):
+        estimate_k_factor_robust(q, NIST_SRM3600_DATA[:, 1] / ratios)
+
+
+def test_builtin_nist_parallelism_qc_accepts_explicit_stricter_tolerance():
+    q = NIST_SRM3600_DATA[:, 0]
+    ratios = np.linspace(1.0, 1.01, q.size)
+
+    out = estimate_k_factor_robust(
+        q,
+        NIST_SRM3600_DATA[:, 1] / ratios,
+        parallelism_relative_tolerance=0.01,
+    )
+
+    assert out.parallelism_max_relative_deviation <= 0.01
+    assert out.parallelism_relative_tolerance == pytest.approx(0.01)
+    assert out.parallelism_check_passed is True
+
+
+def test_estimate_k_factor_rejects_duplicate_reference_q_values():
+    q_ref = np.array([0.01, 0.02, 0.02, 0.03], dtype=float)
+
+    with pytest.raises(ValueError, match="reference q.*unique"):
+        estimate_k_factor_robust(
+            np.array([0.01, 0.02, 0.03]),
+            np.ones(3),
+            q_ref=q_ref,
+            i_ref=np.ones(4),
+        )
+
+
+def test_estimate_k_factor_rejects_nonfinite_derived_statistics():
+    q = np.array([0.01, 0.02, 0.03, 0.04], dtype=float)
+    i_ref = np.full(4, np.finfo(np.float64).max)
+    i_meas = np.full(4, np.finfo(np.float64).tiny)
+
+    with pytest.raises(ValueError, match="finite"):
+        estimate_k_factor_robust(
+            q,
+            i_meas,
+            q_ref=q,
+            i_ref=i_ref,
+            positive_floor=0.0,
+        )
+
+def test_builtin_nist_rejects_parallelism_tolerance_looser_than_certificate():
+    q = NIST_SRM3600_DATA[:, 0]
+
+    with pytest.raises(ValueError, match="cannot exceed.*certificate-derived"):
+        estimate_k_factor_robust(
+            q,
+            NIST_SRM3600_DATA[:, 1],
+            parallelism_relative_tolerance=0.1,
+        )

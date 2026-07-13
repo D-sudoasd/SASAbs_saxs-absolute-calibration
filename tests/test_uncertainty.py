@@ -99,6 +99,27 @@ def test_missing_coverage_factor_keeps_expanded_uncertainty_unknown():
     np.testing.assert_allclose(budget.combined_standard_uncertainty, [1.0])
     assert np.all(np.isnan(budget.expanded_uncertainty))
     assert budget.coverage_factor is None
+    assert budget.status == "complete"
+    assert budget.expanded_status == "unavailable"
+
+
+def test_system_coverage_factor_is_reported_separately_from_combined_status():
+    budget = propagate_absolute_uncertainty(
+        intensity=np.array([10.0]),
+        statistical_standard_uncertainty=1.0,
+        k_relative_standard_uncertainty=0.0,
+        standard_relative_standard_uncertainty=0.0,
+        transmission_relative_standard_uncertainty=0.0,
+        monitor_relative_standard_uncertainty=0.0,
+        thickness_relative_standard_uncertainty=0.0,
+        mu_relative_standard_uncertainty=0.0,
+        alpha_standard_uncertainty=0.0,
+        coverage_factor=2.0,
+    )
+
+    assert budget.status == "complete"
+    assert budget.expanded_status == "available"
+    np.testing.assert_allclose(budget.expanded_uncertainty, [2.0])
 
 
 @pytest.mark.parametrize(

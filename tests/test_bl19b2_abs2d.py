@@ -2,6 +2,7 @@ import json
 import math
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -59,6 +60,154 @@ def _write_required_reference_files(ref: Path) -> None:
     for name in ("dark001.tif", "BG001.tif", "GC001.tif"):
         (ref / name).write_bytes(b"placeholder")
 
+
+def _complete_k_calibration_contract(**overrides):
+    payload = {
+        "k_factor": 11.4,
+        "k_std": 0.3,
+        "k_std_semantics": bl19b2.K_STD_SEMANTICS,
+        "k_statistical_standard_uncertainty": 0.1,
+        "k_standard_uncertainty": 0.4,
+        "k_expanded_uncertainty": 0.8,
+        "coverage_factor": 2.0,
+        "reference_coverage_factor": 2.4231,
+        "uncertainty_status": "complete",
+        "expanded_uncertainty_status": "available",
+        "k_independent_standard_uncertainty": 0.35,
+        "k_alpha_relative_sensitivity": -0.02,
+        "k_calibration_background_monitor_relative_sensitivity": -0.03,
+        "uncertainty_components": {"ratio_scatter": 0.1, "reference_standard": 0.3},
+        "uncertainty_unknown_components": [],
+        "parallelism_max_relative_deviation": 0.01,
+        "parallelism_relative_tolerance": 0.0625,
+        "parallelism_check_passed": True,
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize("missing_key", bl19b2._K_CALIBRATION_KEYS)
+def test_schema_v4_k_contract_requires_every_declared_field(missing_key: str):
+    payload = _complete_k_calibration_contract()
+    payload.pop(missing_key)
+
+    with pytest.raises(ValueError, match=missing_key):
+        bl19b2._k_calibration_contract(payload, require_complete=True)
+
+
+@pytest.mark.parametrize(
+    ("key", "invalid_value"),
+    [
+        ("uncertainty_status", "unknown"),
+        ("expanded_uncertainty_status", "complete"),
+        ("uncertainty_components", []),
+        ("uncertainty_components", {"ratio_scatter": -0.1}),
+        ("uncertainty_unknown_components", "alpha"),
+        ("uncertainty_unknown_components", [""]),
+        ("parallelism_max_relative_deviation", -0.1),
+        ("parallelism_relative_tolerance", 0.0),
+        ("parallelism_check_passed", 1),
+    ],
+)
+def test_schema_v4_k_contract_rejects_invalid_status_component_and_parallelism_values(
+    key: str,
+    invalid_value,
+):
+    payload = _complete_k_calibration_contract(**{key: invalid_value})
+
+    with pytest.raises(ValueError, match=key):
+        bl19b2._k_calibration_contract(payload, require_complete=True)
+
+
+def test_schema_v4_k_contract_rejects_inconsistent_parallelism_result():
+    payload = _complete_k_calibration_contract(
+        parallelism_max_relative_deviation=0.1,
+        parallelism_relative_tolerance=0.05,
+        parallelism_check_passed=True,
+    )
+
+    with pytest.raises(ValueError, match="parallelism_check_passed"):
+        bl19b2._k_calibration_contract(payload, require_complete=True)
+
+
+def test_bl19b2_config_preserves_pre_v4_positional_field_order(tmp_path: Path):
+    config = BL19B2Abs2DConfig(
+        tmp_path / "input",
+        tmp_path / "geometry.poni",
+        None,
+        tmp_path / "mask.npy",
+        tmp_path / "dark.tif",
+        tmp_path / "background.tif",
+        tmp_path / "standard.tif",
+        tmp_path / "direct.tif",
+        tmp_path / "output",
+        20.2,
+        None,
+        "rate",
+        0.11,
+        0.12,
+        None,
+        0.14,
+        0.15,
+        0.16,
+        1.17,
+        (0.018, 0.219),
+        222,
+        "float64",
+        True,
+        7,
+        True,
+        False,
+        0.1055,
+        "SRM3600",
+        False,
+        0.95,
+        12.5,
+    )
+
+    assert config.mu_relative_standard_uncertainty == pytest.approx(0.15)
+    assert config.alpha_standard_uncertainty == pytest.approx(0.16)
+    assert config.alpha == pytest.approx(1.17)
+    assert config.q_window == pytest.approx((0.018, 0.219))
+    assert config.npt == 222
+    assert config.dtype == "float64"
+    assert config.dry_run is True
+    assert config.max_frames == 7
+    assert config.overwrite is True
+    assert config.write_preview is False
+    assert config.standard_thickness_cm == pytest.approx(0.1055)
+    assert config.standard_key == "SRM3600"
+    assert config.correct_solid_angle_for_k is False
+    assert config.polarization_factor == pytest.approx(0.95)
+    assert config.dark_hot_pixel_threshold == pytest.approx(12.5)
+
+
+def test_standard_calibration_preserves_pre_v4_positional_field_order():
+    calibration = StandardCalibration(
+        2.0,
+        0.1,
+        0.01,
+        0.2,
+        50,
+        60,
+        0.1055,
+        100.0,
+        90.0,
+        1.0,
+        "nist_srm3600_certificate",
+        ("legacy warning",),
+        0.11,
+        0.12,
+        0.24,
+        2.0,
+    )
+
+    assert calibration.warnings == ("legacy warning",)
+    assert calibration.k_statistical_standard_uncertainty == pytest.approx(0.11)
+    assert calibration.k_standard_uncertainty == pytest.approx(0.12)
+    assert calibration.k_expanded_uncertainty == pytest.approx(0.24)
+    assert calibration.coverage_factor == pytest.approx(2.0)
+    assert calibration.reference_coverage_factor is None
 
 def test_parse_bl19b2_description_extracts_header_fields():
     text = (
@@ -557,6 +706,10 @@ def test_bl19b2_uncertainty_budget_matches_independent_fixed_thickness_calculati
         mu_relative_standard_uncertainty=None,
         alpha_standard_uncertainty=0.1,
         coverage_factor=2.0,
+        k_independent_standard_uncertainty=math.sqrt(0.5**2 + (2.0 * 0.03) ** 2),
+        k_alpha_relative_sensitivity=0.0,
+        k_calibration_background_monitor_relative_sensitivity=0.0,
+        calibration_background_monitor_relative_standard_uncertainty=0.01,
     )
 
     assert budget.unknown_components == ()
@@ -580,6 +733,7 @@ def test_bl19b2_uncertainty_budget_matches_independent_fixed_thickness_calculati
         sample_thickness_relative_standard_uncertainty=0.02,
         alpha_standard_uncertainty=0.1,
         standard_thickness_relative_standard_uncertainty=0.03,
+        calibration_background_monitor_relative_standard_uncertainty=0.01,
     )
     calibration = StandardCalibration(
         k_factor=2.0,
@@ -595,17 +749,87 @@ def test_bl19b2_uncertainty_budget_matches_independent_fixed_thickness_calculati
         standard_thickness_source="nist_srm3600_certificate",
         k_statistical_standard_uncertainty=0.2,
         k_standard_uncertainty=0.5,
-        k_expanded_uncertainty=1.0,
+        k_expanded_uncertainty=None,
         coverage_factor=2.0,
+        uncertainty_status="partial",
+        expanded_uncertainty_status="unavailable",
+        uncertainty_unknown_components=(
+            "calibration_background_raw_counts_covariance",
+            "calibration_dark_raw_counts_covariance",
+        ),
     )
     summary = bl19b2._frame_uncertainty_metadata(config, calibration, budget)
-    assert summary["status"] == "complete"
-    assert summary["unknown_components"] == []
+    assert summary["status"] == "partial"
+    assert set(summary["unknown_components"]) == {
+        "calibration_background_raw_counts_covariance",
+        "calibration_dark_raw_counts_covariance",
+    }
+    assert "system_coverage_factor" not in summary["missing_for_expanded"]
     assert summary["combined_standard_uncertainty"]["max"] == pytest.approx(49.9564007410)
     assert summary["datasets"]["combined_standard"].endswith(
         "/uncertainty/combined_standard"
     )
 
+
+@pytest.mark.parametrize(
+    ("coverage_factor", "expects_system_coverage_missing"),
+    [(None, True), (2.0, False)],
+)
+def test_frame_uncertainty_metadata_lists_actual_missing_expanded_inputs(
+    coverage_factor: float | None,
+    expects_system_coverage_missing: bool,
+):
+    budget = bl19b2.propagate_absolute_uncertainty(
+        np.array([[1.0]]),
+        statistical_standard_uncertainty=0.0,
+        k_relative_standard_uncertainty=0.0,
+        standard_relative_standard_uncertainty=None,
+        transmission_relative_standard_uncertainty=0.0,
+        monitor_relative_standard_uncertainty=0.0,
+        thickness_relative_standard_uncertainty=0.0,
+        mu_relative_standard_uncertainty=0.0,
+        alpha_standard_uncertainty=0.0,
+        coverage_factor=coverage_factor,
+    )
+    config = BL19B2Abs2DConfig(
+        input_root=Path("dat001"),
+        poni_path=Path("geometry.poni"),
+        sample_thickness_cm=0.1,
+        monitor_mode="rate",
+        system_coverage_factor=coverage_factor,
+    )
+    calibration = StandardCalibration(
+        k_factor=2.0,
+        k_std=0.2,
+        q_min_overlap=0.01,
+        q_max_overlap=0.2,
+        points_used=4,
+        points_total=4,
+        standard_thickness_cm=0.1055,
+        norm_standard=10.0,
+        norm_background=20.0,
+        bg_transmission_used=1.0,
+        standard_thickness_source="nist_srm3600_certificate",
+        k_statistical_standard_uncertainty=0.2,
+        coverage_factor=coverage_factor,
+        uncertainty_status="partial",
+        uncertainty_unknown_components=(
+            "calibration_background_raw_counts_covariance",
+            "calibration_dark_raw_counts_covariance",
+        ),
+    )
+
+    summary = bl19b2._frame_uncertainty_metadata(config, calibration, budget)
+
+    assert "standard" not in summary["unknown_components"]
+    expected_missing = {
+        "calibration_background_raw_counts_covariance",
+        "calibration_dark_raw_counts_covariance",
+    }
+    assert set(summary["unknown_components"]) == expected_missing
+    if expects_system_coverage_missing:
+        expected_missing.add("system_coverage_factor")
+    assert set(summary["missing_for_expanded"]) == expected_missing
 
 def test_bl19b2_uncertainty_budget_preserves_unknown_beer_lambert_inputs():
     transmission = 0.5
@@ -887,15 +1111,7 @@ def test_write_edf_image_uses_nested_metadata_for_header(tmp_path: Path):
     metadata = {
         "raw_sample": "sample.tif",
         "processing_signature": "sig-2",
-        "absolute_calibration": {
-            "k_factor": 11.4,
-            "k_std": 0.3,
-            "k_std_semantics": "inlier ratio scatter; not combined K uncertainty",
-            "k_statistical_standard_uncertainty": 0.1,
-            "k_standard_uncertainty": 0.4,
-            "k_expanded_uncertainty": 0.8,
-            "coverage_factor": 2.0,
-        },
+        "absolute_calibration": _complete_k_calibration_contract(),
         "thickness": {"thickness_cm": 0.079},
         "normalization": {
             "norm_sample": 123.0,
@@ -1022,6 +1238,64 @@ def test_standard_thickness_defaults_only_for_srm3600(tmp_path: Path):
         bl19b2._resolve_standard_thickness_cm(other)
 
 
+@pytest.mark.parametrize(
+    "standard_alias",
+    [
+        "SRM3600",
+        "srm-3600",
+        "nist_srm3600",
+        "NIST SRM 3600",
+        "NIST-SRM-3600",
+    ],
+)
+def test_srm3600_aliases_share_certificate_thickness_and_builtin_reference(
+    standard_alias: str,
+    tmp_path: Path,
+):
+    implicit = BL19B2Abs2DConfig(
+        input_root=tmp_path / "dat001",
+        poni_path=tmp_path / "geometry.poni",
+        mu_cm_inv=20.2,
+        monitor_mode="rate",
+        standard_key=standard_alias,
+    )
+    explicit = BL19B2Abs2DConfig(
+        input_root=tmp_path / "dat001",
+        poni_path=tmp_path / "geometry.poni",
+        mu_cm_inv=20.2,
+        monitor_mode="rate",
+        standard_key=standard_alias,
+        standard_thickness_cm=0.1055,
+    )
+
+    expected = (0.1055, "nist_srm3600_certificate")
+    assert bl19b2._resolve_standard_thickness_cm(implicit) == expected
+    assert bl19b2._resolve_standard_thickness_cm(explicit) == expected
+    assert bl19b2._resolve_standard_reference_data(standard_alias) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "standard_alias",
+    ["SRM3600", "nist_srm3600", "NIST SRM 3600"],
+)
+def test_srm3600_aliases_reject_noncertified_explicit_thickness_early(
+    standard_alias: str,
+    tmp_path: Path,
+):
+    config = BL19B2Abs2DConfig(
+        input_root=tmp_path / "dat001",
+        poni_path=tmp_path / "geometry.poni",
+        mu_cm_inv=20.2,
+        monitor_mode="rate",
+        standard_key=standard_alias,
+        standard_thickness_cm=0.1,
+    )
+
+    with pytest.raises(ValueError, match="certified 0.1055"):
+        bl19b2._resolve_standard_thickness_cm(config)
+    with pytest.raises(ValueError, match="certified 0.1055"):
+        validate_config(config)
+
 def test_output_dtype_rejects_float32_overflow_on_unmasked_pixel():
     image = np.array([[float(np.finfo(np.float32).max) * 2.0, np.nan]], dtype=np.float64)
     mask = np.array([[0, 1]], dtype=np.uint8)
@@ -1030,7 +1304,190 @@ def test_output_dtype_rejects_float32_overflow_on_unmasked_pixel():
         bl19b2._coerce_output_dtype(image, "float32", mask=mask)
 
 
-def test_processing_signature_records_all_absolute_scale_choices(tmp_path: Path):
+def test_capture_detector_source_binds_pixels_header_and_hash_to_one_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source = tmp_path / "sample.tif"
+    source.write_bytes(b"stable-source")
+    header = BL19B2Header(
+        exposure_s=10.0,
+        monitor=100.0,
+        transmission=0.5,
+        raw_fields={"MON": "100"},
+    )
+    raw_image = np.arange(4, dtype=np.float64).reshape(2, 2)
+    monkeypatch.setattr(bl19b2, "read_tiff_header", lambda path: header)
+    monkeypatch.setattr(bl19b2, "read_detector_image", lambda path: raw_image)
+
+    snapshot = bl19b2.capture_detector_source(source)
+    raw_image[0, 0] = 99.0
+
+    assert snapshot.path == source
+    assert snapshot.header == header
+    assert snapshot.image[0, 0] == 0.0
+    assert snapshot.identity == {
+        "sha256": bl19b2._file_sha256(source),
+        "size_bytes": source.stat().st_size,
+        "header": bl19b2._header_identity(header),
+    }
+
+
+def test_capture_detector_source_rejects_content_mutation_during_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source = tmp_path / "sample.tif"
+    source.write_bytes(b"before")
+    header = BL19B2Header(exposure_s=10.0, monitor=100.0, transmission=0.5)
+    monkeypatch.setattr(bl19b2, "read_tiff_header", lambda path: header)
+
+    def mutate_while_reading(path: Path) -> np.ndarray:
+        Path(path).write_bytes(b"after-content")
+        return np.ones((2, 2), dtype=np.float64)
+
+    monkeypatch.setattr(bl19b2, "read_detector_image", mutate_while_reading)
+
+    with pytest.raises(
+        bl19b2.SourceChangedDuringReadError,
+        match="changed while pixels/header were being read",
+    ):
+        bl19b2.capture_detector_source(source)
+
+
+def test_run_rejects_mutating_reference_before_creating_output_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    input_root = tmp_path / "dat001"
+    ref = input_root / "reference_saxs"
+    sample = input_root / "sample" / "frame001.tif"
+    sample.parent.mkdir(parents=True)
+    _write_required_reference_files(ref)
+    sample.write_bytes(b"sample")
+    poni = tmp_path / "source.poni"
+    poni.write_text("poni_version: 2\nDetector: Detector\n", encoding="utf-8")
+    output_root = tmp_path / "output"
+    header = BL19B2Header(exposure_s=10.0, monitor=100.0, transmission=0.5)
+    monkeypatch.setattr(bl19b2, "read_tiff_header", lambda path: header)
+
+    def mutate_background(path: Path) -> np.ndarray:
+        source = Path(path)
+        if source.name == "BG001.tif":
+            source.write_bytes(b"background-mutated-during-read")
+        return np.ones((2, 2), dtype=np.float64)
+
+    monkeypatch.setattr(bl19b2, "read_detector_image", mutate_background)
+    config = BL19B2Abs2DConfig(
+        input_root=input_root,
+        poni_path=poni,
+        output_root=output_root,
+        sample_thickness_cm=0.1,
+        monitor_mode="rate",
+        write_preview=False,
+    )
+
+    with pytest.raises(bl19b2.SourceChangedDuringReadError, match="changed while"):
+        run_bl19b2_abs2d(config)
+
+    assert not output_root.exists()
+
+def test_run_detects_sample_mutation_before_publishing_frame_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    input_root = tmp_path / "dat001"
+    ref = input_root / "reference_saxs"
+    sample = input_root / "sample" / "frame001.tif"
+    sample.parent.mkdir(parents=True)
+    _write_required_reference_files(ref)
+    sample.write_bytes(b"sample-before")
+    poni = tmp_path / "source.poni"
+    poni.write_text("poni_version: 2\nDetector: Detector\n", encoding="utf-8")
+    output_root = tmp_path / "output"
+    header = BL19B2Header(exposure_s=10.0, monitor=100.0, transmission=0.5)
+    monkeypatch.setattr(bl19b2, "read_tiff_header", lambda path: header)
+
+    def mutate_sample(path: Path) -> np.ndarray:
+        source = Path(path)
+        if source == sample:
+            source.write_bytes(b"sample-mutated-during-read")
+        return np.ones((2, 2), dtype=np.float64)
+
+    monkeypatch.setattr(bl19b2, "read_detector_image", mutate_sample)
+    mask_info = MaskInfo(
+        mask=np.zeros((2, 2), dtype=np.uint8),
+        npy_path=output_root / "masks" / "bl19b2_mask.npy",
+        edf_path=output_root / "masks" / "bl19b2_mask.edf",
+        checksum_sha256="mask-sha",
+        user_mask_path=None,
+        user_mask_pixels=0,
+        detector_mask_pixels=0,
+        dark_hot_pixels=0,
+        combined_mask_pixels=0,
+        dark_hot_pixel_threshold=10.0,
+    )
+    calibration = StandardCalibration(
+        k_factor=1.0,
+        k_std=0.0,
+        q_min_overlap=0.01,
+        q_max_overlap=0.2,
+        points_used=2,
+        points_total=2,
+        standard_thickness_cm=0.1055,
+        norm_standard=1.0,
+        norm_background=1.0,
+        bg_transmission_used=1.0,
+        standard_thickness_source="nist_srm3600_certificate",
+        k_statistical_standard_uncertainty=0.0,
+    )
+    writer_calls: list[Path] = []
+    monkeypatch.setattr(bl19b2, "load_and_write_mask", lambda **kwargs: mask_info)
+    monkeypatch.setattr(
+        bl19b2,
+        "calibrate_standard",
+        lambda *args, **kwargs: (calibration, np.zeros((2, 2), dtype=np.float64)),
+    )
+    monkeypatch.setattr(
+        bl19b2,
+        "build_processing_signature",
+        lambda *args, **kwargs: ("stable-signature", {"formula_version": "test"}),
+    )
+    monkeypatch.setattr(
+        bl19b2,
+        "write_hdf5_image",
+        lambda path, *args, **kwargs: writer_calls.append(Path(path)),
+    )
+    monkeypatch.setattr(
+        bl19b2,
+        "write_edf_image",
+        lambda path, *args, **kwargs: writer_calls.append(Path(path)),
+    )
+    monkeypatch.setattr(bl19b2, "write_provenance_package", lambda **kwargs: None)
+    config = BL19B2Abs2DConfig(
+        input_root=input_root,
+        poni_path=poni,
+        output_root=output_root,
+        sample_thickness_cm=0.1,
+        monitor_mode="rate",
+        write_preview=False,
+    )
+
+    result = run_bl19b2_abs2d(config)
+    paths = build_output_paths(sample, input_root=input_root, output_root=output_root)
+
+    assert result["status"] == "failed"
+    assert result["failed"] == 1
+    assert writer_calls == []
+    assert not paths.h5.exists()
+    assert not paths.edf.exists()
+    assert not paths.metadata.exists()
+    assert not paths.preview.exists()
+
+def test_processing_signature_records_all_absolute_scale_choices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     refs = ReferencePaths(
         dark=tmp_path / "dark.tif",
         background=tmp_path / "background.tif",
@@ -1056,7 +1513,7 @@ def test_processing_signature_records_all_absolute_scale_choices(tmp_path: Path)
         input_root=tmp_path,
         poni_path=poni,
         mu_cm_inv=20.2,
-        monitor_mode="integrated",
+        monitor_mode=" INTEGRATED ",
         dtype="float64",
         transmission_abs_uncertainty=0.001,
         monitor_relative_standard_uncertainty=0.01,
@@ -1082,14 +1539,29 @@ def test_processing_signature_records_all_absolute_scale_choices(tmp_path: Path)
         coverage_factor=2.0,
     )
 
+    captured_identities = {
+        "dark": {"sha256": "captured-dark"},
+        "background": {"sha256": "captured-background"},
+        "standard": {"sha256": "captured-standard"},
+    }
+    monkeypatch.setattr(
+        bl19b2,
+        "_stable_file_fingerprint",
+        lambda path: (_ for _ in ()).throw(AssertionError(f"unexpected source reopen: {path}")),
+    )
+
     _, payload = bl19b2.build_processing_signature(
         config,
         mask_info=mask_info,
         calibration=calibration,
         safe_poni_path=poni,
         reference_paths=refs,
+        reference_identities=captured_identities,
     )
 
+    assert payload["reference_files"]["dark"]["sha256"] == "captured-dark"
+    assert payload["reference_files"]["background"]["sha256"] == "captured-background"
+    assert payload["reference_files"]["standard"]["sha256"] == "captured-standard"
     assert payload["monitor_mode"] == "integrated"
     assert payload["dtype"] == "float64"
     assert payload["mu_cm_inv"] == 20.2
@@ -1150,15 +1622,7 @@ def test_resume_validates_source_and_hdf5_edf_checksums(
         },
         "normalization": {"norm_sample": 500.0, "transmission_abs": 0.5},
         "thickness": {"thickness_cm": 0.034},
-        "absolute_calibration": {
-            "k_factor": 11.4,
-            "k_std": 0.3,
-            "k_std_semantics": "inlier ratio scatter; not combined K uncertainty",
-            "k_statistical_standard_uncertainty": 0.1,
-            "k_standard_uncertainty": 0.4,
-            "k_expanded_uncertainty": 0.8,
-            "coverage_factor": 2.0,
-        },
+        "absolute_calibration": _complete_k_calibration_contract(),
         "uncertainty": {
             "status": "complete",
             "unknown_components": [],
@@ -1230,10 +1694,11 @@ def test_build_rerun_command_records_cli_paths_and_parameters(tmp_path: Path):
     config = BL19B2Abs2DConfig(
         input_root=tmp_path / "dat001",
         poni_path=tmp_path / "BL19B2_SAXS_Califile.poni",
+        mask_path=tmp_path / "user-mask.npy",
         output_root=tmp_path / "dat001_absolute_corrected_2D_v3",
         mu_cm_inv=20.2,
         alpha=1.0,
-        monitor_mode="rate",
+        monitor_mode=" RATE ",
         q_window=(0.01, 0.2),
         npt=1000,
         dtype="float32",
@@ -1243,6 +1708,17 @@ def test_build_rerun_command_records_cli_paths_and_parameters(tmp_path: Path):
         mu_relative_standard_uncertainty=0.02,
         alpha_standard_uncertainty=0.03,
         standard_thickness_relative_standard_uncertainty=0.04,
+        standard_transmission_abs_uncertainty=0.005,
+        standard_monitor_relative_standard_uncertainty=0.006,
+        calibration_background_monitor_relative_standard_uncertainty=0.007,
+        system_coverage_factor=2.0,
+        dry_run=True,
+        max_frames=3,
+        overwrite=True,
+        write_preview=False,
+        standard_key="CUSTOM_STANDARD",
+        correct_solid_angle_for_k=False,
+        polarization_factor=0.95,
     )
 
     command = build_rerun_command(config, poni_path=tmp_path / "safe" / "BL19B2_SAXS_Califile.poni")
@@ -1250,14 +1726,42 @@ def test_build_rerun_command_records_cli_paths_and_parameters(tmp_path: Path):
     assert f"& '{sys.executable}' -m saxsabs.cli bl19b2-abs2d" in command
     assert f"--input-root '{tmp_path / 'dat001'}'" in command
     assert f"--poni '{tmp_path / 'safe' / 'BL19B2_SAXS_Califile.poni'}'" in command
+    assert f"--mask '{tmp_path / 'user-mask.npy'}'" in command
     assert "--mu 20.2" in command
     assert "--qmin 0.01" in command
+    assert "--monitor-mode rate" in command
     assert "--dark-hot-pixel-threshold 10" in command
     assert "--transmission-abs-uncertainty 0.001" in command
     assert "--monitor-relative-standard-uncertainty 0.01" in command
     assert "--mu-relative-standard-uncertainty 0.02" in command
     assert "--alpha-standard-uncertainty 0.03" in command
     assert "--standard-thickness-relative-standard-uncertainty 0.04" in command
+    assert "--standard-transmission-abs-uncertainty 0.005" in command
+    assert "--standard-monitor-relative-standard-uncertainty 0.006" in command
+    assert "--calibration-background-monitor-relative-standard-uncertainty 0.007" in command
+    assert "--system-coverage-factor 2" in command
+    assert "--dry-run" in command
+    assert "--max-frames 3" in command
+    assert "--overwrite" in command
+    assert "--no-preview" in command
+    assert "--standard-key 'CUSTOM_STANDARD'" in command
+    assert "--no-correct-solid-angle-for-k" in command
+    assert "--polarization-factor 0.95" in command
+
+
+def test_build_rerun_command_explicitly_records_default_calibration_controls(tmp_path: Path):
+    config = BL19B2Abs2DConfig(
+        input_root=tmp_path / "dat001",
+        poni_path=tmp_path / "BL19B2_SAXS_Califile.poni",
+        mu_cm_inv=20.2,
+        monitor_mode="rate",
+    )
+
+    command = build_rerun_command(config)
+
+    assert "--standard-key 'SRM3600'" in command
+    assert "--correct-solid-angle-for-k" in command
+    assert "--no-polarization-correction" in command
 
 
 def test_build_rerun_command_records_pydidas_yaml_and_mask(tmp_path: Path):
@@ -1315,6 +1819,50 @@ def test_generated_readme_matches_solid_angle_calibration_setting(tmp_path: Path
     assert "correctSolidAngle = False" in text
     assert "correctSolidAngle = True" not in text
 
+
+def test_resume_validation_preserves_creation_provenance(tmp_path: Path):
+    metadata_path = tmp_path / "frame.json"
+    creation = {
+        "schema": SCHEMA_VERSION,
+        "software_versions": {"python": "creation-python"},
+        "code_state_ref": "creation-code-state.txt",
+        "code_state_status": "clean",
+        "provenance": {
+            "run_command": "creation-run-command.ps1",
+            "processing_environment": "creation-environment.json",
+            "code_state": "creation-code-state.txt",
+            "provenance_summary": "creation-provenance.json",
+        },
+    }
+    metadata_path.write_text(json.dumps(creation), encoding="utf-8")
+    validation_paths = bl19b2.ProvenancePaths(
+        run_command=tmp_path / "validation-run-command.ps1",
+        processing_environment=tmp_path / "validation-environment.json",
+        code_state=tmp_path / "validation-code-state.txt",
+        provenance_summary=tmp_path / "validation-provenance.json",
+    )
+
+    bl19b2.update_metadata_provenance(
+        metadata_path,
+        provenance_paths=validation_paths,
+        software_versions={"python": "validation-python"},
+        code_state={"status": "dirty"},
+    )
+
+    updated = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert updated["software_versions"] == creation["software_versions"]
+    assert updated["code_state_ref"] == creation["code_state_ref"]
+    assert updated["code_state_status"] == creation["code_state_status"]
+    assert updated["provenance"] == creation["provenance"]
+    validation = updated["last_resume_validation"]
+    assert validation["validated_at"]
+    assert validation["validated_by"]["software_versions"] == {
+        "python": "validation-python"
+    }
+    assert validation["validated_by"]["code_state_status"] == "dirty"
+    assert validation["validated_by"]["provenance"]["run_command"] == str(
+        validation_paths.run_command
+    )
 
 def test_format_code_state_text_records_dirty_diff():
     text = format_code_state_text(
@@ -1454,3 +2002,315 @@ def test_future_beamtime_template_is_parseable_and_contains_cli_fields():
     assert data["uncertainty"]["standard_thickness_relative_standard_uncertainty"] is None
     assert data["calibration"]["dark_hot_pixel_threshold"] == 10.0
     assert "bl19b2-abs2d" in data["full_run_command"]
+
+
+def test_copy_poni_to_safe_path_rejects_changed_source_without_overwrite(tmp_path: Path):
+    source = tmp_path / "source.poni"
+    source.write_text("poni_version: 2\nDistance: 1\n", encoding="utf-8")
+    config = BL19B2Abs2DConfig(
+        input_root=tmp_path / "dat001",
+        output_root=tmp_path / "out",
+        poni_path=source,
+        mu_cm_inv=20.2,
+        monitor_mode="rate",
+    )
+
+    safe = bl19b2._copy_poni_to_safe_path(config)
+    original = safe.read_text(encoding="utf-8")
+    source.write_text("poni_version: 2\nDistance: 2\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="safe PONI.*differs"):
+        bl19b2._copy_poni_to_safe_path(config)
+
+    assert safe.read_text(encoding="utf-8") == original
+
+
+def test_copy_poni_to_safe_path_rejects_changed_pydidas_geometry_without_overwrite(
+    tmp_path: Path,
+):
+    cali = tmp_path / "Cali.yaml"
+    _write_pydidas_cali(cali, detector_dist="3.0")
+    config = BL19B2Abs2DConfig(
+        input_root=tmp_path / "dat001",
+        output_root=tmp_path / "out",
+        pydidas_cali_yaml=cali,
+        mu_cm_inv=20.2,
+        monitor_mode="rate",
+    )
+
+    safe = bl19b2._copy_poni_to_safe_path(config)
+    original = safe.read_text(encoding="utf-8")
+    _write_pydidas_cali(cali, detector_dist="4.0")
+
+    with pytest.raises(ValueError, match="safe PONI.*differs"):
+        bl19b2._copy_poni_to_safe_path(config)
+
+    assert safe.read_text(encoding="utf-8") == original
+
+
+def test_write_pydidas_poni_missing_source_does_not_create_target_directory(tmp_path: Path):
+    target = tmp_path / "new" / "geometry.poni"
+
+    with pytest.raises(FileNotFoundError):
+        write_pydidas_poni(tmp_path / "missing.yaml", target)
+
+    assert not target.parent.exists()
+
+def test_standard_side_relative_sensitivities_rerun_the_robust_estimator():
+    q = np.array([0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14])
+    standard = np.array([14.0, 11.0, 15.0, 12.0, 17.0, 13.0, 16.0])
+    background = np.array([1.0, 3.0, 2.0, 4.0, 1.5, 2.5, 3.5])
+    alpha = 0.7
+    transmission = 0.82
+    thickness = 0.1055
+    base_profile = (standard - alpha * background) / thickness
+    reference = base_profile * np.array([2.0, 2.1, 1.95, 2.05, 1.9, 2.2, 1.85])
+
+    def estimate(profile: np.ndarray) -> float:
+        return bl19b2.estimate_k_factor_robust(
+            q,
+            profile,
+            q_ref=q,
+            i_ref=reference,
+            q_window=(0.02, 0.14),
+            standard_thickness_cm=thickness,
+        ).k_factor
+
+    k_factor = estimate(base_profile)
+    sensitivities = bl19b2._standard_side_relative_sensitivities(
+        standard_profile=standard,
+        background_profile=background,
+        alpha=alpha,
+        standard_transmission=transmission,
+        standard_thickness_cm=thickness,
+        k_factor=k_factor,
+        estimate_k_for_profile=estimate,
+    )
+
+    step = 1e-6
+
+    def central(plus: np.ndarray, minus: np.ndarray, input_step: float) -> float:
+        return (estimate(plus) - estimate(minus)) / (2.0 * input_step * k_factor)
+
+    transmission_step = step * transmission
+    alpha_step = step * alpha
+    expected = {
+        "standard_transmission_per_abs": central(
+            (
+                standard * transmission / (transmission + transmission_step)
+                - alpha * background
+            )
+            / thickness,
+            (
+                standard * transmission / (transmission - transmission_step)
+                - alpha * background
+            )
+            / thickness,
+            transmission_step,
+        ),
+        "standard_monitor_per_relative": central(
+            (standard / (1.0 + step) - alpha * background) / thickness,
+            (standard / (1.0 - step) - alpha * background) / thickness,
+            step,
+        ),
+        "calibration_background_monitor_per_relative": central(
+            (standard - alpha * background / (1.0 + step)) / thickness,
+            (standard - alpha * background / (1.0 - step)) / thickness,
+            step,
+        ),
+        "standard_thickness_per_relative": central(
+            (standard - alpha * background) / (thickness * (1.0 + step)),
+            (standard - alpha * background) / (thickness * (1.0 - step)),
+            step,
+        ),
+        "alpha_per_abs": central(
+            (standard - (alpha + alpha_step) * background) / thickness,
+            (standard - (alpha - alpha_step) * background) / thickness,
+            alpha_step,
+        ),
+    }
+    assert sensitivities == pytest.approx(expected)
+
+    old_pointwise_median = np.median(
+        standard / ((standard - alpha * background) * transmission)
+    )
+    assert sensitivities["standard_transmission_per_abs"] != pytest.approx(
+        old_pointwise_median,
+        rel=0.05,
+    )
+
+
+def test_standard_side_missing_inputs_stay_partial_and_certificate_coverage_is_reference_only():
+    config = BL19B2Abs2DConfig(
+        input_root=Path("dat001"),
+        poni_path=Path("geometry.poni"),
+        sample_thickness_cm=0.1,
+        monitor_mode="rate",
+    )
+    result = SimpleNamespace(
+        k_factor=2.0,
+        k_statistical_standard_uncertainty=0.2,
+        k_standard_uncertainty=0.5,
+        coverage_factor=2.4231,
+    )
+
+    payload = bl19b2._build_standard_uncertainty_contract(
+        config,
+        k_result=result,
+        standard_profile=np.array([10.0]),
+        background_profile=np.array([2.0]),
+        standard_transmission=0.8,
+        standard_thickness_cm=1.0,
+    )
+
+    assert payload["status"] == "partial"
+    assert payload["reference_coverage_factor"] == pytest.approx(2.4231)
+    assert payload["system_coverage_factor"] is None
+    assert payload["expanded_status"] == "unavailable"
+    assert payload["k_expanded_uncertainty"] is None
+    assert set(payload["unknown_components"]) == {
+        "standard_transmission",
+        "standard_monitor",
+        "calibration_background_monitor",
+        "standard_thickness",
+        "alpha",
+        "estimator_consistency",
+        "calibration_background_raw_counts_covariance",
+        "calibration_dark_raw_counts_covariance",
+    }
+
+
+def test_standard_side_all_scalar_inputs_remain_partial_for_shared_raw_covariance():
+    config = BL19B2Abs2DConfig(
+        input_root=Path("dat001"),
+        poni_path=Path("geometry.poni"),
+        sample_thickness_cm=0.1,
+        monitor_mode="rate",
+        standard_transmission_abs_uncertainty=0.01,
+        standard_monitor_relative_standard_uncertainty=0.02,
+        calibration_background_monitor_relative_standard_uncertainty=0.03,
+        standard_thickness_relative_standard_uncertainty=0.04,
+        alpha_standard_uncertainty=0.05,
+        system_coverage_factor=2.0,
+    )
+    result = SimpleNamespace(
+        k_factor=2.0,
+        k_statistical_standard_uncertainty=0.2,
+        k_standard_uncertainty=0.5,
+        coverage_factor=2.4231,
+    )
+    standard = np.array([10.0, 11.0, 12.0])
+    background = np.array([2.0, 1.0, 3.0])
+    base_profile = standard - config.alpha * background
+    scale = 2.0 * float(np.median(base_profile))
+
+    payload = bl19b2._build_standard_uncertainty_contract(
+        config,
+        k_result=result,
+        standard_profile=standard,
+        background_profile=background,
+        standard_transmission=0.8,
+        standard_thickness_cm=1.0,
+        estimate_k_for_profile=lambda profile: scale / float(np.median(profile)),
+    )
+
+    assert payload["status"] == "partial"
+    assert set(payload["unknown_components"]) == {
+        "calibration_background_raw_counts_covariance",
+        "calibration_dark_raw_counts_covariance",
+    }
+    assert payload["reference_coverage_factor"] == pytest.approx(2.4231)
+    assert payload["system_coverage_factor"] == pytest.approx(2.0)
+    assert payload["expanded_status"] == "unavailable"
+    assert payload["k_expanded_uncertainty"] is None
+    assert payload["k_independent_standard_uncertainty"] == pytest.approx(
+        math.sqrt(
+            sum(
+                payload["components"][name] ** 2
+                for name in (
+                    "ratio_scatter",
+                    "reference_standard",
+                    "standard_transmission",
+                    "standard_monitor",
+                    "standard_thickness",
+                )
+            )
+        )
+    )
+    assert payload["k_standard_uncertainty"] == pytest.approx(
+        math.sqrt(
+            payload["k_independent_standard_uncertainty"] ** 2
+            + payload["components"]["calibration_background_monitor"] ** 2
+            + payload["components"]["alpha"] ** 2
+        )
+    )
+
+def test_shared_alpha_uses_joint_calibration_and_sample_sensitivity():
+    budget = bl19b2.compute_bl19b2_uncertainty_budget(
+        np.array([[179.5]]),
+        sample_raw=np.array([[100.0]]),
+        background_raw=np.array([[25.0]]),
+        dark_raw=np.array([[4.0]]),
+        sample_exposure_s=2.0,
+        background_exposure_s=4.0,
+        dark_exposure_s=1.0,
+        norm_sample=10.0,
+        norm_background=20.0,
+        alpha=0.5,
+        k_factor=2.0,
+        thickness_cm=0.1,
+        transmission=0.5,
+        mu_cm_inv=None,
+        k_statistical_standard_uncertainty=0.2,
+        k_standard_uncertainty=0.5,
+        standard_thickness_relative_standard_uncertainty=0.03,
+        transmission_abs_uncertainty=0.01,
+        monitor_relative_standard_uncertainty=0.01,
+        thickness_relative_standard_uncertainty=0.02,
+        mu_relative_standard_uncertainty=None,
+        alpha_standard_uncertainty=0.1,
+        coverage_factor=2.0,
+        k_independent_standard_uncertainty=0.5,
+        k_alpha_relative_sensitivity=0.2,
+    )
+
+    # sample background contribution is 0.45*K/d = 9; K contribution is I*0.2 = 35.9
+    assert budget.alpha[0, 0] == pytest.approx(abs(35.9 - 9.0) * 0.1)
+
+
+def test_shared_background_monitor_uses_joint_k_and_subtraction_sensitivity():
+    budget = bl19b2.compute_bl19b2_uncertainty_budget(
+        np.array([[179.5]]),
+        sample_raw=np.array([[100.0]]),
+        background_raw=np.array([[25.0]]),
+        dark_raw=np.array([[4.0]]),
+        sample_exposure_s=2.0,
+        background_exposure_s=4.0,
+        dark_exposure_s=1.0,
+        norm_sample=10.0,
+        norm_background=20.0,
+        alpha=0.5,
+        k_factor=2.0,
+        thickness_cm=0.1,
+        transmission=0.5,
+        mu_cm_inv=None,
+        k_statistical_standard_uncertainty=0.2,
+        k_standard_uncertainty=0.5,
+        standard_thickness_relative_standard_uncertainty=0.03,
+        transmission_abs_uncertainty=0.01,
+        monitor_relative_standard_uncertainty=0.01,
+        thickness_relative_standard_uncertainty=0.02,
+        mu_relative_standard_uncertainty=None,
+        alpha_standard_uncertainty=0.0,
+        coverage_factor=2.0,
+        k_independent_standard_uncertainty=0.5,
+        k_alpha_relative_sensitivity=0.0,
+        k_calibration_background_monitor_relative_sensitivity=-0.1,
+        calibration_background_monitor_relative_standard_uncertainty=0.02,
+    )
+
+    sample_monitor_absolute = 184.0 * 0.01
+    background_joint_absolute = abs(179.5 * -0.1 + 0.5 * 9.0) * 0.02
+    assert budget.monitor[0, 0] == pytest.approx(
+        math.hypot(sample_monitor_absolute, background_joint_absolute)
+    )

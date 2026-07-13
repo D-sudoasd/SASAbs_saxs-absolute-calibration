@@ -209,3 +209,36 @@ class TestValidateAlpha:
             assert "must be finite and > 0" in str(exc)
         else:
             raise AssertionError("Expected ValueError for negative alpha")
+
+
+def test_subtract_buffer_preserves_legacy_positional_high_q_window():
+    q = np.array([0.10, 0.20, 0.30], dtype=float)
+    result = subtract_buffer(
+        q,
+        np.array([3.0, 3.0, 3.0]),
+        np.zeros(3),
+        q,
+        np.array([1.0, 1.0, 1.0]),
+        np.zeros(3),
+        1.0,
+        (0.09, 0.31),
+    )
+
+    assert result.high_q_residual_mean == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize("field", ["err_sample", "err_buffer"])
+def test_subtract_buffer_rejects_infinite_uncertainty(field):
+    q = np.array([0.01, 0.02, 0.03], dtype=float)
+    kwargs = {
+        "q_sample": q,
+        "i_sample": np.ones(3) * 10.0,
+        "err_sample": np.full(3, 0.1),
+        "q_buffer": q,
+        "i_buffer": np.ones(3) * 2.0,
+        "err_buffer": np.full(3, 0.05),
+    }
+    kwargs[field][1] = np.inf
+
+    with pytest.raises(ValueError, match=field):
+        subtract_buffer(**kwargs)

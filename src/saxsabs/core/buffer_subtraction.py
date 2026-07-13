@@ -191,8 +191,9 @@ def subtract_buffer(
     i_buffer: np.ndarray,
     err_buffer: np.ndarray | None,
     alpha: float = 1.0,
-    alpha_uncertainty: float | None = None,
     high_q_diag: tuple[float, float] = (0.15, 0.25),
+    *,
+    alpha_uncertainty: float | None = None,
 ) -> BufferSubtractionResult:
     """Subtract a buffer/solvent curve from a sample curve.
 
@@ -219,6 +220,13 @@ def subtract_buffer(
     BufferSubtractionResult
     """
     validate_alpha(alpha)
+    try:
+        q_lo, q_hi = (float(value) for value in high_q_diag)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("high_q_diag must contain two finite increasing values") from exc
+    if not np.isfinite(q_lo) or not np.isfinite(q_hi) or q_lo >= q_hi:
+        raise ValueError("high_q_diag must contain two finite increasing values")
+
     if alpha_uncertainty is not None:
         alpha_uncertainty = float(alpha_uncertainty)
         if not np.isfinite(alpha_uncertainty) or alpha_uncertainty < 0:
@@ -235,9 +243,10 @@ def subtract_buffer(
     )
     if e_s.shape != i_s.shape:
         raise ValueError("err_sample shape mismatch")
+    if np.any(np.isinf(e_s)):
+        raise ValueError("err_sample contains infinite values")
     if np.any(np.isfinite(e_s) & (e_s < 0)):
         raise ValueError("err_sample contains negative values")
-    e_s = np.where(np.isfinite(e_s), e_s, np.nan)
 
     q_b = _as_1d_float_array("q_buffer", q_buffer)
     i_b = _as_1d_float_array("i_buffer", i_buffer)
@@ -250,9 +259,10 @@ def subtract_buffer(
     )
     if e_b.shape != i_b.shape:
         raise ValueError("err_buffer shape mismatch")
+    if np.any(np.isinf(e_b)):
+        raise ValueError("err_buffer contains infinite values")
     if np.any(np.isfinite(e_b) & (e_b < 0)):
         raise ValueError("err_buffer contains negative values")
-    e_b = np.where(np.isfinite(e_b), e_b, np.nan)
 
     # Interpolate buffer onto sample q-grid if grids differ
     if q_s.shape != q_b.shape or not np.allclose(q_s, q_b, rtol=0.0, atol=1e-8):
@@ -275,7 +285,6 @@ def subtract_buffer(
     err_sub = np.sqrt(variance_sub)
 
     # High-q diagnostic
-    q_lo, q_hi = high_q_diag
     mask = (q_s >= q_lo) & (q_s <= q_hi) & np.isfinite(i_sub)
     if mask.sum() >= 3:
         residual_mean = float(np.mean(i_sub[mask]))

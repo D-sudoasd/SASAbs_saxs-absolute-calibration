@@ -384,6 +384,153 @@ def test_cli_bl19b2_abs2d_passes_monitor_and_fixed_thickness_modes(
     assert captured["config"].standard_thickness_relative_standard_uncertainty == 0.04
 
 
+def test_cli_bl19b2_abs2d_passes_standard_side_and_system_coverage_uncertainties(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured = {}
+
+    def fake_run(config: bl19b2_abs2d.BL19B2Abs2DConfig) -> dict[str, str]:
+        captured["config"] = config
+        return {"status": "dry-run", "output_root": str(config.resolved_output_root())}
+
+    monkeypatch.setattr(bl19b2_abs2d, "run_bl19b2_abs2d", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "saxsabs", "bl19b2-abs2d",
+            "--input-root", str(tmp_path / "dat001"),
+            "--poni", str(tmp_path / "geometry.poni"),
+            "--monitor-mode", "rate",
+            "--sample-thickness-cm", "0.1",
+            "--standard-transmission-abs-uncertainty", "0.01",
+            "--standard-monitor-relative-standard-uncertainty", "0.02",
+            "--calibration-background-monitor-relative-standard-uncertainty", "0.03",
+            "--system-coverage-factor", "2.0",
+            "--dry-run",
+        ],
+    )
+
+    main()
+
+    assert json.loads(capsys.readouterr().out)["status"] == "dry-run"
+    config = captured["config"]
+    assert config.standard_transmission_abs_uncertainty == pytest.approx(0.01)
+    assert config.standard_monitor_relative_standard_uncertainty == pytest.approx(0.02)
+    assert config.calibration_background_monitor_relative_standard_uncertainty == pytest.approx(0.03)
+    assert config.system_coverage_factor == pytest.approx(2.0)
+
+def test_cli_bl19b2_abs2d_passes_explicit_calibration_controls(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured = {}
+
+    def fake_run(config: bl19b2_abs2d.BL19B2Abs2DConfig) -> dict[str, str]:
+        captured["config"] = config
+        return {"status": "dry-run", "output_root": str(config.resolved_output_root())}
+
+    monkeypatch.setattr(bl19b2_abs2d, "run_bl19b2_abs2d", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "saxsabs",
+            "bl19b2-abs2d",
+            "--input-root",
+            str(tmp_path / "dat001"),
+            "--poni",
+            str(tmp_path / "geometry.poni"),
+            "--monitor-mode",
+            "rate",
+            "--mu",
+            "20.2",
+            "--standard-key",
+            "CUSTOM_STANDARD",
+            "--no-correct-solid-angle-for-k",
+            "--polarization-factor",
+            "0.95",
+            "--dry-run",
+        ],
+    )
+
+    main()
+
+    assert json.loads(capsys.readouterr().out)["status"] == "dry-run"
+    config = captured["config"]
+    assert config.standard_key == "CUSTOM_STANDARD"
+    assert config.correct_solid_angle_for_k is False
+    assert config.polarization_factor == pytest.approx(0.95)
+
+
+def test_cli_bl19b2_v1_legacy_requires_explicit_historical_assumptions(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured = {}
+
+    def fake_run(config: bl19b2_abs2d.BL19B2Abs2DConfig) -> dict[str, str]:
+        captured["config"] = config
+        return {"status": "dry-run", "output_root": str(config.resolved_output_root())}
+
+    monkeypatch.setattr(bl19b2_abs2d, "run_bl19b2_abs2d", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "saxsabs",
+            "bl19b2-abs2d-v1-legacy",
+            "--input-root",
+            str(tmp_path / "dat001"),
+            "--poni",
+            str(tmp_path / "geometry.poni"),
+            "--legacy-assume-monitor-rate",
+            "--legacy-assume-mu-20-2",
+            "--dry-run",
+        ],
+    )
+
+    main()
+
+    assert json.loads(capsys.readouterr().out)["status"] == "dry-run"
+    assert captured["config"].monitor_mode == "rate"
+    assert captured["config"].mu_cm_inv == pytest.approx(20.2)
+
+
+@pytest.mark.parametrize(
+    "safety_option",
+    ["--legacy-assume-monitor-rate", "--legacy-assume-mu-20-2"],
+)
+def test_cli_bl19b2_v1_legacy_rejects_incomplete_historical_assumptions(
+    safety_option: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "saxsabs",
+            "bl19b2-abs2d-v1-legacy",
+            "--input-root",
+            str(tmp_path / "dat001"),
+            "--poni",
+            str(tmp_path / "geometry.poni"),
+            safety_option,
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 2
+    assert "explicit" in capsys.readouterr().err.lower()
+
 @pytest.mark.parametrize("status", ["partial", "failed"])
 def test_cli_bl19b2_abs2d_returns_nonzero_for_incomplete_scientific_run(
     status: str,

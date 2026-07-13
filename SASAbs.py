@@ -8,6 +8,8 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
 import argparse
+import hashlib
+import os
 import sys
 import logging
 import numpy as np
@@ -26,6 +28,7 @@ import re
 import json
 import concurrent.futures
 import threading
+import uuid
 from types import SimpleNamespace
 
 APP_NAME = "SAXSAbs Workbench"
@@ -37,15 +40,17 @@ def _read_package_version() -> str:
     try:
         text = version_file.read_text(encoding="utf-8")
     except OSError:
-        return "1.1.1"
+        return "2.0.0"
     match = re.search(r'^__version__\s*=\s*"([^"]+)"', text, re.MULTILINE)
-    return match.group(1) if match else "1.1.1"
+    return match.group(1) if match else "2.0.0"
 
 
 APP_VERSION = _read_package_version()
 DEFAULT_STANDARD_THICKNESS_MM = 1.055
 DEFAULT_SAMPLE_MU_CM_INV = None
 WORKBENCH_FORMULA_VERSION = "v3_nist_blank_exposure_matched"
+MAX_BATCH_WORKERS = 32
+MAX_OUTPUT_STEM_LENGTH = 120
 
 logger = logging.getLogger(__name__)
 SUPPORTED_LANGUAGES = ("en", "zh")
@@ -297,7 +302,7 @@ I18N = {
         "tip_t3_kd": "For external integrated result still in relative intensity (not divided by thickness).",
         "tip_t3_thk": "Only used in K/d mode. Unit: mm.",
         "tip_t3_k_only": "For external integrated result already divided by thickness.",
-        "tip_t3_x_mode": "'auto' infers Q_Å⁻¹ or Chi_deg from column names / suffix.",
+        "tip_t3_x_mode": "'auto' requires explicit Q units (Å⁻¹ or nm⁻¹) or Chi. q_nm⁻¹ is converted to Å⁻¹; 2theta requires wavelength; unknown axes are blocked.",
         "tip_t3_resume": "Skip if output exists; for resuming large batches.",
         "tip_t3_overwrite": "Ignore existing results and recalculate.",
         "tip_t3_meta": "Optional. Supports metadata.csv or Tab2's batch_report.csv.",
@@ -684,7 +689,7 @@ I18N = {
         "tip_t3_kd": "适用于外部积分结果仍是相对强度（尚未除厚度）。",
         "tip_t3_thk": "仅在 K/d 模式下使用。单位 mm。",
         "tip_t3_k_only": "适用于外部积分结果已经做了厚度归一化。",
-        "tip_t3_x_mode": "auto 会根据列名/后缀推断 Q_A^-1 或 Chi_deg。",
+        "tip_t3_x_mode": "auto 要求明确的 Q 单位(Å⁻¹或nm⁻¹)或 Chi；q_nm⁻¹会换算为Å⁻¹，2theta必须提供波长，未知轴阻止输出。",
         "tip_t3_resume": "输出存在时跳过，适合大批量中断后继续。",
         "tip_t3_overwrite": "忽略已存在结果并重算。",
         "tip_t3_meta": "可选。支持 metadata.csv，或直接选择 Tab2 的 batch_report.csv。",
@@ -1094,17 +1099,242 @@ except Exception:
     write_nxcansas_h5 = None
 
 try:
+    from saxsabs.io.parsers import read_external_1d_profile as _core_read_external_1d_profile
+except Exception:
+    _core_read_external_1d_profile = None
+
+try:
     from saxsabs.io.calibrated2d import (
+        SCHEMA_VERSION as CALIBRATED2D_SCHEMA_VERSION,
         Calibrated2DExportConfig,
         build_absolute_detector_image,
         make_sample_id,
         write_calibrated2d_package,
     )
 except Exception:
+    CALIBRATED2D_SCHEMA_VERSION = None
     Calibrated2DExportConfig = None
     build_absolute_detector_image = None
     make_sample_id = None
     write_calibrated2d_package = None
+
+
+def _calibrated2d_package_paths(root_dir, sample_id):
+    root = Path(root_dir)
+    return {
+        "image": root / "images" / f"{sample_id}_cal2d.edf",
+        "mask_npy": root / "masks" / f"{sample_id}_mask.npy",
+        "mask_edf": root / "masks" / f"{sample_id}_mask.edf",
+        "poni": root / "geometry" / f"{sample_id}.poni",
+        "metadata": root / "metadata" / f"{sample_id}_cal2d.json",
+    }
+
+
+_CAL2D_EXPECTED_UNSET = object()
+
+
+def _cal2d_contract_value(value):
+    if isinstance(value, dict):
+        return {str(key): _cal2d_contract_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_cal2d_contract_value(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _allocate_calibrated2d_rerun_id(root_dir, sample_id, max_attempts=9999):
+    """Allocate one collision-free package ID without touching an existing five-file set."""
+    if not any(path.exists() for path in _calibrated2d_package_paths(root_dir, sample_id).values()):
+        return sample_id
+    for index in range(1, int(max_attempts) + 1):
+        candidate = f"{sample_id}_rerun{index}"
+        paths = _calibrated2d_package_paths(root_dir, candidate)
+        if not any(path.exists() for path in paths.values()):
+            return candidate
+    raise FileExistsError(
+        f"could not allocate calibrated 2D rerun package after {max_attempts} attempts: {sample_id}"
+    )
+
+
+def _validate_existing_calibrated2d_package(
+    root_dir,
+    sample_id,
+    *,
+    expected_image=None,
+    expected_mask=_CAL2D_EXPECTED_UNSET,
+    expected_poni_path=None,
+    expected_metadata=None,
+):
+    paths = _calibrated2d_package_paths(root_dir, sample_id)
+    missing = [str(path) for path in paths.values() if not path.is_file()]
+    if missing:
+        raise ValueError(
+            "incomplete existing calibrated 2D package; missing files: " + "; ".join(missing)
+        )
+
+    for label, package_path in paths.items():
+        try:
+            size = package_path.stat().st_size
+        except OSError as exc:
+            raise ValueError(
+                f"unreadable existing calibrated 2D package file ({label}): {package_path}: {exc}"
+            ) from exc
+        if size <= 0:
+            raise ValueError(
+                f"truncated existing calibrated 2D package file ({label}): {package_path} is empty"
+            )
+
+    metadata_path = paths["metadata"]
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        raise ValueError(
+            f"invalid existing calibrated 2D metadata: {metadata_path}: {exc}"
+        ) from exc
+    if metadata.get("schema") != CALIBRATED2D_SCHEMA_VERSION:
+        raise ValueError(
+            "invalid existing calibrated 2D metadata schema: "
+            f"{metadata.get('schema')!r}"
+        )
+
+    try:
+        image_data = np.asarray(fabio.open(str(paths["image"])).data)
+    except Exception as exc:
+        raise ValueError(f"unreadable calibrated 2D EDF image: {paths['image']}: {exc}") from exc
+    if image_data.ndim != 2 or image_data.size == 0 or not np.any(np.isfinite(image_data)):
+        raise ValueError("invalid calibrated 2D EDF image: expected a non-empty finite 2D array")
+
+    try:
+        mask_npy = np.asarray(np.load(paths["mask_npy"], allow_pickle=False))
+    except Exception as exc:
+        raise ValueError(f"unreadable calibrated 2D NPY mask: {paths['mask_npy']}: {exc}") from exc
+    try:
+        mask_edf = np.asarray(fabio.open(str(paths["mask_edf"])).data)
+    except Exception as exc:
+        raise ValueError(f"unreadable calibrated 2D EDF mask: {paths['mask_edf']}: {exc}") from exc
+    if mask_npy.ndim != 2 or mask_edf.ndim != 2:
+        raise ValueError("invalid calibrated 2D masks: expected 2D arrays")
+    if image_data.shape != mask_npy.shape or image_data.shape != mask_edf.shape:
+        raise ValueError(
+            "calibrated 2D package shape mismatch: "
+            f"image={image_data.shape}, mask_npy={mask_npy.shape}, mask_edf={mask_edf.shape}"
+        )
+    for label, mask_data in (("mask_npy", mask_npy), ("mask_edf", mask_edf)):
+        try:
+            is_binary = bool(np.all(np.isin(mask_data, (0, 1))))
+        except (TypeError, ValueError):
+            is_binary = False
+        if not is_binary:
+            raise ValueError(f"invalid calibrated 2D {label}: mask values must be 0 or 1")
+    if not np.array_equal(mask_npy, mask_edf):
+        raise ValueError("calibrated 2D mask content mismatch between mask_npy and mask_edf")
+
+    try:
+        poni_text = paths["poni"].read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"unreadable calibrated 2D PONI: {paths['poni']}: {exc}") from exc
+    if "poni_version:" not in poni_text.lower() or "detector:" not in poni_text.lower():
+        raise ValueError("invalid calibrated 2D PONI: missing poni_version or Detector")
+
+    qc = metadata.get("qc")
+    if isinstance(qc, dict):
+        expected_image_shape = qc.get("image_shape")
+        expected_mask_shape = qc.get("mask_shape")
+        if expected_image_shape is not None and tuple(expected_image_shape) != image_data.shape:
+            raise ValueError("calibrated 2D metadata/image shape mismatch")
+        if expected_mask_shape is not None and tuple(expected_mask_shape) != mask_npy.shape:
+            raise ValueError("calibrated 2D metadata/mask shape mismatch")
+
+    files = metadata.get("files")
+    if not isinstance(files, dict):
+        raise ValueError("invalid existing calibrated 2D metadata: missing files mapping")
+    expected_refs = {
+        "calibrated_image": paths["image"],
+        "mask_npy": paths["mask_npy"],
+        "mask_edf": paths["mask_edf"],
+        "poni": paths["poni"],
+    }
+    for key, expected in expected_refs.items():
+        reference = files.get(key)
+        if not isinstance(reference, str) or not reference.strip():
+            raise ValueError(f"invalid existing calibrated 2D metadata: missing files.{key}")
+        resolved = (metadata_path.parent / reference).resolve()
+        if resolved != expected.resolve():
+            raise ValueError(
+                f"invalid existing calibrated 2D metadata reference for {key}: {reference}"
+            )
+
+    if expected_image is not None:
+        expected_image_data = np.asarray(expected_image)
+        if expected_image_data.shape != image_data.shape:
+            raise ValueError(
+                "calibrated 2D current image shape mismatch: "
+                f"existing={image_data.shape}, current={expected_image_data.shape}"
+            )
+        dtype_name = (
+            (expected_metadata or {}).get("source", {}).get("cal2d_dtype")
+            if isinstance(expected_metadata, dict)
+            else None
+        )
+        try:
+            expected_image_data = expected_image_data.astype(
+                np.dtype(dtype_name or image_data.dtype),
+                copy=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid current calibrated 2D dtype: {dtype_name!r}") from exc
+        if not np.array_equal(image_data, expected_image_data, equal_nan=True):
+            raise ValueError("calibrated 2D image content mismatch with current calculation")
+
+    if expected_mask is not _CAL2D_EXPECTED_UNSET:
+        if expected_mask is None:
+            current_mask = np.zeros(image_data.shape, dtype=np.uint8)
+        else:
+            current_mask = np.asarray(expected_mask)
+            if current_mask.shape != image_data.shape:
+                raise ValueError(
+                    "calibrated 2D current mask shape mismatch: "
+                    f"existing={image_data.shape}, current={current_mask.shape}"
+                )
+            current_mask = np.where(current_mask != 0, 1, 0).astype(np.uint8)
+        if not np.array_equal(mask_npy, current_mask):
+            raise ValueError("calibrated 2D mask content mismatch with current mask")
+
+    if expected_poni_path is not None:
+        current_poni = Path(expected_poni_path)
+        if not current_poni.is_file():
+            raise ValueError(f"current calibrated 2D PONI is not a regular file: {current_poni}")
+        try:
+            poni_matches = paths["poni"].read_bytes() == current_poni.read_bytes()
+        except OSError as exc:
+            raise ValueError(f"unable to compare current calibrated 2D PONI: {exc}") from exc
+        if not poni_matches:
+            raise ValueError("calibrated 2D PONI content mismatch with current geometry")
+
+    if expected_metadata is not None:
+        if not isinstance(expected_metadata, dict):
+            raise ValueError("current calibrated 2D metadata contract must be a mapping")
+        binding_keys = (
+            "calibration_context_fingerprint",
+            "normalization",
+            "background",
+            "integration_policy",
+            "flat_path",
+            "source",
+        )
+        for key in binding_keys:
+            if key not in expected_metadata:
+                raise ValueError(f"current calibrated 2D metadata contract is missing {key}")
+            if _cal2d_contract_value(metadata.get(key)) != _cal2d_contract_value(
+                expected_metadata[key]
+            ):
+                raise ValueError(f"calibrated 2D metadata binding mismatch for {key}")
+    return paths
 
 # Core normalization + parsing (used to deduplicate GUI logic)
 try:
@@ -1122,9 +1352,18 @@ except Exception:
     validate_blank_transmission = None
 
 try:
-    from saxsabs.core.calibration_context import CalibrationContext, sha256_file
+    from saxsabs.core.calibration_context import (
+        CalibrationContext,
+        builtin_reference_identity,
+        canonical_reference_sha256,
+        normalize_standard_key,
+        sha256_file,
+    )
 except Exception:
     CalibrationContext = None
+    builtin_reference_identity = None
+    canonical_reference_sha256 = None
+    normalize_standard_key = None
     sha256_file = None
 
 try:
@@ -1223,6 +1462,8 @@ class SAXSAbsWorkbenchApp:
             "polarization_factor": tk.DoubleVar(value=0.0),
         }
         self.calibration_context = None
+        self.calibration_record_provenance_complete = None
+        self.calibration_record_source_files_verified = None
         self.calibration_k_value = None
         self.calibration_uncertainty = None
         self.calibration_record_path = None
@@ -1382,6 +1623,65 @@ class SAXSAbsWorkbenchApp:
             raise FileNotFoundError(f"calibration context file not found: {file_path}")
         return sha256_file(file_path)
 
+    def _refresh_and_verify_active_calibration_record(self, *, k_factor):
+        """Re-read the active record and bind its K/context to the current cache."""
+        if _core_read_calibration_record is None:
+            raise RuntimeError("calibration record support is unavailable")
+        record_path = getattr(self, "calibration_record_path", None)
+        if not str(record_path or "").strip():
+            self.calibration_record_provenance_complete = False
+            self.calibration_record_source_files_verified = False
+            raise ValueError(
+                "正式输出要求已加载的 CalibrationRecord；请在 Tab1 重新标定或加载完整记录。"
+            )
+        try:
+            loaded = _core_read_calibration_record(record_path)
+        except Exception as exc:
+            self.calibration_record_provenance_complete = False
+            self.calibration_record_source_files_verified = False
+            raise ValueError(
+                f"正式输出前重新验证 CalibrationRecord 失败: {exc}"
+            ) from exc
+
+        cached_context = getattr(self, "calibration_context", None)
+        if not isinstance(cached_context, CalibrationContext):
+            self.calibration_record_provenance_complete = False
+            self.calibration_record_source_files_verified = False
+            raise ValueError("当前缓存缺少有效 CalibrationContext。")
+        if not loaded.provenance_complete or loaded.provenance_missing:
+            self.calibration_record_provenance_complete = False
+            self.calibration_record_source_files_verified = False
+            detail = ", ".join(loaded.provenance_missing) or "unknown provenance gap"
+            raise ValueError("CalibrationRecord provenance 不完整: " + detail)
+        if loaded.calibration_context.fingerprint() != cached_context.fingerprint():
+            self.calibration_record_provenance_complete = False
+            self.calibration_record_source_files_verified = False
+            raise ValueError(
+                "CalibrationRecord 的 CalibrationContext fingerprint 与当前缓存不一致；"
+                "请重新加载记录。"
+            )
+
+        cached_k = getattr(self, "calibration_k_value", None)
+        try:
+            same_record_cache_k = np.isclose(
+                float(loaded.k_factor), float(cached_k), rtol=1e-12, atol=0.0
+            )
+            same_record_requested_k = np.isclose(
+                float(loaded.k_factor), float(k_factor), rtol=1e-12, atol=0.0
+            )
+        except (TypeError, ValueError):
+            same_record_cache_k = False
+            same_record_requested_k = False
+        if not (same_record_cache_k and same_record_requested_k):
+            self.calibration_record_provenance_complete = False
+            self.calibration_record_source_files_verified = False
+            raise ValueError(
+                "CalibrationRecord K、当前缓存 K 与本次运行 K 不一致；请重新加载记录。"
+            )
+
+        self.calibration_record_provenance_complete = True
+        self.calibration_record_source_files_verified = True
+        return loaded
     def require_calibration_context_for_batch(
         self,
         *,
@@ -1401,6 +1701,13 @@ class SAXSAbsWorkbenchApp:
             raise ValueError(
                 "当前 K 没有 CalibrationContext；手工输入或旧版 K 禁止用于正式输出，请先在 Tab1 重新标定。"
             )
+        provenance_missing = calibrated.provenance_missing_fields()
+        if provenance_missing:
+            raise ValueError(
+                "Tab2 正式输出禁止使用来源不完整的 CalibrationContext；缺少: "
+                + ", ".join(provenance_missing)
+            )
+        self._refresh_and_verify_active_calibration_record(k_factor=k_factor)
         calibrated_k = getattr(self, "calibration_k_value", None)
         try:
             same_k = np.isclose(float(k_factor), float(calibrated_k), rtol=1e-12, atol=0.0)
@@ -1425,6 +1732,63 @@ class SAXSAbsWorkbenchApp:
         )
         calibrated.assert_operator_compatible(current)
         return calibrated
+
+    def require_trusted_k_for_external(
+        self, k_factor, *, pipeline_mode=None, monitor_mode=None
+    ):
+        """Require Tab3 absolute scaling to use the active, provenance-backed K."""
+        calibrated = getattr(self, "calibration_context", None)
+        if CalibrationContext is None or not isinstance(calibrated, CalibrationContext):
+            raise ValueError(
+                "Tab3 正式绝对强度输出要求有效 CalibrationContext；"
+                "默认、手工或旧版无来源 K 禁止使用，请先在 Tab1 标定或加载完整标定记录。"
+            )
+        provenance_missing = calibrated.provenance_missing_fields()
+        if provenance_missing:
+            raise ValueError(
+                "Tab3 禁止使用来源不完整的 K；标定记录缺少: "
+                + ", ".join(provenance_missing)
+            )
+        self._refresh_and_verify_active_calibration_record(k_factor=k_factor)
+        calibrated_k = getattr(self, "calibration_k_value", None)
+        try:
+            trusted = (
+                np.isfinite(float(k_factor))
+                and np.isfinite(float(calibrated_k))
+                and np.isclose(float(k_factor), float(calibrated_k), rtol=1e-12, atol=0.0)
+            )
+        except (TypeError, ValueError):
+            trusted = False
+        if not trusted:
+            raise ValueError("Tab3 当前 K 与标定记录不匹配或已被修改；请恢复标定 K。")
+        normalized_pipeline = str(pipeline_mode or "").strip().lower()
+        if normalized_pipeline == "raw":
+            normalized_monitor = str(monitor_mode or "").strip().lower()
+            if normalized_monitor != calibrated.monitor_mode:
+                raise ValueError(
+                    "Tab3 raw I0 monitor_mode 与 K 标定上下文不一致: "
+                    f"current={normalized_monitor or 'missing'}, calibrated={calibrated.monitor_mode}"
+                )
+        return calibrated
+
+    def validate_standard_thickness_mm(self, standard_key, thickness_mm):
+        """Enforce the certificate coupon thickness for NIST SRM 3600."""
+        try:
+            value = float(thickness_mm)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("标准样厚度必须是有限数值。") from exc
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError("标准样厚度必须 > 0 mm。")
+        if normalize_standard_key is None:
+            raise RuntimeError("calibration context support is unavailable")
+        canonical_key = normalize_standard_key(standard_key)
+        if canonical_key == "SRM3600" and not np.isclose(
+            value, DEFAULT_STANDARD_THICKNESS_MM, rtol=0.0, atol=1e-12
+        ):
+            raise ValueError(
+                f"NIST SRM 3600 必须使用证书厚度 {DEFAULT_STANDARD_THICKNESS_MM:.3f} mm，禁止覆盖。"
+            )
+        return value
 
     def build_calibration_uncertainty_payload(
         self,
@@ -1463,6 +1827,12 @@ class SAXSAbsWorkbenchApp:
         poni_path,
         mask_path,
         flat_path,
+        standard_data_path=None,
+        background_data_paths=None,
+        dark_data_paths=None,
+        reference_curve_path=None,
+        reference_q=None,
+        reference_i=None,
     ):
         """Persist a complete K plus CalibrationContext record through the core API."""
         if _core_write_calibration_record is None:
@@ -1475,6 +1845,12 @@ class SAXSAbsWorkbenchApp:
             poni_path=poni_path,
             mask_path=mask_path,
             flat_path=flat_path,
+            standard_data_path=standard_data_path,
+            background_data_paths=background_data_paths,
+            dark_data_paths=dark_data_paths,
+            reference_curve_path=reference_curve_path,
+            reference_q=reference_q,
+            reference_i=reference_i,
         )
 
     def load_calibration_record(self, path):
@@ -1483,6 +1859,9 @@ class SAXSAbsWorkbenchApp:
             raise RuntimeError("calibration record support is unavailable")
         loaded = _core_read_calibration_record(path)
         context = loaded.calibration_context
+        self.validate_standard_thickness_mm(
+            context.standard_key, context.standard_thickness_cm * 10.0
+        )
         k_value = loaded.k_factor
         uncertainty = loaded.calibration_uncertainty
         poni_path = str(loaded.poni_path)
@@ -1515,7 +1894,14 @@ class SAXSAbsWorkbenchApp:
                 self.t1_std_combo.set(label)
         if hasattr(self, "t1_params") and "std_thk" in self.t1_params:
             self.t1_params["std_thk"].set(context.standard_thickness_cm * 10.0)
+        entry = getattr(self, "t1_std_thk_entry", None)
+        if entry is not None:
+            entry.configure(
+                state="disabled" if context.standard_key == "SRM3600" else "normal"
+            )
         self.calibration_context = context
+        self.calibration_record_provenance_complete = bool(loaded.provenance_complete)
+        self.calibration_record_source_files_verified = bool(loaded.provenance_complete)
         self.calibration_k_value = k_value
         self.calibration_uncertainty = uncertainty
         self.calibration_record_path = loaded.record_path
@@ -2715,23 +3101,40 @@ class SAXSAbsWorkbenchApp:
             stem = Path(fp).stem
             name_count[stem] = name_count.get(stem, 0) + 1
 
+        def bounded_stem(candidate, source_path):
+            if len(candidate) <= MAX_OUTPUT_STEM_LENGTH:
+                return candidate
+            try:
+                source_key = str(Path(source_path).resolve())
+            except OSError:
+                source_key = str(source_path)
+            digest = hashlib.sha256(
+                source_key.casefold().encode("utf-8", errors="replace")
+            ).hexdigest()[:12]
+            suffix = f"_{digest}"
+            prefix = candidate[: MAX_OUTPUT_STEM_LENGTH - len(suffix)].rstrip(
+                " ._-"
+            )
+            return f"{prefix or 'sample'}{suffix}"
+
         used = set()
         out = {}
         for fp in files:
             p = Path(fp)
             stem = p.stem
             if name_count[stem] == 1:
-                candidate = stem
+                raw_candidate = stem
             else:
-                candidate = f"{p.parent.name}_{stem}"
+                raw_candidate = f"{p.parent.name}_{stem}"
+            base = bounded_stem(raw_candidate, fp)
+            candidate = base
+            index = 2
+            while candidate.casefold() in used:
+                suffix = f"_{index}"
+                candidate = f"{base[: MAX_OUTPUT_STEM_LENGTH - len(suffix)]}{suffix}"
+                index += 1
 
-            if candidate in used:
-                idx = 2
-                while f"{candidate}_{idx}" in used:
-                    idx += 1
-                candidate = f"{candidate}_{idx}"
-
-            used.add(candidate)
+            used.add(candidate.casefold())
             out[fp] = candidate
         return out
 
@@ -2783,6 +3186,19 @@ class SAXSAbsWorkbenchApp:
                     ))
         return targets
 
+    def profile_operator_metadata(self, calibration_context=None):
+        """Return portable operator provenance for a project-owned 1-D export."""
+        active = (
+            getattr(self, "calibration_context", None)
+            if calibration_context is None
+            else calibration_context
+        )
+        if active is None:
+            return {}
+        if CalibrationContext is None or not isinstance(active, CalibrationContext):
+            raise ValueError("1-D export provenance requires a valid CalibrationContext")
+        return {"calibration_context_fingerprint": active.fingerprint()}
+
     def save_profile_table(
         self,
         out_path,
@@ -2792,6 +3208,7 @@ class SAXSAbsWorkbenchApp:
         x_label,
         output_format="tsv",
         run_policy=None,
+        calibration_context=None,
     ):
         # Origin-friendly text table: first row is column names, tab-separated.
         out_path = Path(out_path)
@@ -2804,6 +3221,7 @@ class SAXSAbsWorkbenchApp:
         x_arr = np.asarray(x, dtype=np.float64)
         i_arr = np.asarray(i_abs, dtype=np.float64)
         e_arr = np.asarray(i_err, dtype=np.float64)
+        profile_metadata = self.profile_operator_metadata(calibration_context)
 
         if output_format in ("cansas_xml", "nxcansas_h5") and str(x_label) != "Q_A^-1":
             raise ValueError(
@@ -2813,12 +3231,12 @@ class SAXSAbsWorkbenchApp:
         if output_format == "cansas_xml":
             if write_cansas1d_xml is None:
                 raise RuntimeError("canSAS XML writer is unavailable.")
-            write_cansas1d_xml(final_path, x_arr, i_arr, e_arr)
+            write_cansas1d_xml(final_path, x_arr, i_arr, e_arr, metadata=profile_metadata)
             return final_path
         if output_format == "nxcansas_h5":
             if write_nxcansas_h5 is None:
                 raise RuntimeError("NXcanSAS HDF5 writer is unavailable.")
-            write_nxcansas_h5(final_path, x_arr, i_arr, e_arr)
+            write_nxcansas_h5(final_path, x_arr, i_arr, e_arr, metadata=profile_metadata)
             return final_path
 
         # ``i_err`` is the pyFAI statistical/azimuthal sigma after scaling.  Keep the
@@ -2832,14 +3250,19 @@ class SAXSAbsWorkbenchApp:
         })
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
         sep = "," if output_format == "csv" else "\t"
-        df.to_csv(
-            final_path,
-            sep=sep,
-            index=False,
-            encoding="utf-8-sig",
-            na_rep="NaN",
-            float_format="%.10g",
-        )
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        with final_path.open("w", encoding="utf-8-sig", newline="") as stream:
+            fingerprint = profile_metadata.get("calibration_context_fingerprint")
+            if fingerprint:
+                stream.write(f"# calibration_context_fingerprint: {fingerprint}\n")
+            df.to_csv(
+                stream,
+                sep=sep,
+                index=False,
+                na_rep="NaN",
+                float_format="%.10g",
+                lineterminator="\n",
+            )
         return final_path
 
     def load_optional_array(self, path, name):
@@ -3152,6 +3575,8 @@ class SAXSAbsWorkbenchApp:
         e_std_i0 = self.add_grid_entry(f_phys_grid, self.t1_params["std_i0"], 1, 2)
         e_std_t = self.add_grid_entry(f_phys_grid, self.t1_params["std_t"], 1, 3)
         e_std_thk = self.add_grid_entry(f_phys_grid, self.t1_params["std_thk"], 1, 4)
+        self.t1_std_thk_entry = e_std_thk
+        e_std_thk.configure(state="disabled")
         
         ttk.Label(f_phys_grid, text="BG:", style="Bold.TLabel").grid(row=2, column=0, pady=2)
         e_bg_exp = self.add_grid_entry(f_phys_grid, self.t1_params["bg_exp"], 2, 1)
@@ -3770,21 +4195,21 @@ class SAXSAbsWorkbenchApp:
         self.t3_corr_mode = tk.StringVar(value="k_over_d")
         self.t3_fixed_thk = tk.DoubleVar(value=1.0)
         self.t3_x_mode = tk.StringVar(value="auto")
+        self.t3_wavelength_a = tk.StringVar(value="")
         self.t3_meta_csv_path = tk.StringVar()
         self.t3_bg1d_path = tk.StringVar()
         self.t3_dark1d_path = tk.StringVar()
         self.t3_output_root = tk.StringVar(value="")
         self.t3_use_meta_thk = tk.BooleanVar(value=True)
-        self.t3_sample_exp = tk.DoubleVar(value=1.0)
-        self.t3_sample_i0 = tk.DoubleVar(value=1.0)
-        self.t3_sample_t = tk.DoubleVar(value=1.0)
-        self.t3_bg_exp = tk.DoubleVar(value=1.0)
-        self.t3_bg_i0 = tk.DoubleVar(value=1.0)
-        self.t3_bg_t = tk.DoubleVar(value=1.0)
-        self.t3_sync_bg_from_global = tk.BooleanVar(value=True)
-        self.t3_bg_exp.set(self.global_vars["bg_exp"].get())
-        self.t3_bg_i0.set(self.global_vars["bg_i0"].get())
-        self.t3_bg_t.set(self.global_vars["bg_t"].get())
+        # Blank values are intentional: raw reduction parameters must come from
+        # per-file metadata/header or an explicit operator entry.
+        self.t3_sample_exp = tk.StringVar(value="")
+        self.t3_sample_i0 = tk.StringVar(value="")
+        self.t3_sample_t = tk.StringVar(value="")
+        self.t3_bg_exp = tk.StringVar(value="")
+        self.t3_bg_i0 = tk.StringVar(value="")
+        self.t3_bg_t = tk.StringVar(value="")
+        self.t3_sync_bg_from_global = tk.BooleanVar(value=False)
         self.t3_resume_enabled = tk.BooleanVar(value=True)
         self.t3_overwrite = tk.BooleanVar(value=False)
         self.t3_queue_info = tk.StringVar(value=self._fmt_queue_info(0, 0))
@@ -3857,12 +4282,16 @@ class SAXSAbsWorkbenchApp:
         lbl_xt.grid(row=6, column=0, sticky="e")
         self._register_i18n_widget(lbl_xt, "lbl_t3_x_type")
         cb_x = ttk.Combobox(c1_grid, textvariable=self.t3_x_mode, width=12, state="readonly")
-        cb_x["values"] = ("auto", "q_A^-1", "chi_deg")
+        cb_x["values"] = ("auto", "q_A^-1", "two_theta_deg", "chi_deg")
         cb_x.grid(row=6, column=1, padx=5, pady=1, sticky="w")
+        ttk.Label(c1_grid, text="2θ wavelength (Å):").grid(row=7, column=0, sticky="e")
+        ttk.Entry(c1_grid, textvariable=self.t3_wavelength_a, width=12).grid(
+            row=7, column=1, padx=5, pady=1, sticky="w"
+        )
         lbl_i0_3 = ttk.Label(c1_grid, text=self.tr("lbl_t3_i0_semantic"), style="Hint.TLabel")
-        lbl_i0_3.grid(row=7, column=0, sticky="e")
+        lbl_i0_3.grid(row=8, column=0, sticky="e")
         self._register_i18n_widget(lbl_i0_3, "lbl_t3_i0_semantic")
-        ttk.Label(c1_grid, textvariable=self.global_vars["monitor_mode"], style="Hint.TLabel").grid(row=7, column=1, sticky="w")
+        ttk.Label(c1_grid, textvariable=self.global_vars["monitor_mode"], style="Hint.TLabel").grid(row=8, column=1, sticky="w")
 
         self.add_tooltip(e_k, "tip_t3_k")
         self.add_tooltip(rb_scaled, "tip_t3_scaled")
@@ -4118,7 +4547,123 @@ class SAXSAbsWorkbenchApp:
                 except Exception:
                     pass
 
+    def parse_external_operator_provenance(self, path):
+        """Read operator provenance carried in comment key/value headers."""
+        aliases = {
+            "calibrationcontextfingerprint": "calibration_context_fingerprint",
+            "contextfingerprint": "calibration_context_fingerprint",
+            "formulaversion": "formula_version",
+            "monitormode": "monitor_mode",
+            "correctsolidangle": "correct_solid_angle",
+            "polarizationfactor": "polarization_factor",
+            "ponisha256": "poni_sha256",
+            "geometrysha256": "poni_sha256",
+            "masksha256": "mask_sha256",
+            "flatsha256": "flat_sha256",
+        }
+        try:
+            lines = Path(path).read_text(encoding="utf-8-sig", errors="strict").splitlines()
+        except (OSError, UnicodeError):
+            return {}
+        provenance = {}
+        for line in lines:
+            stripped = line.strip()
+            if not stripped.startswith("#"):
+                continue
+            candidate = stripped.lstrip("#").strip()
+            match = re.match(r"^([^:=]+)\s*[:=]\s*(.*?)\s*$", candidate)
+            if match is None:
+                continue
+            normalized_key = re.sub(r"[^a-z0-9]+", "", match.group(1).lower())
+            target = aliases.get(normalized_key)
+            if target is not None:
+                provenance[target] = match.group(2).strip()
+        return provenance
+
+    def require_external_profile_operator_provenance(
+        self, profile, calibration_context, profile_name
+    ):
+        """Require a profile operator fingerprint or a complete matching operator payload."""
+        provenance = profile.get("operator_provenance")
+        if not isinstance(provenance, dict) or not provenance:
+            raise ValueError(
+                f"{profile_name}: 正式外部1D输出缺少 operator provenance/CalibrationContext fingerprint。"
+            )
+        expected_fingerprint = calibration_context.fingerprint()
+        supplied_fingerprint = str(
+            provenance.get("calibration_context_fingerprint", "") or ""
+        ).strip().lower()
+        if supplied_fingerprint:
+            if supplied_fingerprint != expected_fingerprint.lower():
+                raise ValueError(
+                    f"{profile_name}: CalibrationContext fingerprint 不匹配。"
+                )
+            return expected_fingerprint
+
+        expected = calibration_context.operator_payload()
+        missing = [key for key in expected if key not in provenance]
+        if missing:
+            raise ValueError(
+                f"{profile_name}: operator provenance 缺少: {', '.join(missing)}"
+            )
+
+        def optional(value):
+            if value is None:
+                return None
+            text = str(value).strip()
+            if text.lower() in {"", "none", "null", "na", "n/a"}:
+                return None
+            return text
+
+        actual = {
+            "formula_version": str(provenance["formula_version"]).strip(),
+            "monitor_mode": str(provenance["monitor_mode"]).strip().lower(),
+            "poni_sha256": str(provenance["poni_sha256"]).strip().lower(),
+            "mask_sha256": optional(provenance["mask_sha256"]),
+            "flat_sha256": optional(provenance["flat_sha256"]),
+        }
+        for key in ("mask_sha256", "flat_sha256"):
+            if actual[key] is not None:
+                actual[key] = str(actual[key]).lower()
+        solid_raw = provenance["correct_solid_angle"]
+        if isinstance(solid_raw, bool):
+            actual["correct_solid_angle"] = solid_raw
+        else:
+            solid_text = str(solid_raw).strip().lower()
+            if solid_text not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+                raise ValueError(f"{profile_name}: correct_solid_angle 无法解析。")
+            actual["correct_solid_angle"] = solid_text in {"true", "1", "yes", "on"}
+        polarization_raw = optional(provenance["polarization_factor"])
+        actual["polarization_factor"] = (
+            None if polarization_raw is None else float(polarization_raw)
+        )
+
+        issues = []
+        for key, expected_value in expected.items():
+            actual_value = actual.get(key)
+            if key == "polarization_factor" and expected_value is not None and actual_value is not None:
+                same = np.isclose(float(actual_value), float(expected_value), rtol=1e-12, atol=0.0)
+            else:
+                same = actual_value == expected_value
+            if not same:
+                issues.append(key)
+        if issues:
+            raise ValueError(
+                f"{profile_name}: operator provenance 与 K 不匹配: {', '.join(issues)}"
+            )
+        return expected_fingerprint
+
     def read_external_1d_profile(self, path):
+        if _core_read_external_1d_profile is not None:
+            profile = dict(_core_read_external_1d_profile(path))
+            provenance = {}
+            core_provenance = profile.get("operator_provenance")
+            if isinstance(core_provenance, dict):
+                provenance.update(core_provenance)
+            provenance.update(self.parse_external_operator_provenance(path))
+            profile["operator_provenance"] = provenance
+            return profile
+
         dfs = []
         errs = []
         try:
@@ -4137,7 +4682,12 @@ class SAXSAbsWorkbenchApp:
                 if not candidate:
                     continue
                 tokens = [token for token in re.split(r"[,\s;]+", candidate) if token]
-                if len(tokens) >= 2 and any(FLOAT_PATTERN.fullmatch(token) is None for token in tokens):
+                if (
+                    ":" not in candidate
+                    and "=" not in candidate
+                    and len(tokens) >= 2
+                    and any(FLOAT_PATTERN.fullmatch(token) is None for token in tokens)
+                ):
                     header_tokens = tokens
                     data_lines = lines[idx + 1 :]
                     break
@@ -4279,7 +4829,80 @@ class SAXSAbsWorkbenchApp:
         if best is None:
             raise ValueError(f"无法从 {Path(path).name} 识别有效数值列（至少需要 X 和 I 两列）")
         best.pop("_semantic_score", None)
+        best["operator_provenance"] = self.parse_external_operator_provenance(path)
         return best
+
+    @staticmethod
+    def external_buffer_audit_payload(buffer_info):
+        """Return the serializable buffer provenance shared by report and metadata."""
+        return {
+            "enabled": bool(buffer_info.get("enabled", False)),
+            "path": str(buffer_info.get("path") or ""),
+            "sha256": buffer_info.get("sha256"),
+            "alpha": buffer_info.get("alpha"),
+            "calibration_context_fingerprint": buffer_info.get(
+                "calibration_context_fingerprint"
+            ),
+        }
+
+    def prepare_external_buffer(self, *, pipeline_mode, calibration_context):
+        """Load and validate the optional absolute-scale buffer exactly once per run."""
+        status_var = getattr(self, "t3_buffer_status", None)
+
+        def set_status(value):
+            if status_var is not None:
+                try:
+                    status_var.set(value)
+                except Exception:
+                    pass
+
+        enabled_var = getattr(self, "t3_buffer_enabled", None)
+        enabled = bool(enabled_var.get()) if enabled_var is not None else False
+        if not enabled:
+            set_status("Buffer: disabled")
+            return {
+                "enabled": False,
+                "path": "",
+                "sha256": None,
+                "alpha": None,
+                "calibration_context_fingerprint": None,
+                "profile": None,
+            }
+
+        try:
+            if str(pipeline_mode or "").strip().lower() != "scaled":
+                raise ValueError(
+                    "raw 流程下禁止 buffer 扣除；buffer 必须与样品处于同一绝对强度标度。"
+                )
+            if calibration_context is None:
+                raise ValueError("Buffer 扣除要求有效 CalibrationContext。")
+            path_text = str(self.t3_buffer_path.get()).strip()
+            if not path_text:
+                raise ValueError("已启用 Buffer 扣除，但未选择 Buffer 曲线。")
+            alpha = float(self.t3_alpha.get())
+            if not np.isfinite(alpha) or alpha <= 0:
+                raise ValueError("Buffer scaling factor alpha must be finite and > 0")
+
+            buffer_path = Path(path_text).expanduser().resolve()
+            profile = self.prepare_external_profile_axis(
+                buffer_path, self.read_external_1d_profile(buffer_path)
+            )
+            fingerprint = self.require_external_profile_operator_provenance(
+                profile, calibration_context, "Buffer"
+            )
+            digest = self._optional_file_sha256(buffer_path)
+            set_status(f"Buffer loaded: {buffer_path.name} ({len(profile['x'])} points)")
+            return {
+                "enabled": True,
+                "path": str(buffer_path),
+                "sha256": digest,
+                "alpha": alpha,
+                "calibration_context_fingerprint": fingerprint,
+                "profile": profile,
+            }
+        except Exception as exc:
+            set_status(f"Buffer error: {exc}")
+            raise
 
     def _regularize_xy_triplet(self, x, y, e=None, min_points=3, name="profile"):
         x = np.asarray(x, dtype=np.float64)
@@ -4333,18 +4956,123 @@ class SAXSAbsWorkbenchApp:
             raise ValueError(f"{name}: 去重后有效点数不足（<{min_points}）。")
         return x, y, e
 
-    def infer_external_x_label(self, path, profile):
-        mode = self.t3_x_mode.get().strip().lower()
-        if mode == "q_a^-1":
-            return "Q_A^-1"
-        if mode == "chi_deg":
-            return "Chi_deg"
+    def resolve_external_x_axis(self, path, profile, *, mode=None, wavelength_a=None):
+        """Resolve an external axis without silently relabelling unknown/2theta data as Q."""
+        selected = (
+            str(mode).strip().lower()
+            if mode is not None
+            else str(self.t3_x_mode.get()).strip().lower()
+        )
+        if selected not in {"auto", "q_a^-1", "two_theta_deg", "chi_deg"}:
+            raise ValueError(f"未知外部 X轴模式: {selected}")
 
-        name = f"{profile.get('x_col', '')}".lower()
+        x = np.asarray(profile.get("x"), dtype=np.float64)
+        if x.ndim != 1 or x.size < 1 or not np.all(np.isfinite(x)):
+            raise ValueError("外部 X轴必须是一维有限数值。")
+        raw_name = str(profile.get("x_col", "")).strip().lower()
+        raw_name = raw_name.replace("å", "angstrom").replace("Å", "angstrom")
+        name = re.sub(r"[^a-z0-9]+", "", raw_name)
         fname = Path(path).name.lower()
-        if ("chi" in name) or fname.endswith(".chi"):
-            return "Chi_deg"
-        return "Q_A^-1"
+        named_axis = None
+        q_unit = None
+        if "2theta" in name or "twotheta" in name:
+            named_axis = "two_theta_deg"
+        elif "chi" in name:
+            named_axis = "chi_deg"
+        elif name.startswith("q"):
+            named_axis = "q_a^-1"
+            if name in {"qnm1", "q1nm", "qinversenm", "qinvnm"}:
+                q_unit = "nm^-1"
+            elif name in {
+                "qa1",
+                "q1a",
+                "qangstrom1",
+                "q1angstrom",
+                "qinverseangstrom",
+                "qinvangstrom",
+            }:
+                q_unit = "a^-1"
+            else:
+                raise ValueError(
+                    f"Q轴单位未知或歧义: {profile.get('x_col', '')!r}；"
+                    "必须明确为 q_A^-1 或 q_nm^-1。"
+                )
+
+        # A semantic column header is stronger evidence than a file suffix.
+        detected = named_axis
+        if detected is None and fname.endswith(".chi"):
+            detected = "chi_deg"
+
+        if selected == "auto":
+            if detected is None:
+                raise ValueError(
+                    "无法可靠识别外部 X轴；请选择 q_A^-1、two_theta_deg 或 chi_deg，禁止默认冒充 Q。"
+                )
+            selected = detected
+        elif named_axis is not None and selected != named_axis:
+            raise ValueError(
+                "外部 X轴命名与显式模式冲突: "
+                f"named={named_axis}, selected={selected}；禁止跨物理轴重标记。"
+            )
+
+        if selected == "chi_deg":
+            return x, "Chi_deg", "none"
+        if selected == "q_a^-1":
+            if q_unit == "nm^-1":
+                return x / 10.0, "Q_A^-1", "q_nm^-1_to_q_a^-1"
+            return x, "Q_A^-1", "none"
+
+        raw_wavelength = wavelength_a
+        if raw_wavelength is None:
+            var = getattr(self, "t3_wavelength_a", None)
+            raw_wavelength = var.get() if var is not None else ""
+        try:
+            wl_a = float(str(raw_wavelength).strip())
+        except (TypeError, ValueError) as exc:
+            raise ValueError("2theta 转 Q 必须显式提供可靠波长 wavelength (Å)。") from exc
+        if not np.isfinite(wl_a) or wl_a <= 0:
+            raise ValueError("2theta 转 Q 必须显式提供 > 0 的可靠波长 wavelength (Å)。")
+        if np.any(x < 0) or np.any(x >= 180):
+            raise ValueError("2theta 必须位于 [0, 180) degree。")
+        q = 4.0 * np.pi * np.sin(np.deg2rad(x / 2.0)) / wl_a
+        return q, "Q_A^-1", "two_theta_deg_to_q_a^-1"
+
+    def prepare_external_profile_axis(self, path, profile):
+        converted = dict(profile)
+        x, label, conversion = self.resolve_external_x_axis(path, converted)
+        converted["x"] = x
+        converted["x_label"] = label
+        converted["x_conversion"] = conversion
+        return converted
+
+    def assert_external_profile_axis_compatible(self, sample_profile, reference_profile, name):
+        """Fail closed before aligning/subtracting profiles on different physical axes."""
+        sample_label = str(sample_profile.get("x_label", "")).strip()
+        reference_label = str(reference_profile.get("x_label", "")).strip()
+        sample_conversion = str(sample_profile.get("x_conversion", "")).strip()
+        reference_conversion = str(reference_profile.get("x_conversion", "")).strip()
+        allowed = {
+            "Q_A^-1": {"none", "two_theta_deg_to_q_a^-1", "q_nm^-1_to_q_a^-1"},
+            "Chi_deg": {"none"},
+        }
+        if sample_label not in allowed or sample_conversion not in allowed[sample_label]:
+            raise ValueError(
+                f"sample 外部物理轴/转换无效: {sample_label}/{sample_conversion or 'missing'}"
+            )
+        if reference_label not in allowed or reference_conversion not in allowed[reference_label]:
+            raise ValueError(
+                f"{name} 外部物理轴/转换无效: "
+                f"{reference_label}/{reference_conversion or 'missing'}"
+            )
+        if sample_label != reference_label:
+            raise ValueError(
+                f"禁止跨物理轴相减: sample={sample_label}, {name}={reference_label}"
+            )
+
+    def infer_external_x_label(self, path, profile):
+        """Compatibility wrapper; validation and conversion live in resolve_external_x_axis."""
+        _x, label, _conversion = self.resolve_external_x_axis(path, profile)
+        return label
 
     def parse_mode_outputs(self, outputs_raw):
         if outputs_raw is None:
@@ -4652,6 +5380,20 @@ class SAXSAbsWorkbenchApp:
         outside = int(np.sum(~np.isfinite(y)))
         return y, e, outside
 
+    def _explicit_raw_fallback_value(self, value, name, *, transmission=False):
+        raw = str(value).strip() if value is not None else ""
+        if not raw:
+            raise ValueError(f"raw流程缺少 {name}；必须由 metadata/header 提供或显式输入 explicit fallback。")
+        try:
+            parsed = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"raw流程 {name} 显式参数不是有效数值。") from exc
+        if not np.isfinite(parsed) or parsed <= 0:
+            raise ValueError(f"raw流程 {name} 显式参数必须 > 0。")
+        if transmission and parsed > 1:
+            raise ValueError("raw流程 T 显式参数必须位于 (0, 1]。")
+        return parsed
+
     def resolve_external_sample_params(self, file_path, meta_map, monitor_mode):
         meta = self.get_external_meta_for_file(meta_map, file_path)
         hmeta = self.parse_external_1d_header_meta(file_path)
@@ -4690,12 +5432,20 @@ class SAXSAbsWorkbenchApp:
                 if source == "fixed":
                     source = "header"
 
+        used_explicit = False
         if exp is None:
-            exp = self.t3_sample_exp.get()
+            exp = self._explicit_raw_fallback_value(self.t3_sample_exp.get(), "sample exp")
+            used_explicit = True
         if mon is None:
-            mon = self.t3_sample_i0.get()
+            mon = self._explicit_raw_fallback_value(self.t3_sample_i0.get(), "sample I0")
+            used_explicit = True
         if trans is None:
-            trans = self.t3_sample_t.get()
+            trans = self._explicit_raw_fallback_value(
+                self.t3_sample_t.get(), "sample T", transmission=True
+            )
+            used_explicit = True
+        if used_explicit:
+            source = "fixed_explicit" if source == "fixed" else f"{source}+fixed_explicit"
 
         norm = self.compute_norm_factor(exp, mon, trans, monitor_mode)
         return {
@@ -4706,6 +5456,30 @@ class SAXSAbsWorkbenchApp:
             "thk_mm_meta": thk_mm_meta,
             "source": source,
         }
+
+    def resolve_external_bg_norm(self, bg_path, monitor_mode):
+        """Resolve raw BG normalization from its header or explicit GUI fallbacks."""
+        header = self.parse_external_1d_header_meta(bg_path) if bg_path else {}
+        header = header or {}
+        exp = header.get("exp")
+        mon = header.get("mon")
+        trans = header.get("trans")
+        used_explicit = False
+        if exp is None:
+            exp = self._explicit_raw_fallback_value(self.t3_bg_exp.get(), "BG exp")
+            used_explicit = True
+        if mon is None:
+            mon = self._explicit_raw_fallback_value(self.t3_bg_i0.get(), "BG I0")
+            used_explicit = True
+        if trans is None:
+            trans = self._explicit_raw_fallback_value(
+                self.t3_bg_t.get(), "BG T", transmission=True
+            )
+            used_explicit = True
+        norm = self.compute_norm_factor(exp, mon, trans, monitor_mode)
+        if not np.isfinite(norm) or norm <= 0:
+            raise ValueError("raw流程下 BG 归一化因子无效，请检查 BG exp/i0/T。")
+        return norm, ("header+explicit" if used_explicit else "header")
 
     def dry_run_external_1d(self):
         if not self.t3_files:
@@ -4722,9 +5496,18 @@ class SAXSAbsWorkbenchApp:
         thk_mm = float(self.t3_fixed_thk.get())
         monitor_mode = self.get_monitor_mode()
         warnings = []
+        k_trust_error = None
+        active_calibration_context = None
 
         if k <= 0:
             warnings.append(self.tr("warn_k_le_zero"))
+        try:
+            active_calibration_context = self.require_trusted_k_for_external(
+                k, pipeline_mode=pipeline_mode, monitor_mode=monitor_mode
+            )
+        except ValueError as exc:
+            k_trust_error = str(exc)
+            warnings.append(k_trust_error)
         if mode == "k_over_d" and thk_mm <= 0:
             warnings.append(self.tr("warn_kd_thk_le_zero"))
 
@@ -4747,30 +5530,48 @@ class SAXSAbsWorkbenchApp:
                 warnings.append(self.tr("warn_raw_no_bg1d"))
             else:
                 try:
-                    bg_prof = self.read_external_1d_profile(bg_path)
+                    bg_prof = self.prepare_external_profile_axis(
+                        bg_path, self.read_external_1d_profile(bg_path)
+                    )
+                    if active_calibration_context is not None:
+                        self.require_external_profile_operator_provenance(
+                            bg_prof, active_calibration_context, "BG"
+                        )
                 except Exception as e:
                     warnings.append(self.tr("warn_bg1d_read_fail").format(e=e))
 
             dark_path = self.t3_dark1d_path.get().strip()
             if dark_path:
                 try:
-                    dark_prof = self.read_external_1d_profile(dark_path)
+                    dark_prof = self.prepare_external_profile_axis(
+                        dark_path, self.read_external_1d_profile(dark_path)
+                    )
+                    if active_calibration_context is not None:
+                        self.require_external_profile_operator_provenance(
+                            dark_prof, active_calibration_context, "Dark"
+                        )
                 except Exception as e:
                     warnings.append(self.tr("warn_dark1d_read_fail").format(e=e))
 
-            bg_norm = self.compute_norm_factor(
-                self.t3_bg_exp.get(), self.t3_bg_i0.get(), self.t3_bg_t.get(), monitor_mode
-            )
-            if (not np.isfinite(bg_norm) or bg_norm <= 0) and bg_path:
-                bg_h = self.parse_external_1d_header_meta(bg_path)
-                bg_norm = self.compute_norm_factor(bg_h.get("exp"), bg_h.get("mon"), bg_h.get("trans"), monitor_mode)
-            if not np.isfinite(bg_norm) or bg_norm <= 0:
-                warnings.append(self.tr("warn_bg_norm_invalid"))
+            if bg_path:
+                try:
+                    bg_norm, _bg_norm_source = self.resolve_external_bg_norm(
+                        bg_path, monitor_mode
+                    )
+                except Exception as exc:
+                    warnings.append(str(exc))
 
         for fp in files:
             try:
-                prof = self.read_external_1d_profile(fp)
-                x_label = self.infer_external_x_label(fp, prof)
+                prof = self.prepare_external_profile_axis(
+                    fp, self.read_external_1d_profile(fp)
+                )
+                x_label = prof["x_label"]
+                x_conversion = prof["x_conversion"]
+                if active_calibration_context is not None:
+                    self.require_external_profile_operator_provenance(
+                        prof, active_calibration_context, Path(fp).name
+                    )
                 status = self.tr("status_ok")
                 reason = ""
                 norm_s = np.nan
@@ -4799,10 +5600,12 @@ class SAXSAbsWorkbenchApp:
                             thk_used = np.nan
 
                         if status == self.tr("status_ok") and bg_prof is not None:
+                            self.assert_external_profile_axis_compatible(prof, bg_prof, "BG")
                             _, _, outside_bg = self.align_profile_to_x(prof["x"], bg_prof, "BG")
                             if outside_bg > 0:
                                 risky_files += 1
                         if status == self.tr("status_ok") and dark_prof is not None:
+                            self.assert_external_profile_axis_compatible(prof, dark_prof, "Dark")
                             _, _, outside_dark = self.align_profile_to_x(prof["x"], dark_prof, "Dark")
                             if outside_dark > 0:
                                 risky_files += 1
@@ -4817,6 +5620,7 @@ class SAXSAbsWorkbenchApp:
                     "ICol": prof.get("i_col", ""),
                     "ErrCol": prof.get("err_col", ""),
                     "XLabel": x_label,
+                    "XConversion": x_conversion,
                     "Norm_s": norm_s,
                     "Thk_cm": thk_used,
                     "MetaSrc": meta_src,
@@ -4842,6 +5646,10 @@ class SAXSAbsWorkbenchApp:
                     "Status": self.tr("status_fail"),
                     "Reason": str(e),
                 })
+
+        if k_trust_error is not None:
+            failed_files = max(failed_files, len(files))
+
 
         gate = self._evaluate_preflight_gate(
             total_files=len(files),
@@ -4912,6 +5720,14 @@ class SAXSAbsWorkbenchApp:
             fixed_thk_cm = fixed_thk_mm / 10.0 if corr_mode == "k_over_d" else np.nan
             scale_factor_global = (k / fixed_thk_cm) if corr_mode == "k_over_d" else k
             monitor_mode = self.get_monitor_mode()
+            active_calibration_context = self.require_trusted_k_for_external(
+                k, pipeline_mode=pipeline_mode, monitor_mode=monitor_mode
+            )
+            buffer_info = self.prepare_external_buffer(
+                pipeline_mode=pipeline_mode,
+                calibration_context=active_calibration_context,
+            )
+            buffer_audit = self.external_buffer_audit_payload(buffer_info)
 
             meta_map = {}
             bg_prof = None
@@ -4925,20 +5741,25 @@ class SAXSAbsWorkbenchApp:
                 bg_path = self.t3_bg1d_path.get().strip()
                 if not bg_path:
                     raise ValueError("raw流程必须提供 BG 1D 文件。")
-                bg_prof = self.read_external_1d_profile(bg_path)
+                bg_prof = self.prepare_external_profile_axis(
+                    bg_path, self.read_external_1d_profile(bg_path)
+                )
+                self.require_external_profile_operator_provenance(
+                    bg_prof, active_calibration_context, "BG"
+                )
 
                 dark_path = self.t3_dark1d_path.get().strip()
                 if dark_path:
-                    dark_prof = self.read_external_1d_profile(dark_path)
+                    dark_prof = self.prepare_external_profile_axis(
+                        dark_path, self.read_external_1d_profile(dark_path)
+                    )
+                    self.require_external_profile_operator_provenance(
+                        dark_prof, active_calibration_context, "Dark"
+                    )
 
-                bg_norm = self.compute_norm_factor(
-                    self.t3_bg_exp.get(), self.t3_bg_i0.get(), self.t3_bg_t.get(), monitor_mode
+                bg_norm, _bg_norm_source = self.resolve_external_bg_norm(
+                    bg_path, monitor_mode
                 )
-                if (not np.isfinite(bg_norm) or bg_norm <= 0) and bg_path:
-                    bg_h = self.parse_external_1d_header_meta(bg_path)
-                    bg_norm = self.compute_norm_factor(bg_h.get("exp"), bg_h.get("mon"), bg_h.get("trans"), monitor_mode)
-                if not np.isfinite(bg_norm) or bg_norm <= 0:
-                    raise ValueError("raw流程下 BG 归一化因子无效，请检查 BG exp/i0/T。")
 
             custom_out_root = self.t3_output_root.get().strip() if hasattr(self, "t3_output_root") else ""
             if custom_out_root:
@@ -4980,6 +5801,9 @@ class SAXSAbsWorkbenchApp:
                 outputs = ""
                 points = 0
                 x_label = ""
+                x_conversion = ""
+                operator_fingerprint = ""
+                buffer_applied = False
                 scale_factor = scale_factor_global if pipeline_mode == "scaled" else np.nan
                 thk_cm_used = fixed_thk_cm if pipeline_mode == "scaled" else np.nan
                 norm_s = np.nan
@@ -4987,9 +5811,17 @@ class SAXSAbsWorkbenchApp:
                 outside_bg = 0
                 outside_dark = 0
                 try:
-                    prof = self.read_external_1d_profile(fp)
+                    prof = self.prepare_external_profile_axis(
+                        fp, self.read_external_1d_profile(fp)
+                    )
                     points = len(prof["x"])
-                    x_label = self.infer_external_x_label(fp, prof)
+                    x_label = prof["x_label"]
+                    x_conversion = prof["x_conversion"]
+                    operator_fingerprint = (
+                        self.require_external_profile_operator_provenance(
+                            prof, active_calibration_context, Path(fp).name
+                        )
+                    )
                     ext = ".chi" if x_label == "Chi_deg" else ".dat"
                     output_format = (
                         self.t3_output_format.get()
@@ -5035,8 +5867,12 @@ class SAXSAbsWorkbenchApp:
                             s_e = np.asarray(prof["err_rel"], dtype=np.float64)
                             x = np.asarray(prof["x"], dtype=np.float64)
 
+                            self.assert_external_profile_axis_compatible(prof, bg_prof, "BG")
                             bg_i, bg_e, outside_bg = self.align_profile_to_x(x, bg_prof, "BG")
                             if dark_prof is not None:
+                                self.assert_external_profile_axis_compatible(
+                                    prof, dark_prof, "Dark"
+                                )
                                 d_i, d_e, outside_dark = self.align_profile_to_x(x, dark_prof, "Dark")
                             else:
                                 d_i = np.zeros_like(s_i)
@@ -5064,16 +5900,12 @@ class SAXSAbsWorkbenchApp:
                                 raise ValueError(issue)
 
                         # --- Buffer / solvent subtraction (post-calibration) ---
-                        if (hasattr(self, "t3_buffer_enabled") and self.t3_buffer_enabled.get()
-                                and self.t3_buffer_path.get().strip()):
-                            if pipeline_mode == "raw":
-                                raise ValueError(
-                                    "raw 流程下启用 buffer 扣除要求 buffer 曲线已在与样品一致的绝对标度；"
-                                    "当前版本为防止量纲误用已禁止该组合。"
-                                )
-                            buf_path = self.t3_buffer_path.get().strip()
-                            buf_prof = self.read_external_1d_profile(buf_path)
-                            buf_alpha = float(self.t3_alpha.get()) if hasattr(self, "t3_alpha") else 1.0
+                        if buffer_info["enabled"]:
+                            buf_prof = buffer_info["profile"]
+                            self.assert_external_profile_axis_compatible(
+                                prof, buf_prof, "Buffer"
+                            )
+                            buf_alpha = buffer_info["alpha"]
                             if subtract_buffer is not None:
                                 buf_x = np.asarray(buf_prof["x"], dtype=np.float64)
                                 buf_i = np.asarray(buf_prof["i_rel"], dtype=np.float64)
@@ -5123,6 +5955,8 @@ class SAXSAbsWorkbenchApp:
                             output_format=output_format,
                             run_policy=run_policy,
                         )
+                        if buffer_info["enabled"]:
+                            buffer_applied = True
                         status = "成功"
                         outputs = written_path.name
                         ok += 1
@@ -5139,6 +5973,20 @@ class SAXSAbsWorkbenchApp:
                     "Reason": reason,
                     "Points": points,
                     "XLabel": x_label,
+                    "XConversion": x_conversion,
+                    "CalibrationContextFingerprint": operator_fingerprint,
+                    "BufferEnabled": buffer_audit["enabled"],
+                    "BufferApplied": buffer_applied,
+                    "BufferPath": buffer_audit["path"],
+                    "BufferSHA256": buffer_audit["sha256"] or "",
+                    "BufferAlpha": (
+                        buffer_audit["alpha"]
+                        if buffer_audit["alpha"] is not None
+                        else np.nan
+                    ),
+                    "BufferContextFingerprint": (
+                        buffer_audit["calibration_context_fingerprint"] or ""
+                    ),
                     "PipelineMode": pipeline_mode,
                     "CorrMode": corr_mode,
                     "K": k,
@@ -5168,11 +6016,16 @@ class SAXSAbsWorkbenchApp:
                 "timestamp": stamp,
                 "files_total": len(files),
                 "k_factor": k,
+                "calibration_context_fingerprint": active_calibration_context.fingerprint(),
+                "calibration_record_path": str(
+                    getattr(self, "calibration_record_path", None) or ""
+                ),
                 "pipeline_mode": pipeline_mode,
                 "corr_mode": corr_mode,
                 "scale_factor_global": scale_factor_global,
                 "fixed_thickness_mm": fixed_thk_mm if corr_mode == "k_over_d" else None,
                 "x_mode": self.t3_x_mode.get(),
+                "two_theta_wavelength_a": str(self.t3_wavelength_a.get()).strip() or None,
                 "monitor_mode": monitor_mode,
                 "monitor_norm_formula": self.monitor_norm_formula(monitor_mode),
                 "meta_csv": self.t3_meta_csv_path.get().strip(),
@@ -5186,6 +6039,7 @@ class SAXSAbsWorkbenchApp:
                 "output_root_custom": bool(custom_out_root),
                 "output_dir": str(out_dir),
                 "report_csv": str(report_path),
+                "buffer": buffer_audit,
                 "summary": {"success": ok, "skipped": skip, "failed": fail},
             }
             meta_path = report_dir / f"external1d_meta_{stamp}.json"
@@ -5540,8 +6394,9 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             if not all(files.values()):
                 raise ValueError("文件不完整：请先选择标准样、背景、暗场和 poni。")
             p = {k: v.get() for k, v in self.t1_params.items()}
-            if p["std_thk"] <= 0:
-                raise ValueError("标准样厚度必须 > 0 mm。")
+            p["std_thk"] = self.validate_standard_thickness_mm(
+                self.t1_std_type.get(), p["std_thk"]
+            )
             monitor_mode = self.get_monitor_mode()
             apply_solid_angle = bool(self.global_vars["apply_solid_angle"].get())
 
@@ -5620,6 +6475,17 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 unit="q_A^-1",
                 **calibration_integration_kwargs,
             )
+
+            integration_method_used = str(
+                getattr(res, "method_called", None)
+                or getattr(res, "method", None)
+                or "pyFAI.integrate1d:auto"
+            )
+            integration_engine_version = str(
+                getattr(pyFAI, "version", None)
+                or getattr(pyFAI, "__version__", None)
+                or ""
+            ).strip() or None
 
             q = np.asarray(res.radial, dtype=np.float64)
             i_1d = np.asarray(res.intensity, dtype=np.float64)
@@ -5736,6 +6602,50 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
 
             if CalibrationContext is None:
                 raise RuntimeError("CalibrationContext support is unavailable")
+
+            bg_hashes = []
+            bg_monitors = []
+            bg_transmissions = []
+            bg_exposures = []
+            for bg_path in bg_used_paths:
+                bg_image = fabio.open(bg_path)
+                bg_exp, bg_mon, bg_trans = self.parse_header(
+                    bg_path, header_dict=getattr(bg_image, "header", {})
+                )
+                bg_exp_use = bg_exp if bg_exp is not None else p["bg_exp"]
+                bg_mon_use = bg_mon if bg_mon is not None else p["bg_i0"]
+                bg_trans_use = bg_trans if bg_trans is not None else p["bg_t"]
+                bg_hashes.append(self._optional_file_sha256(bg_path))
+                bg_exposures.append(float(bg_exp_use))
+                bg_monitors.append(float(bg_mon_use))
+                bg_transmissions.append(float(bg_trans_use))
+
+            reference_curve_sha256 = None
+            water_temperature_c = None
+            if std_key == "Water_20C":
+                water_temperature_c = float(self.t1_water_temp.get())
+            elif std_key != "SRM3600":
+                reference_curve_sha256 = self._optional_file_sha256(
+                    self.t1_std_ref_path.get()
+                )
+
+            if std_key in {"SRM3600", "Water_20C"}:
+                if builtin_reference_identity is None:
+                    raise RuntimeError("built-in reference identity support is unavailable")
+                reference_identity = builtin_reference_identity(
+                    std_key,
+                    water_temperature_C=water_temperature_c,
+                )
+                reference_model_id = reference_identity.model_id
+                reference_model_version = reference_identity.model_version
+                reference_canonical_sha256 = reference_identity.canonical_sha256
+            else:
+                if canonical_reference_sha256 is None:
+                    raise RuntimeError("canonical reference hashing support is unavailable")
+                reference_model_id = "EXTERNAL_REFERENCE_CURVE"
+                reference_model_version = "canonical-float64-v1"
+                reference_canonical_sha256 = canonical_reference_sha256(q_ref, i_ref)
+
             calibration_context = CalibrationContext(
                 formula_version=WORKBENCH_FORMULA_VERSION,
                 monitor_mode=monitor_mode,
@@ -5746,6 +6656,33 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 polarization_factor=polarization_factor if polarization_applied else None,
                 standard_key=std_key,
                 standard_thickness_cm=float(thk_cm),
+                standard_data_sha256=self._optional_file_sha256(files["std"]),
+                background_data_sha256=tuple(bg_hashes),
+                dark_data_sha256=(self._optional_file_sha256(files["dark"]),),
+                standard_monitor=float(p["std_i0"]),
+                standard_transmission=float(p["std_t"]),
+                standard_exposure_s=float(p["std_exp"]),
+                background_monitors=tuple(bg_monitors),
+                background_transmissions=tuple(bg_transmissions),
+                background_exposure_s=tuple(bg_exposures),
+                dark_exposure_s=(float(dark_exposure_s),),
+                water_temperature_C=water_temperature_c,
+                reference_curve_sha256=reference_curve_sha256,
+                q_window=(float(q_min), float(q_max)),
+                reference_model_id=reference_model_id,
+                reference_model_version=reference_model_version,
+                reference_canonical_sha256=reference_canonical_sha256,
+                background_scale_alpha=1.0,
+                background_composition_rule="arithmetic_mean_of_normalized_backgrounds",
+                integration_unit="q_A^-1",
+                integration_method=integration_method_used,
+                integration_npt=1000,
+                integration_engine_version=integration_engine_version,
+                robust_estimator="median_with_mad_rejection",
+                robust_mad_multiplier=3.0,
+                robust_positive_floor=1e-9,
+                robust_min_points=3,
+                robust_zero_mad_relative_tolerance=1e-12,
             )
             self.global_vars["k_factor"].set(k_val)
             self.global_vars["k_solid_angle"].set("on" if apply_solid_angle else "off")
@@ -5856,14 +6793,38 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 poni_path=files["poni"],
                 mask_path=mask_path,
                 flat_path=flat_path,
+                standard_data_path=files["std"],
+                background_data_paths=tuple(bg_used_paths),
+                dark_data_paths=(files["dark"],),
+                reference_curve_path=(
+                    self.t1_std_ref_path.get()
+                    if std_key not in {"SRM3600", "Water_20C"}
+                    else None
+                ),
+                reference_q=(q_ref if std_key not in {"SRM3600", "Water_20C"} else None),
+                reference_i=(i_ref if std_key not in {"SRM3600", "Water_20C"} else None),
             )
-            self.calibration_context = calibration_context
+            validated_record = _core_read_calibration_record(record_path)
+            self.calibration_context = validated_record.calibration_context
+            self.calibration_record_provenance_complete = bool(
+                validated_record.provenance_complete
+            )
+            self.calibration_record_source_files_verified = bool(
+                validated_record.provenance_complete
+            )
             self.calibration_k_value = float(k_val)
             self.calibration_uncertainty = calibration_uncertainty
-            self.calibration_record_path = record_path
+            self.calibration_record_path = validated_record.record_path
             self.report(f"Saved profile: {save_path.name}")
             self.report(f"Saved calibration context: {context_path.name}")
-            self.report(f"Saved complete calibration record: {record_path.name}")
+            provenance_missing = validated_record.provenance_missing
+            if provenance_missing:
+                self.report(
+                    f"Saved partial calibration record: {record_path.name}; "
+                    f"missing provenance: {', '.join(provenance_missing)}"
+                )
+            else:
+                self.report(f"Saved complete calibration record: {record_path.name}")
 
             self.append_k_history(
                 files=files,
@@ -5916,6 +6877,39 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             return legacy
         return self.get_calibration_output_dir() / "k_factor_history.csv"
 
+    @staticmethod
+    def _history_relative_path(value, history_dir):
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if ";" in text:
+            return ";".join(
+                SAXSAbsWorkbenchApp._history_relative_path(item, history_dir)
+                for item in text.split(";")
+                if item.strip()
+            )
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            path = (Path.cwd() / path).resolve()
+        try:
+            relative = os.path.relpath(path, start=Path(history_dir).resolve())
+        except ValueError:
+            return str(path)
+        return relative.replace(os.sep, "/")
+
+    @staticmethod
+    def _write_k_history_atomic(frame, history_path):
+        history_path = Path(history_path)
+        temporary = history_path.with_name(
+            f".{history_path.name}.{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            frame.to_csv(temporary, index=False, encoding="utf-8-sig")
+            with temporary.open("r+b") as stream:
+                os.fsync(stream.fileno())
+            os.replace(temporary, history_path)
+        finally:
+            temporary.unlink(missing_ok=True)
     def append_k_history(
         self,
         files,
@@ -5978,22 +6972,22 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             "PointsUsed": int(points_used),
             "Q_Min": float(q_min),
             "Q_Max": float(q_max),
-            "Std_File": files.get("std", ""),
-            "BG_File": files.get("bg", ""),
-            "Dark_File": files.get("dark", ""),
-            "Poni_File": files.get("poni", ""),
+            "Std_File": self._history_relative_path(files.get("std", ""), output_dir),
+            "BG_File": self._history_relative_path(files.get("bg", ""), output_dir),
+            "Dark_File": self._history_relative_path(files.get("dark", ""), output_dir),
+            "Poni_File": self._history_relative_path(files.get("poni", ""), output_dir),
             "Std_Thk_mm": float(params.get("std_thk", np.nan)),
             "Std_Norm": float(std_norm) if np.isfinite(std_norm) else np.nan,
             "BG_Norm": float(bg_norm) if np.isfinite(bg_norm) else np.nan,
-            "Calibration_Check": str(calibration_check_path or ""),
+            "Calibration_Check": self._history_relative_path(calibration_check_path, output_dir),
             "CalibrationContextFingerprint": (
                 calibration_context.fingerprint() if calibration_context is not None else ""
             ),
-            "CalibrationContextFile": str(calibration_context_path or ""),
+            "CalibrationContextFile": self._history_relative_path(calibration_context_path, output_dir),
             "CalibrationRecordSchema": (
                 CALIBRATION_RECORD_SCHEMA if calibration_record_path else ""
             ),
-            "CalibrationRecordFile": str(calibration_record_path or ""),
+            "CalibrationRecordFile": self._history_relative_path(calibration_record_path, output_dir),
             "K_StandardUncertaintyStatus": uncertainty.get(
                 "standard_uncertainty_status", "unknown"
             ),
@@ -6008,12 +7002,18 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         if hist_path.exists():
             try:
                 old = pd.read_csv(hist_path)
-                out = pd.concat([old, df_row], ignore_index=True)
-            except Exception:
-                out = df_row
+            except Exception as exc:
+                raise ValueError(
+                    f"existing K history is unreadable; refusing to overwrite: {hist_path}"
+                ) from exc
+            if "K_Factor" not in old.columns:
+                raise ValueError(
+                    f"existing K history schema is invalid; refusing to overwrite: {hist_path}"
+                )
+            out = pd.concat([old, df_row], ignore_index=True)
         else:
             out = df_row
-        out.to_csv(hist_path, index=False, encoding="utf-8-sig")
+        self._write_k_history_atomic(out, hist_path)
 
     def open_k_history(self):
         hist_path = self.get_k_history_path()
@@ -6453,73 +7453,106 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 try:
                     cal2d_sample_id = make_sample_id(out_stem, fpath)
                     cal2d_root = Path(context["cal2d_root"])
-                    cal2d_target = cal2d_root / "images" / f"{cal2d_sample_id}_cal2d.edf"
-                    if run_policy.should_skip_existing(cal2d_target.exists()):
+                    if run_policy.mode == "always-run":
+                        cal2d_sample_id = _allocate_calibrated2d_rerun_id(
+                            cal2d_root, cal2d_sample_id
+                        )
+                    cal2d_paths = _calibrated2d_package_paths(cal2d_root, cal2d_sample_id)
+                    cal2d_target = cal2d_paths["image"]
+                    flat_for_export = (
+                        flat_arr if context.get("cal2d_apply_flat") else None
+                    )
+                    cal2d_img = build_absolute_detector_image(
+                        img_net,
+                        k_factor=context["k_factor"],
+                        thickness_cm=thk_cm,
+                        flat=flat_for_export,
+                        apply_flat=(
+                            bool(context.get("cal2d_apply_flat"))
+                            and flat_arr is not None
+                        ),
+                    )
+                    cal2d_meta = {
+                        "calibration_context": context.get("calibration_context", {}),
+                        "calibration_context_fingerprint": context.get(
+                            "calibration_context_fingerprint", ""
+                        ),
+                        "calibration_record_path": context.get(
+                            "calibration_record_path", ""
+                        ),
+                        "normalization": {
+                            "mode": monitor_mode,
+                            "formula": self.monitor_norm_formula(monitor_mode),
+                            "sample_exp_s": exp if np.isfinite(exp) else None,
+                            "sample_i0": mon,
+                            "sample_transmission": trans,
+                            "norm_sample": norm_s,
+                            "k_factor": context["k_factor"],
+                            "thickness_cm": thk_cm,
+                        },
+                        "background": {
+                            "alpha": context.get("bg_alpha", 1.0),
+                            "bg_file": bg_path_used,
+                            "bg_norm": bg_norm_used,
+                            "dark_file": dark_path_used,
+                        },
+                        "integration_policy": {
+                            "correctSolidAngle": bool(context.get("apply_solid_angle")),
+                            "polarization_applied": bool(
+                                context.get("polarization_applied")
+                            ),
+                            "polarization_factor": context.get("polarization"),
+                            "flat_applied_in_image": (
+                                bool(context.get("cal2d_apply_flat"))
+                                and flat_arr is not None
+                            ),
+                            "mask_convention": "pyFAI: 0=valid, 1=masked",
+                        },
+                        "flat_path": (
+                            None
+                            if (
+                                bool(context.get("cal2d_apply_flat"))
+                                and flat_arr is not None
+                            )
+                            else context.get("flat_path", "")
+                        ),
+                        "software": {
+                            "program": APP_NAME,
+                            "program_version": APP_VERSION,
+                            "pyFAI_version": getattr(pyFAI, "__version__", "unknown"),
+                            "fabio_version": getattr(fabio, "__version__", "unknown"),
+                        },
+                        "source": {
+                            "file_mtime": (
+                                datetime.datetime.fromtimestamp(
+                                    Path(fpath).stat().st_mtime
+                                ).isoformat(timespec="seconds")
+                                if Path(fpath).exists()
+                                else ""
+                            ),
+                            "output_stem": out_stem,
+                            "cal2d_dtype": context.get("cal2d_dtype", "float32"),
+                        },
+                    }
+                    cal2d_has_existing = any(path.exists() for path in cal2d_paths.values())
+                    if run_policy.should_skip_existing(cal2d_has_existing):
+                        cal2d_paths = _validate_existing_calibrated2d_package(
+                            cal2d_root,
+                            cal2d_sample_id,
+                            expected_image=cal2d_img,
+                            expected_mask=mask_arr,
+                            expected_poni_path=context["poni_path"],
+                            expected_metadata=cal2d_meta,
+                        )
                         cal2d_status = "已跳过"
-                        cal2d_reason = "输出已存在"
-                        cal2d_image = str(cal2d_target)
-                        cal2d_metadata = str(cal2d_root / "metadata" / f"{cal2d_sample_id}_cal2d.json")
-                        cal2d_poni = str(cal2d_root / "geometry" / f"{cal2d_sample_id}.poni")
-                        cal2d_mask = str(cal2d_root / "masks" / f"{cal2d_sample_id}_mask.npy")
+                        cal2d_reason = "完整输出包已存在"
+                        cal2d_image = str(cal2d_paths["image"])
+                        cal2d_metadata = str(cal2d_paths["metadata"])
+                        cal2d_poni = str(cal2d_paths["poni"])
+                        cal2d_mask = str(cal2d_paths["mask_npy"])
                         outputs.append(f"cal2d:{cal2d_target.name}(existing)")
                         cal2d_skip = 1
                     else:
-                        flat_for_export = flat_arr if context.get("cal2d_apply_flat") else None
-                        cal2d_img = build_absolute_detector_image(
-                            img_net,
-                            k_factor=context["k_factor"],
-                            thickness_cm=thk_cm,
-                            flat=flat_for_export,
-                            apply_flat=bool(context.get("cal2d_apply_flat")) and flat_arr is not None,
-                        )
-                        cal2d_meta = {
-                            "calibration_context": context.get("calibration_context", {}),
-                            "calibration_context_fingerprint": context.get(
-                                "calibration_context_fingerprint", ""
-                            ),
-                            "calibration_record_path": context.get(
-                                "calibration_record_path", ""
-                            ),
-                            "normalization": {
-                                "mode": monitor_mode,
-                                "formula": self.monitor_norm_formula(monitor_mode),
-                                "sample_exp_s": exp if np.isfinite(exp) else None,
-                                "sample_i0": mon,
-                                "sample_transmission": trans,
-                                "norm_sample": norm_s,
-                                "k_factor": context["k_factor"],
-                                "thickness_cm": thk_cm,
-                            },
-                            "background": {
-                                "alpha": context.get("bg_alpha", 1.0),
-                                "bg_file": bg_path_used,
-                                "bg_norm": bg_norm_used,
-                                "dark_file": dark_path_used,
-                            },
-                            "integration_policy": {
-                                "correctSolidAngle": bool(context.get("apply_solid_angle")),
-                                "polarization_applied": bool(context.get("polarization_applied")),
-                                "polarization_factor": context.get("polarization"),
-                                "flat_applied_in_image": bool(context.get("cal2d_apply_flat")) and flat_arr is not None,
-                                "mask_convention": "pyFAI: 0=valid, 1=masked",
-                            },
-                            "flat_path": None
-                            if (bool(context.get("cal2d_apply_flat")) and flat_arr is not None)
-                            else context.get("flat_path", ""),
-                            "software": {
-                                "program": APP_NAME,
-                                "program_version": APP_VERSION,
-                                "pyFAI_version": getattr(pyFAI, "__version__", "unknown"),
-                                "fabio_version": getattr(fabio, "__version__", "unknown"),
-                            },
-                            "source": {
-                                "file_mtime": datetime.datetime.fromtimestamp(Path(fpath).stat().st_mtime).isoformat(timespec="seconds")
-                                if Path(fpath).exists()
-                                else "",
-                                "output_stem": out_stem,
-                                "cal2d_dtype": context.get("cal2d_dtype", "float32"),
-                            },
-                        }
                         result_cal2d = write_calibrated2d_package(
                             Calibrated2DExportConfig(
                                 root_dir=cal2d_root,
@@ -6848,6 +7881,83 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
     # =========================================================================
     # Logic: Batch (2D Subtraction Kernel + Error)
     # =========================================================================
+    @staticmethod
+    def validate_batch_workers(value):
+        if isinstance(value, (bool, np.bool_)):
+            raise ValueError("并行线程数必须为正整数。")
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("并行线程数必须为正整数。") from exc
+        if not np.isfinite(numeric) or not numeric.is_integer():
+            raise ValueError("并行线程数必须为正整数。")
+        workers = int(numeric)
+        if workers < 1 or workers > MAX_BATCH_WORKERS:
+            raise ValueError(
+                f"并行线程数必须在 1..{MAX_BATCH_WORKERS}；收到 {workers}。"
+            )
+        return workers
+
+    def prepare_batch_references(self, *, ref_mode, bg_path, dark_path, monitor_mode):
+        """Prepare only the reference source selected by the operator."""
+        mode = str(ref_mode or "").strip().lower()
+        if mode not in {"fixed", "auto"}:
+            raise ValueError(f"未知参考模式: {ref_mode}")
+
+        if mode == "auto":
+            bg_library = self.build_reference_library(self.t2_bg_candidates)
+            dark_library = self.build_reference_library(self.t2_dark_candidates)
+            if not bg_library:
+                raise ValueError("自动匹配模式下 BG 库为空。")
+            if not dark_library:
+                raise ValueError("自动匹配模式下 Dark 库为空。")
+            return {
+                "ref_mode": mode,
+                "fixed_dark_data": None,
+                "fixed_dark_exposure_s": None,
+                "fixed_bg_net": None,
+                "fixed_bg_norm": None,
+                "fixed_bg_path": "",
+                "fixed_dark_path": "",
+                "bg_library": bg_library,
+                "dark_library": dark_library,
+            }
+
+        bg_text = str(bg_path or "").strip()
+        dark_text = str(dark_path or "").strip()
+        if not bg_text or not dark_text:
+            raise ValueError("固定参考模式缺少背景或暗场文件。")
+        fixed_dark_data = fabio.open(dark_text).data.astype(np.float64)
+        fixed_dark_exposure_s = self.read_required_dark_exposure(dark_text)
+        bg_paths = self.split_path_list(bg_text)
+        if not bg_paths:
+            raise ValueError("缺少背景文件。")
+        fixed_bg_net, bg_norm_list, bg_used_paths = self.build_composite_bg_net(
+            bg_paths=bg_paths,
+            d_dark=fixed_dark_data,
+            monitor_mode=monitor_mode,
+            fallback_triplet=(
+                self.global_vars["bg_exp"].get(),
+                self.global_vars["bg_i0"].get(),
+                self.global_vars["bg_t"].get(),
+            ),
+            dark_exposure_s=fixed_dark_exposure_s,
+            ref_shape=fixed_dark_data.shape,
+        )
+        fixed_bg_norm = float(np.nanmedian(np.asarray(bg_norm_list, dtype=np.float64)))
+        if not np.isfinite(fixed_bg_norm) or fixed_bg_norm <= 0:
+            raise ValueError("背景归一化因子 <= 0，请检查 BG 的 Time/I0/T。")
+        return {
+            "ref_mode": mode,
+            "fixed_dark_data": fixed_dark_data,
+            "fixed_dark_exposure_s": fixed_dark_exposure_s,
+            "fixed_bg_net": fixed_bg_net,
+            "fixed_bg_norm": fixed_bg_norm,
+            "fixed_bg_path": ";".join(bg_used_paths),
+            "fixed_dark_path": dark_text,
+            "bg_library": [],
+            "dark_library": [],
+        }
     def run_batch(self):
         try:
             if not self.t2_files:
@@ -6859,8 +7969,11 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             
             if k <= 0:
                 raise ValueError("K 因子无效（必须 > 0）。")
-            if not all([bg_p, dk_p, poni]):
-                raise ValueError("缺少背景/暗场/poni 文件。")
+            if not str(poni or "").strip():
+                raise ValueError("缺少 poni 文件。")
+            ref_mode = str(self.t2_ref_mode.get()).strip().lower()
+            if ref_mode not in {"fixed", "auto"}:
+                raise ValueError(f"未知参考模式: {ref_mode}")
             monitor_mode = self.get_monitor_mode()
             self.log(f"[配置] I0 归一化模式: {monitor_mode} (norm={self.monitor_norm_formula(monitor_mode)})")
             self.log(f"[配置] SolidAngle 修正: {'ON' if bool(self.t2_apply_solid_angle.get()) else 'OFF'}")
@@ -6911,63 +8024,50 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             if "radial_chi" in selected_modes and self.t2_rad_qmin.get() >= self.t2_rad_qmax.get():
                 raise ValueError("织构 q 范围无效：qmin 必须 < qmax。")
 
-            fixed_dark_data = fabio.open(dk_p).data.astype(np.float64)
-            fixed_dark_exposure_s = self.read_required_dark_exposure(dk_p)
-            bg_paths = self.split_path_list(bg_p)
-            if not bg_paths:
-                raise ValueError("缺少背景文件。")
-            fixed_bg_net, bg_norm_list, bg_used_paths = self.build_composite_bg_net(
-                bg_paths=bg_paths,
-                d_dark=fixed_dark_data,
+            references = self.prepare_batch_references(
+                ref_mode=ref_mode,
+                bg_path=bg_p,
+                dark_path=dk_p,
                 monitor_mode=monitor_mode,
-                fallback_triplet=(
-                    self.global_vars["bg_exp"].get(),
-                    self.global_vars["bg_i0"].get(),
-                    self.global_vars["bg_t"].get(),
-                ),
-                dark_exposure_s=fixed_dark_exposure_s,
-                ref_shape=fixed_dark_data.shape,
             )
-            fixed_bg_norm = float(np.nanmedian(np.asarray(bg_norm_list, dtype=np.float64)))
-            if not np.isfinite(fixed_bg_norm) or fixed_bg_norm <= 0:
-                raise ValueError("背景归一化因子 <= 0，请检查 BG 的 Time/I0/T。")
+            fixed_dark_data = references["fixed_dark_data"]
+            fixed_dark_exposure_s = references["fixed_dark_exposure_s"]
+            fixed_bg_net = references["fixed_bg_net"]
+            fixed_bg_norm = references["fixed_bg_norm"]
+            bg_used_paths = (
+                references["fixed_bg_path"].split(";")
+                if references["fixed_bg_path"]
+                else []
+            )
+            bg_library = references["bg_library"]
+            dark_library = references["dark_library"]
 
-            ref_mode = self.t2_ref_mode.get()
-            if ref_mode not in ("fixed", "auto"):
-                raise ValueError(f"未知参考模式: {ref_mode}")
-
-            # 防止 BG 归一化因子量级异常导致过扣背景（例如 T 被误判成百分数）
-            probe_norms = []
-            for fp in files[: min(20, len(files))]:
-                try:
-                    e, m, t = self.parse_header(fp)
-                    n = self.compute_norm_factor(e, m, t, monitor_mode)
-                    if np.isfinite(n) and n > 0:
-                        probe_norms.append(float(n))
-                except Exception:
-                    continue
-            if probe_norms:
-                med_sample_norm = float(np.nanmedian(np.asarray(probe_norms, dtype=np.float64)))
-                if np.isfinite(med_sample_norm) and med_sample_norm > 0:
-                    bg_ratio = fixed_bg_norm / med_sample_norm
-                    if bg_ratio < 0.01 or bg_ratio > 100.0:
-                        msg = (
-                            "BG_Norm 与样品 Norm_s 量级差异过大 "
-                            f"(BG/样品中位={bg_ratio:.3g}, BG_Norm={fixed_bg_norm:.6g}, "
-                            f"SampleMed={med_sample_norm:.6g})，请检查 BG 的 Time/I0/T、I0 语义或头字段映射。"
-                        )
-                        if ref_mode == "fixed":
-                            raise ValueError(msg)
-                        self.log(f"[警告] {msg}")
-
-            bg_library = self.build_reference_library(self.t2_bg_candidates)
-            dark_library = self.build_reference_library(self.t2_dark_candidates)
-            if ref_mode == "auto":
-                if not bg_library:
-                    raise ValueError("自动匹配模式下 BG 库为空。")
-                if not dark_library:
-                    raise ValueError("自动匹配模式下 Dark 库为空。")
-
+            # A fixed reference has one known normalization that can be compared
+            # with the batch. Auto references are checked after per-sample matching.
+            if ref_mode == "fixed":
+                probe_norms = []
+                for fp in files[: min(20, len(files))]:
+                    try:
+                        e, m, t = self.parse_header(fp)
+                        n = self.compute_norm_factor(e, m, t, monitor_mode)
+                        if np.isfinite(n) and n > 0:
+                            probe_norms.append(float(n))
+                    except Exception:
+                        continue
+                if probe_norms:
+                    med_sample_norm = float(
+                        np.nanmedian(np.asarray(probe_norms, dtype=np.float64))
+                    )
+                    if np.isfinite(med_sample_norm) and med_sample_norm > 0:
+                        bg_ratio = fixed_bg_norm / med_sample_norm
+                        if bg_ratio < 0.01 or bg_ratio > 100.0:
+                            raise ValueError(
+                                "BG_Norm 与样品 Norm_s 量级差异过大 "
+                                f"(BG/样品中位={bg_ratio:.3g}, "
+                                f"BG_Norm={fixed_bg_norm:.6g}, "
+                                f"SampleMed={med_sample_norm:.6g})，请检查 BG 的 "
+                                "Time/I0/T、I0 语义或头字段映射。"
+                            )
             if self.t2_strict_instrument.get():
                 tol_pct = self.t2_instr_tol_pct.get()
                 issues = self.check_instrument_consistency(files, poni_path=poni, tol_pct=tol_pct)
@@ -7053,10 +8153,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             self.prog_bar["maximum"] = len(files)
             self.prog_bar["value"] = 0
 
-            try:
-                workers = max(1, int(self.t2_workers.get()))
-            except Exception:
-                raise ValueError("并行线程数必须为正整数。")
+            workers = self.validate_batch_workers(self.t2_workers.get())
+
             overwrite = bool(self.t2_overwrite.get())
             resume = bool(self.t2_resume_enabled.get())
             if parse_run_policy is not None:
@@ -7088,7 +8186,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 "fixed_dark_exposure_s": fixed_dark_exposure_s,
                 "fixed_bg_norm": fixed_bg_norm,
                 "fixed_bg_path": ";".join(bg_used_paths),
-                "fixed_dark_path": dk_p,
+                "fixed_dark_path": references["fixed_dark_path"],
                 "ref_mode": ref_mode,
                 "bg_library": bg_library,
                 "dark_library": dark_library,
@@ -7258,8 +8356,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         "calibrated_2d_apply_flat": bool(self.t2_cal2d_apply_flat.get()) if export_cal2d else None,
                     },
                     "bg_dark": {
-                        "bg_paths": bg_paths,
-                        "dark_path": dk_p,
+                        "bg_paths": bg_used_paths,
+                        "dark_path": references["fixed_dark_path"],
                         "dark_exposure_s": fixed_dark_exposure_s,
                         "fixed_bg_norm": fixed_bg_norm,
                         "bg_library_count": len(bg_library) if 'bg_library' in locals() else 0,
@@ -7343,8 +8441,8 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                 "mu_cm^-1": mu,
                 "fixed_thickness_mm": self.t2_fixed_thk.get(),
                 "reference_mode": ref_mode,
-                "fixed_bg_path": bg_p,
-                "fixed_dark_path": dk_p,
+                "fixed_bg_path": references["fixed_bg_path"],
+                "fixed_dark_path": references["fixed_dark_path"],
                 "bg_library_count": len(bg_library),
                 "dark_library_count": len(dark_library),
                 "error_model": error_model,
@@ -7531,6 +8629,30 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         mode = self.t2_calc_mode.get()
         selected_modes = self.get_selected_modes()
         warnings = []
+        calibration_gate_error = None
+        try:
+            k_factor = float(self.global_vars["k_factor"].get())
+            polarization_applied, polarization_factor = self.resolve_t2_polarization()
+            self.require_calibration_context_for_batch(
+                k_factor=k_factor,
+                monitor_mode=monitor_mode,
+                poni_path=self.global_vars["poni_path"].get(),
+                mask_path=self.t2_mask_path.get().strip(),
+                flat_path=self.t2_flat_path.get().strip(),
+                correct_solid_angle=bool(self.t2_apply_solid_angle.get()),
+                polarization_factor=(
+                    polarization_factor if polarization_applied else None
+                ),
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            calibration_gate_error = str(exc)
+            warnings.append(calibration_gate_error)
+        worker_gate_error = None
+        try:
+            self.validate_batch_workers(self.t2_workers.get())
+        except (TypeError, ValueError) as exc:
+            worker_gate_error = str(exc)
+            warnings.append(worker_gate_error)
         try:
             thickness_config = self.resolve_sample_thickness_config(
                 mode=mode,
@@ -7706,6 +8828,9 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                             ratio=ratio, bg_norm=bg_norm, med=med_sample_norm,
                         )
                     )
+
+        if calibration_gate_error is not None or worker_gate_error is not None:
+            failed_files = max(failed_files, len(files))
 
         gate = self._evaluate_preflight_gate(
             total_files=len(files),
@@ -8195,11 +9320,17 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         key = self._t1_std_option_map.get(sel_text, "SRM3600")
         self.t1_std_type.set(key)
         if hasattr(self, "t1_params") and "std_thk" in self.t1_params:
-            # SRM 3600 has a certificate-mandated coupon thickness.  Other
+            # SRM 3600 has a certificate-mandated coupon thickness. Other
             # standards require an explicit path length from the operator.
             self.t1_params["std_thk"].set(
                 DEFAULT_STANDARD_THICKNESS_MM if key == "SRM3600" else 0.0
             )
+        entry = getattr(self, "t1_std_thk_entry", None)
+        if entry is not None:
+            try:
+                entry.configure(state="disabled" if key == "SRM3600" else "normal")
+            except Exception:
+                pass
 
         # Hide both conditional rows first
         self.t1_water_row.pack_forget()

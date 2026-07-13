@@ -115,9 +115,11 @@ software is organized into four layers:
   key matching with unit conversion), multi-strategy 1D profile parsing (three
   separator strategies with automatic column-role inference), and multi-format
   writers for canSAS 1D XML and NXcanSAS HDF5 (`writers.py`).
-- **CLI layer** (`saxsabs.cli`): exposes four subcommands (`norm-factor`,
-  `parse-header`, `parse-external1d`, `estimate-k`) for reproducible, scriptable
-  execution.
+- **CLI layer** (`saxsabs.cli`): exposes six subcommands: four focused utilities
+  (`norm-factor`, `parse-header`, `parse-external1d`, `estimate-k`), the
+  safety-first `bl19b2-abs2d` batch workflow, and an explicit
+  `bl19b2-abs2d-v1-legacy` migration entry that does not silently restore
+  historical scientific defaults.
 - **GUI layer** (`SASAbs.py`): a tkinter-based application themed with Sun
   Valley (sv\_ttk) providing a modern Windows 11 appearance with light/dark mode
   toggle.  Four tabbed panels—K-Factor Calibration, Batch Processing, External
