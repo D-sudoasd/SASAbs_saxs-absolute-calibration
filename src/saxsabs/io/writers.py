@@ -28,6 +28,7 @@ _CANSAS_SCHEMA = (
 
 _OPERATOR_PROVENANCE_KEYS = (
     "calibration_context_fingerprint",
+    "k_factor",
     "formula_version",
     "monitor_mode",
     "correct_solid_angle",
@@ -35,6 +36,16 @@ _OPERATOR_PROVENANCE_KEYS = (
     "poni_sha256",
     "mask_sha256",
     "flat_sha256",
+    "intensity_state",
+    "corrections_applied",
+    "do_not_repeat",
+    "intensity_unit",
+    "buffer_source_name",
+    "buffer_source_sha256",
+    "buffer_alpha",
+    "buffer_alpha_uncertainty",
+    "uncertainty_model",
+    "uncertainty_type",
 )
 
 
@@ -65,6 +76,10 @@ def _prepare_profile_arrays(
     i_arr = np.asarray(i_abs, dtype=np.float64).ravel()
     if q_arr.shape != i_arr.shape:
         raise ValueError("q and intensity must have the same shape")
+    if not np.all(np.isfinite(q_arr)):
+        raise ValueError("q must contain only finite values")
+    if not np.all(np.isfinite(i_arr)):
+        raise ValueError("intensity must contain only finite values")
 
     e_arr = None
     if err is not None:

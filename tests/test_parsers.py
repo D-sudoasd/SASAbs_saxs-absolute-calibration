@@ -158,3 +158,21 @@ def test_read_external_1d_profile_unnamed_third_column_not_treated_as_error(tmp_
     assert out["x"].size == 3
     assert out["err_col"] == ""
     assert np.all(np.isnan(out["err_rel"]))
+
+
+def test_read_external_1d_profile_prefers_combined_over_earlier_statistical_column(
+    tmp_path: Path,
+):
+    f = tmp_path / "profile_uncertainties.csv"
+    f.write_text(
+        "q,intensity,Error_Statistical_cm^-1,Error_CombinedStandard_cm^-1\n"
+        "0.10,100,1.0,1.5\n"
+        "0.20,90,2.0,2.5\n"
+        "0.30,80,3.0,3.5\n",
+        encoding="utf-8",
+    )
+
+    out = read_external_1d_profile(f)
+
+    assert out["err_col"] == "Error_CombinedStandard_cm^-1"
+    np.testing.assert_allclose(out["err_rel"], [1.5, 2.5, 3.5])

@@ -127,10 +127,11 @@ def build_reference_library(
     refs: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     for p in unique_paths:
+        img = None
         try:
             img = open_image_fn(p)
-            data = np.asarray(getattr(img, "data", None))
-            shape = tuple(data.shape) if data is not None else None
+            raw_data = getattr(img, "data", None)
+            shape = tuple(np.asarray(raw_data).shape) if raw_data is not None else None
             hdr = getattr(img, "header", {}) or {}
             exp, mon, trans = parse_header_fn(p, header_dict=hdr)
             mtime = Path(p).stat().st_mtime if Path(p).exists() else None
@@ -152,6 +153,10 @@ def build_reference_library(
                 }
             )
             continue
+        finally:
+            close = getattr(img, "close", None) if img is not None else None
+            if callable(close):
+                close()
     return (refs, rejected) if return_rejections else refs
 
 

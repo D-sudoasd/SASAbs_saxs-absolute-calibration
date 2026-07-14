@@ -39,6 +39,8 @@ class BufferSubtractionResult:
         Mean intensity in the high-*q* diagnostic window (should be ≈0).
     high_q_check_passed : bool
         *True* if |mean| < 3 × σ in the diagnostic window.
+    err_statistical : np.ndarray
+        Statistical component, excluding the uncertainty contribution from alpha.
     alpha_uncertainty : float | None
         Standard uncertainty of α, when supplied.
     """
@@ -50,6 +52,7 @@ class BufferSubtractionResult:
     high_q_residual_mean: float = 0.0
     high_q_check_passed: bool = True
     alpha_uncertainty: float | None = None
+    err_statistical: np.ndarray | None = None
 
 
 def _as_1d_float_array(name: str, values: np.ndarray | None, *, require_finite: bool = True) -> np.ndarray:
@@ -277,7 +280,9 @@ def subtract_buffer(
     i_sub = i_s - alpha * i_b
 
     # Unknown input errors intentionally yield NaN, never an optimistic partial budget.
-    variance_sub = np.square(e_s) + alpha**2 * buffer_variance
+    variance_statistical = np.square(e_s) + alpha**2 * buffer_variance
+    err_statistical = np.sqrt(variance_statistical)
+    variance_sub = variance_statistical.copy()
     if alpha_uncertainty is None:
         variance_sub = variance_sub + np.full_like(i_b, np.nan)
     else:
@@ -302,4 +307,5 @@ def subtract_buffer(
         high_q_residual_mean=residual_mean,
         high_q_check_passed=check_ok,
         alpha_uncertainty=alpha_uncertainty,
+        err_statistical=err_statistical,
     )

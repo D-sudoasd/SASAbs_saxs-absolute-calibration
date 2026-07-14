@@ -49,6 +49,34 @@ Ignored inputs:
 
 ## Correction Formula
 
+For an audited subset, pass `--include-manifest PATH.csv`. The UTF-8 CSV must
+contain a `relative_path` column whose rows are safe paths relative to
+`--input-root`. Absolute paths, traversal, duplicates, missing files, non-TIFF
+files, and files not discovered as sample TIFFs fail before output creation.
+Only listed samples are classified and counted; unlisted samples remain visible
+as ignored inventory rows. Manifest row order is processing order.
+
+For a composition-derived fixed thickness, pass both
+`--sample-thickness-cm VALUE` and `--thickness-derivation-json PATH.json`.
+The JSON must be an object containing `fixed_thickness_cm` equal to the CLI
+value and a `folder` matching the name of `--input-root`. It must also record
+the complete derivation contract: schema/method/model identifiers and formulas;
+`material`; experimental and NIST-table energy; wt% composition; per-element
+NIST mass attenuation and density tables; mixture mass attenuation; ideal
+mixture density; linear `mu_cm_inv`; representative transmission;
+`fixed_thickness_cm`; median/MAD/P5/P95/count statistics; `parameter_source`;
+`uncertainty_status`; and a string-list `warnings` field.
+
+The loader does not merely preserve these values. It fail-closes after
+recomputing the wt% sum, element-key agreement, mixture mass attenuation,
+ideal density, linear mu, `d=-ln(T_rep)/mu`, median equality, quantile ordering,
+and optional relative P5-P95 span. The experimental energy must match the
+30 keV table point within 0.001 keV. Generate this JSON with the project
+material-attenuation/thickness helpers or copy a validated campaign template;
+do not hand-write a shortened object from this prose. Both control files are
+copied under `config/inputs/`; their SHA-256 hashes enter the processing
+signature, rerun command, provenance, and per-frame metadata.
+
 Dark is exposure-matched before subtraction:
 
 ```text
@@ -109,7 +137,13 @@ covariance with K is not yet quantified. Therefore the current workflow
 intentionally reports a partial combined budget and does not emit a system
 expanded uncertainty, even when every scalar uncertainty option is supplied.
 The 2D output does not burn in mask, solid-angle, or polarization correction.
-Those corrections are deferred to pyFAI/pydidas reintegration.
+Those corrections are deferred to pyFAI/pydidas reintegration.  Uncertainty
+propagation sets masked detector pixels to zero-valued placeholders and excludes
+them from uncertainty summaries, frame QC, preview percentile selection, and
+completeness decisions.  Preview images render masked pixels as invalid.  The policy is
+recorded as `uncertainty_mask_policy` in the processing signature and as an
+HDF5 uncertainty-group attribute; downstream analysis must still apply the
+distributed mask.
 
 ## Mask Policy
 

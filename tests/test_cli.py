@@ -384,6 +384,48 @@ def test_cli_bl19b2_abs2d_passes_monitor_and_fixed_thickness_modes(
     assert captured["config"].standard_thickness_relative_standard_uncertainty == 0.04
 
 
+def test_cli_bl19b2_abs2d_passes_manifest_and_thickness_derivation_paths(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured = {}
+
+    def fake_run(config: bl19b2_abs2d.BL19B2Abs2DConfig) -> dict[str, str]:
+        captured['config'] = config
+        return {'status': 'dry-run'}
+
+    monkeypatch.setattr(bl19b2_abs2d, 'run_bl19b2_abs2d', fake_run)
+    manifest = tmp_path / 'include.csv'
+    derivation = tmp_path / 'thickness.json'
+    monkeypatch.setattr(
+        sys,
+        'argv',
+        [
+            'saxsabs',
+            'bl19b2-abs2d',
+            '--input-root',
+            str(tmp_path / 'dat001'),
+            '--poni',
+            str(tmp_path / 'geometry.poni'),
+            '--monitor-mode',
+            'rate',
+            '--sample-thickness-cm',
+            '0.1',
+            '--include-manifest',
+            str(manifest),
+            '--thickness-derivation-json',
+            str(derivation),
+        ],
+    )
+
+    main()
+
+    assert json.loads(capsys.readouterr().out)['status'] == 'dry-run'
+    assert captured['config'].include_manifest_path == manifest
+    assert captured['config'].thickness_derivation_path == derivation
+
+
 def test_cli_bl19b2_abs2d_passes_standard_side_and_system_coverage_uncertainties(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

@@ -20,7 +20,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import numpy as np
@@ -36,6 +36,7 @@ from saxsabs.constants import get_reference_data
 SCHEMA_VERSION = "saxsabs.bl19b2_abs2d.v4"
 FORMULA_VERSION = "v3_monitor_mode_background_i0_only"
 INTENSITY_UNIT = "cm^-1"
+UNCERTAINTY_MASK_POLICY = "masked_pixels_zeroed_excluded_from_summaries_v1"
 SRM3600_THICKNESS_CM = 0.1055
 BACKGROUND_TRANSMISSION_TOLERANCE = 0.02
 DEFAULT_MAX_BEER_LAMBERT_TRANSMISSION = 0.999
@@ -151,6 +152,8 @@ class BL19B2Abs2DConfig:
     standard_monitor_relative_standard_uncertainty: float | None = None
     calibration_background_monitor_relative_standard_uncertainty: float | None = None
     system_coverage_factor: float | None = None
+    include_manifest_path: Path | None = None
+    thickness_derivation_path: Path | None = None
     def resolved_output_root(self) -> Path:
         if self.output_root is not None:
             return Path(self.output_root)
@@ -654,8 +657,19 @@ def _build_standard_uncertainty_contract(
         },
     }
 
-def _uncertainty_array_summary(values: np.ndarray) -> dict[str, Any]:
+def _uncertainty_array_summary(
+    values: np.ndarray,
+    *,
+    detector_mask: np.ndarray | None = None,
+) -> dict[str, Any]:
     arr = np.asarray(values, dtype=np.float64)
+    if detector_mask is not None:
+        mask = np.asarray(detector_mask, dtype=bool)
+        if mask.shape != arr.shape:
+            raise ValueError(
+                f"detector_mask shape mismatch: {mask.shape} vs {arr.shape}"
+            )
+        arr = arr[~mask]
     finite = arr[np.isfinite(arr)]
     if finite.size == 0:
         return {"status": "unknown", "min": None, "max": None, "mean": None}
@@ -672,6 +686,8 @@ def _frame_uncertainty_metadata(
     config: BL19B2Abs2DConfig,
     calibration: StandardCalibration,
     budget: AbsoluteUncertaintyBudget,
+    *,
+    detector_mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
     inputs = _uncertainty_input_payload(config)
     k_contract = _k_calibration_contract(calibration)
@@ -686,12 +702,28 @@ def _frame_uncertainty_metadata(
     unknown = list(dict.fromkeys(unknown))
 
     component_summaries = {
-        name: _uncertainty_array_summary(getattr(budget, attribute))
+        name: _uncertainty_array_summary(
+            getattr(budget, attribute),
+            detector_mask=detector_mask,
+        )
         for name, attribute in _UNCERTAINTY_DATASETS.items()
         if name not in {"combined_standard", "expanded"}
     }
-    combined_known = bool(np.all(np.isfinite(budget.combined_standard_uncertainty)))
-    expanded_known = bool(np.all(np.isfinite(budget.expanded_uncertainty)))
+    valid_pixels = np.ones(budget.combined_standard_uncertainty.shape, dtype=bool)
+    if detector_mask is not None:
+        mask = np.asarray(detector_mask, dtype=bool)
+        if mask.shape != valid_pixels.shape:
+            raise ValueError(
+                f"detector_mask shape mismatch: {mask.shape} vs {valid_pixels.shape}"
+            )
+        valid_pixels = ~mask
+    has_valid_pixels = bool(np.any(valid_pixels))
+    combined_known = has_valid_pixels and bool(
+        np.all(np.isfinite(budget.combined_standard_uncertainty[valid_pixels]))
+    )
+    expanded_known = has_valid_pixels and bool(
+        np.all(np.isfinite(budget.expanded_uncertainty[valid_pixels]))
+    )
     status = "complete" if not unknown and combined_known else "partial"
     expanded_status = (
         "available"
@@ -701,6 +733,8 @@ def _frame_uncertainty_metadata(
     return {
         "status": status,
         "expanded_status": expanded_status,
+        "mask_policy": UNCERTAINTY_MASK_POLICY,
+        "masked_pixel_count": int(np.size(valid_pixels) - np.count_nonzero(valid_pixels)),
         "reference_coverage_factor": calibration.reference_coverage_factor,
         "system_coverage_factor": calibration.coverage_factor,
         "missing_for_expanded": (
@@ -722,12 +756,18 @@ def _frame_uncertainty_metadata(
         "coverage_factor": k_contract["coverage_factor"],
         "components": component_summaries,
         "combined_standard_uncertainty": (
-            _uncertainty_array_summary(budget.combined_standard_uncertainty)
+            _uncertainty_array_summary(
+                budget.combined_standard_uncertainty,
+                detector_mask=detector_mask,
+            )
             if combined_known
             else None
         ),
         "expanded_uncertainty": (
-            _uncertainty_array_summary(budget.expanded_uncertainty)
+            _uncertainty_array_summary(
+                budget.expanded_uncertainty,
+                detector_mask=detector_mask,
+            )
             if expanded_known
             else None
         ),
@@ -738,7 +778,8 @@ def _frame_uncertainty_metadata(
         "unknown_components": unknown,
         "note": (
             "Unknown components remain null and are not treated as zero; "
-            "use the public AbsoluteUncertaintyBudget API when all inputs are available."
+            "masked detector pixels are zero-valued placeholders in uncertainty datasets "
+            "and are excluded from summaries; use the distributed mask for all analysis."
         ),
     }
 
@@ -763,6 +804,31 @@ class ProvenancePaths:
     processing_environment: Path
     code_state: Path
     provenance_summary: Path
+
+
+@dataclass(frozen=True)
+class IncludeManifestInfo:
+    source_path: Path
+    sha256: str
+    relative_paths: tuple[Path, ...]
+    content: bytes = field(repr=False)
+    copied_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class ThicknessDerivationInfo:
+    source_path: Path
+    sha256: str
+    fixed_thickness_cm: float
+    payload: dict[str, Any]
+    content: bytes = field(repr=False)
+    copied_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class RunControlInputs:
+    include_manifest: IncludeManifestInfo | None = None
+    thickness_derivation: ThicknessDerivationInfo | None = None
 
 
 _FIELD_RE = re.compile(
@@ -1120,6 +1186,7 @@ def validate_config(config: BL19B2Abs2DConfig) -> None:
         )
     if has_fixed_thickness and config.mu_relative_standard_uncertainty is not None:
         raise ValueError("mu_relative_standard_uncertainty requires mu_cm_inv")
+    _load_run_control_inputs(config)
     q_lo, q_hi = config.q_window
     if not (math.isfinite(float(q_lo)) and math.isfinite(float(q_hi)) and q_lo < q_hi):
         raise ValueError("q_window must contain finite increasing values")
@@ -1201,6 +1268,7 @@ def compute_bl19b2_uncertainty_budget(
     k_alpha_relative_sensitivity: float | None = None,
     k_calibration_background_monitor_relative_sensitivity: float | None = None,
     calibration_background_monitor_relative_standard_uncertainty: float | None = None,
+    detector_mask: np.ndarray | None = None,
 ) -> AbsoluteUncertaintyBudget:
     """Propagate BL19B2 raw-count and scale uncertainties to detector pixels."""
     intensity = np.asarray(intensity_abs, dtype=np.float64)
@@ -1209,9 +1277,46 @@ def compute_bl19b2_uncertainty_budget(
     dark = np.asarray(dark_raw, dtype=np.float64)
     if not (intensity.shape == sample.shape == background.shape == dark.shape):
         raise ValueError("intensity, sample, background, and dark shapes must match")
-    for label, image in (("sample_raw", sample), ("background_raw", background), ("dark_raw", dark)):
-        if not np.all(np.isfinite(image)) or np.any(image < 0):
-            raise ValueError(f"{label} must contain finite non-negative detector counts")
+    if detector_mask is None:
+        masked = np.zeros(intensity.shape, dtype=bool)
+    else:
+        mask_values = np.asarray(detector_mask)
+        if mask_values.shape != intensity.shape:
+            raise ValueError(
+                f"detector_mask shape mismatch: {mask_values.shape} vs {intensity.shape}"
+            )
+        is_boolean = np.issubdtype(mask_values.dtype, np.bool_)
+        is_real_numeric = np.issubdtype(
+            mask_values.dtype, np.integer
+        ) or np.issubdtype(mask_values.dtype, np.floating)
+        if not (is_boolean or is_real_numeric):
+            raise ValueError("detector_mask must be boolean or finite real numeric")
+        if is_real_numeric and not np.all(np.isfinite(mask_values)):
+            raise ValueError("detector_mask must contain finite values")
+        masked = mask_values.astype(bool)
+
+    invalid_intensity = ~np.isfinite(intensity)
+    if np.any(invalid_intensity & ~masked):
+        raise ValueError("intensity_abs must contain finite values at unmasked pixels")
+    if np.any(masked):
+        intensity = intensity.copy()
+        intensity[masked] = 0.0
+
+    def _sanitize_raw_counts(label: str, image: np.ndarray) -> np.ndarray:
+        invalid = ~np.isfinite(image) | (image < 0)
+        if np.any(invalid & ~masked):
+            raise ValueError(
+                f"{label} must contain finite non-negative detector counts at unmasked pixels"
+            )
+        if not np.any(invalid) and not np.any(masked):
+            return image
+        sanitized = image.copy()
+        sanitized[masked] = 0.0
+        return sanitized
+
+    sample = _sanitize_raw_counts("sample_raw", sample)
+    background = _sanitize_raw_counts("background_raw", background)
+    dark = _sanitize_raw_counts("dark_raw", dark)
 
     sample_exp = float(sample_exposure_s)
     background_exp = float(background_exposure_s)
@@ -1273,6 +1378,7 @@ def compute_bl19b2_uncertainty_budget(
                         raise ValueError("mu_cm_inv must be finite and > 0")
                     sensitivity = sensitivity + 1.0 / (mu_value * trans * thickness)
                 transmission_relative = np.abs(sensitivity) * u_t
+            transmission_relative[masked] = 0.0
             transmission_relative[~np.isfinite(transmission_relative)] = np.nan
 
     if k_statistical_standard_uncertainty is None:
@@ -1380,7 +1486,7 @@ def compute_bl19b2_uncertainty_budget(
             alpha_sensitivity_image = (
                 intensity * k_alpha_sensitivity - absolute_background
             )
-    return propagate_absolute_uncertainty(
+    budget = propagate_absolute_uncertainty(
         intensity,
         statistical_standard_uncertainty=statistical_abs,
         k_relative_standard_uncertainty=k_relative,
@@ -1393,6 +1499,14 @@ def compute_bl19b2_uncertainty_budget(
         buffer_intensity=alpha_sensitivity_image,
         coverage_factor=coverage_factor,
     )
+    if not np.any(masked):
+        return budget
+    masked_components: dict[str, np.ndarray] = {}
+    for attribute in _UNCERTAINTY_DATASETS.values():
+        values = np.asarray(getattr(budget, attribute), dtype=np.float64).copy()
+        values[masked] = 0.0
+        masked_components[attribute] = values
+    return replace(budget, **masked_components)
 
 
 def _require_close(
@@ -1635,7 +1749,13 @@ def read_detector_image(path: str | Path) -> np.ndarray:
         import fabio
     except ImportError as exc:  # pragma: no cover
         raise ImportError("fabio is required for BL19B2 detector image reading") from exc
-    return np.asarray(fabio.open(str(path)).data, dtype=np.float64)
+    image = fabio.open(str(path))
+    try:
+        return np.array(image.data, dtype=np.float64, copy=True, order="C")
+    finally:
+        close = getattr(image, "close", None)
+        if callable(close):
+            close()
 
 
 def build_combined_mask(
@@ -1709,6 +1829,501 @@ def _stable_file_fingerprint(path: str | Path) -> dict[str, int | str]:
         "size_bytes": after_stat[0],
         "mtime_ns": after_stat[1],
     }
+
+
+def _read_stable_control_file(path: str | Path, *, label: str) -> tuple[bytes, str]:
+    source = Path(path)
+    if not source.is_file():
+        raise FileNotFoundError(f'{label} not found or not a regular file: {source}')
+    before = source.stat()
+    content = source.read_bytes()
+    after = source.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise SourceChangedDuringReadError(f'{label} changed while being read: {source}')
+    return content, hashlib.sha256(content).hexdigest()
+
+
+def _safe_manifest_relative_path(raw: Any, *, input_root: Path) -> Path:
+    raw_text = "" if raw is None else str(raw)
+    value = raw_text.strip()
+    if not value:
+        raise ValueError('include manifest relative_path must not be empty')
+    if raw_text != value:
+        raise ValueError(
+            f'include manifest path has unsafe leading or trailing whitespace: {raw_text!r}'
+        )
+    normalized = value.replace('\\', '/')
+    windows_path = PureWindowsPath(value)
+    posix_path = PurePosixPath(normalized)
+    if windows_path.drive or windows_path.root or posix_path.is_absolute():
+        raise ValueError(f'include manifest path must be relative: {value!r}')
+    segments = normalized.split('/')
+    if any(segment in {'', '.', '..'} for segment in segments):
+        raise ValueError(f'include manifest path is not a safe relative path: {value!r}')
+    if any(
+        ':' in segment or segment.endswith((' ', '.'))
+        for segment in segments
+    ):
+        raise ValueError(
+            f'include manifest path contains a Windows-unsafe segment: {value!r}'
+        )
+    relative = Path(*segments)
+    root_resolved = input_root.resolve()
+    candidate = (root_resolved / relative).resolve()
+    if not candidate.is_relative_to(root_resolved):
+        raise ValueError(f'include manifest path escapes input_root: {value!r}')
+    if not candidate.is_file():
+        raise FileNotFoundError(
+            f'include manifest sample not found or not a regular file: {value!r}'
+        )
+    if candidate.suffix.lower() not in {'.tif', '.tiff'}:
+        raise ValueError(f'include manifest path is not a TIFF: {value!r}')
+    if not is_sample_tiff(candidate, root_resolved):
+        raise ValueError(f'include manifest path is not a discovered sample TIFF: {value!r}')
+    return candidate.relative_to(root_resolved)
+
+
+def _manifest_path_key(path: str | Path) -> str:
+    return str(path).strip().replace('\\', '/').casefold()
+
+
+def _load_include_manifest(config: BL19B2Abs2DConfig) -> IncludeManifestInfo | None:
+    if config.include_manifest_path is None:
+        return None
+    source = Path(config.include_manifest_path)
+    content, sha256 = _read_stable_control_file(source, label='include manifest')
+    try:
+        text = content.decode('utf-8-sig')
+    except UnicodeDecodeError as exc:
+        raise ValueError('include manifest must be UTF-8 CSV') from exc
+    reader = csv.DictReader(text.splitlines())
+    if reader.fieldnames is None or reader.fieldnames.count('relative_path') != 1:
+        raise ValueError('include manifest must contain a relative_path column')
+    raw_rows: list[tuple[int, Any]] = []
+    seen: set[str] = set()
+    for row_number, row in enumerate(reader, start=2):
+        if None in row:
+            raise ValueError(
+                f'include manifest row {row_number} contains unnamed extra columns'
+            )
+        raw_relative = row.get('relative_path')
+        key = _manifest_path_key('' if raw_relative is None else raw_relative)
+        if key in seen:
+            raise ValueError(
+                'include manifest contains a duplicate relative_path '
+                f'at row {row_number}: {raw_relative!r}'
+            )
+        seen.add(key)
+        raw_rows.append((row_number, raw_relative))
+    relative_paths: list[Path] = []
+    for _row_number, raw_relative in raw_rows:
+        relative = _safe_manifest_relative_path(
+            raw_relative, input_root=Path(config.input_root)
+        )
+        relative_paths.append(relative)
+    if not relative_paths:
+        raise ValueError('include manifest must contain at least one sample row')
+    return IncludeManifestInfo(
+        source_path=source,
+        sha256=sha256,
+        relative_paths=tuple(relative_paths),
+        content=content,
+    )
+
+
+def _load_thickness_derivation(
+    config: BL19B2Abs2DConfig,
+) -> ThicknessDerivationInfo | None:
+    if config.thickness_derivation_path is None:
+        return None
+    if config.sample_thickness_cm is None:
+        raise ValueError(
+            'thickness_derivation_path requires fixed sample_thickness_cm mode'
+        )
+    source = Path(config.thickness_derivation_path)
+    content, sha256 = _read_stable_control_file(
+        source, label='thickness derivation JSON'
+    )
+    try:
+        payload = json.loads(content.decode('utf-8-sig'))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError('thickness derivation must be a UTF-8 JSON object') from exc
+    if not isinstance(payload, dict):
+        raise ValueError('thickness derivation must be a JSON object')
+    value = payload.get('fixed_thickness_cm')
+    if isinstance(value, bool):
+        raise ValueError(
+            'thickness derivation fixed_thickness_cm must be finite and > 0'
+        )
+    try:
+        fixed_thickness_cm = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            'thickness derivation fixed_thickness_cm must be finite and > 0'
+        ) from exc
+    if not math.isfinite(fixed_thickness_cm) or fixed_thickness_cm <= 0:
+        raise ValueError(
+            'thickness derivation fixed_thickness_cm must be finite and > 0'
+        )
+    configured = float(config.sample_thickness_cm)
+    if not math.isclose(
+        fixed_thickness_cm, configured, rel_tol=1e-9, abs_tol=1e-12
+    ):
+        raise ValueError(
+            'thickness derivation fixed_thickness_cm does not match '
+            f'sample_thickness_cm: {fixed_thickness_cm:.12g} vs {configured:.12g}'
+        )
+    return ThicknessDerivationInfo(
+        source_path=source,
+        sha256=sha256,
+        fixed_thickness_cm=fixed_thickness_cm,
+        payload=payload,
+        content=content,
+    )
+
+
+def _required_derivation_number(
+    mapping: dict[str, Any],
+    field_name: str,
+    *,
+    context: str = 'thickness derivation',
+    positive: bool = False,
+    nonnegative: bool = False,
+) -> float:
+    value = mapping.get(field_name)
+    if isinstance(value, bool):
+        raise ValueError(f'{context} {field_name} must be a finite number')
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f'{context} {field_name} must be a finite number') from exc
+    if not math.isfinite(numeric):
+        raise ValueError(f'{context} {field_name} must be a finite number')
+    if positive and numeric <= 0:
+        raise ValueError(f'{context} {field_name} must be finite and > 0')
+    if nonnegative and numeric < 0:
+        raise ValueError(f'{context} {field_name} must be finite and >= 0')
+    return numeric
+
+
+def _required_positive_derivation_mapping(
+    payload: dict[str, Any], field_name: str
+) -> dict[str, float]:
+    raw = payload.get(field_name)
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f'thickness derivation {field_name} must be a non-empty object')
+    values: dict[str, float] = {}
+    for element, value in raw.items():
+        if not isinstance(element, str) or not element.strip():
+            raise ValueError(
+                f'thickness derivation {field_name} contains an invalid element key'
+            )
+        values[element] = _required_derivation_number(
+            raw,
+            element,
+            context=f'thickness derivation {field_name}',
+            positive=True,
+        )
+    return values
+
+
+def _validate_thickness_derivation_physics(payload: dict[str, Any]) -> None:
+    required_strings = (
+        'schema',
+        'method',
+        'parameter_source',
+        'uncertainty_status',
+        'mass_attenuation_model',
+        'mass_attenuation_model_formula',
+        'density_model',
+        'density_model_formula',
+        'mu_model',
+        'mu_model_formula',
+    )
+    for field_name in required_strings:
+        value = payload.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f'thickness derivation {field_name} must be a non-empty string'
+            )
+    if payload['parameter_source'] != 'composition_model_derived':
+        raise ValueError(
+            "thickness derivation parameter_source must be 'composition_model_derived'"
+        )
+    if payload['uncertainty_status'] not in {'partial', 'complete'}:
+        raise ValueError(
+            "thickness derivation uncertainty_status must be 'partial' or 'complete'"
+        )
+    material = payload.get('material')
+    if not isinstance(material, str) or not material.strip():
+        raise ValueError('thickness derivation material must be a non-empty string')
+
+    energy = _required_derivation_number(payload, 'energy_kev', positive=True)
+    table_energy = _required_derivation_number(
+        payload, 'nist_table_energy_kev', positive=True
+    )
+    if not math.isclose(table_energy, 30.0, rel_tol=0.0, abs_tol=1e-12):
+        raise ValueError('thickness derivation NIST table energy must equal 30 keV')
+    if not math.isclose(energy, table_energy, rel_tol=0.0, abs_tol=0.001):
+        raise ValueError(
+            'thickness derivation experimental energy is not within 0.001 keV '
+            'of the nearest NIST table point'
+        )
+
+    composition = _required_positive_derivation_mapping(
+        payload, 'composition_wt_percent'
+    )
+    if not math.isclose(
+        math.fsum(composition.values()), 100.0, rel_tol=0.0, abs_tol=1e-8
+    ):
+        raise ValueError('thickness derivation composition wt% must sum to 100')
+    element_mu_rho = _required_positive_derivation_mapping(
+        payload, 'nist_element_mass_attenuation_cm2_g_at_30kev'
+    )
+    element_density = _required_positive_derivation_mapping(
+        payload, 'nist_element_density_g_cm3'
+    )
+    element_keys = set(composition)
+    if set(element_mu_rho) != element_keys or set(element_density) != element_keys:
+        raise ValueError(
+            'thickness derivation composition and NIST element tables must have identical keys'
+        )
+
+    fractions = {element: wt_percent / 100.0 for element, wt_percent in composition.items()}
+    expected_mu_rho = math.fsum(
+        fractions[element] * element_mu_rho[element] for element in element_keys
+    )
+    expected_density = 1.0 / math.fsum(
+        fractions[element] / element_density[element] for element in element_keys
+    )
+    recorded_mu_rho = _required_derivation_number(
+        payload, 'mixture_mass_attenuation_cm2_g', positive=True
+    )
+    alias_mu_rho = _required_derivation_number(
+        payload, 'mass_attenuation_cm2_g', positive=True
+    )
+    recorded_density = _required_derivation_number(
+        payload, 'ideal_mixture_density_g_cm3', positive=True
+    )
+    if not math.isclose(
+        recorded_mu_rho, expected_mu_rho, rel_tol=1e-8, abs_tol=5e-7
+    ):
+        raise ValueError('thickness derivation mixture mass attenuation is inconsistent')
+    if not math.isclose(
+        alias_mu_rho, recorded_mu_rho, rel_tol=1e-12, abs_tol=1e-12
+    ):
+        raise ValueError('thickness derivation mass attenuation alias is inconsistent')
+    if not math.isclose(
+        recorded_density, expected_density, rel_tol=1e-8, abs_tol=5e-7
+    ):
+        raise ValueError('thickness derivation ideal mixture density is inconsistent')
+
+    recorded_mu = _required_derivation_number(payload, 'mu_cm_inv', positive=True)
+    expected_mu = expected_mu_rho * expected_density
+    if not math.isclose(recorded_mu, expected_mu, rel_tol=1e-8, abs_tol=5e-7):
+        raise ValueError('thickness derivation linear mu is inconsistent')
+    representative = _required_derivation_number(
+        payload, 'representative_transmission', positive=True
+    )
+    if representative >= 1:
+        raise ValueError(
+            'thickness derivation representative_transmission must be < 1'
+        )
+    fixed_thickness = _required_derivation_number(
+        payload, 'fixed_thickness_cm', positive=True
+    )
+    expected_thickness = -math.log(representative) / recorded_mu
+    if not math.isclose(
+        fixed_thickness, expected_thickness, rel_tol=1e-9, abs_tol=1e-12
+    ):
+        raise ValueError('thickness derivation fixed thickness is inconsistent')
+
+    statistics = payload.get('transmission_statistics')
+    if not isinstance(statistics, dict):
+        raise ValueError('thickness derivation transmission_statistics must be an object')
+    count = statistics.get('count')
+    if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+        raise ValueError(
+            'thickness derivation transmission_statistics.count must be an integer > 0'
+        )
+    median = _required_derivation_number(
+        statistics,
+        'median',
+        context='thickness derivation transmission_statistics',
+        positive=True,
+    )
+    mad = _required_derivation_number(
+        statistics,
+        'mad',
+        context='thickness derivation transmission_statistics',
+        nonnegative=True,
+    )
+    p5 = _required_derivation_number(
+        statistics,
+        'p5',
+        context='thickness derivation transmission_statistics',
+        positive=True,
+    )
+    p95 = _required_derivation_number(
+        statistics,
+        'p95',
+        context='thickness derivation transmission_statistics',
+        positive=True,
+    )
+    if max(median, p5, p95) > 1 or not p5 <= median <= p95:
+        raise ValueError('thickness derivation transmission quantiles are inconsistent')
+    if not math.isclose(representative, median, rel_tol=1e-12, abs_tol=1e-12):
+        raise ValueError(
+            'thickness derivation representative transmission does not equal median'
+        )
+    relative_span = statistics.get('relative_p5_p95_span')
+    if relative_span is not None:
+        recorded_span = _required_derivation_number(
+            statistics,
+            'relative_p5_p95_span',
+            context='thickness derivation transmission_statistics',
+            nonnegative=True,
+        )
+        expected_span = (p95 - p5) / median
+        if not math.isclose(
+            recorded_span, expected_span, rel_tol=1e-9, abs_tol=1e-12
+        ):
+            raise ValueError(
+                'thickness derivation transmission relative span is inconsistent'
+            )
+    if mad > 1:
+        raise ValueError('thickness derivation transmission MAD is inconsistent')
+
+    warnings = payload.get('warnings')
+    if not isinstance(warnings, list) or not all(
+        isinstance(item, str) for item in warnings
+    ):
+        raise ValueError('thickness derivation warnings must be a list of strings')
+
+
+def _load_run_control_inputs(config: BL19B2Abs2DConfig) -> RunControlInputs:
+    inputs = RunControlInputs(
+        include_manifest=_load_include_manifest(config),
+        thickness_derivation=_load_thickness_derivation(config),
+    )
+    derivation = inputs.thickness_derivation
+    if derivation is None:
+        return inputs
+    manifest = inputs.include_manifest
+    if manifest is None:
+        raise ValueError(
+            'thickness derivation requires an include manifest for one sample folder'
+        )
+    folder = derivation.payload.get('folder')
+    if not isinstance(folder, str) or not folder.strip():
+        raise ValueError('thickness derivation must contain a non-empty folder field')
+    normalized = folder.strip().replace('\\', '/')
+    if '/' in normalized or normalized in {'.', '..'}:
+        raise ValueError('thickness derivation folder must be one relative directory name')
+    input_folder = Path(config.input_root).resolve().name
+    if normalized.casefold() != input_folder.casefold():
+        raise ValueError(
+            f'thickness derivation folder does not match input_root: '
+            f'{folder!r} vs {input_folder!r}'
+        )
+    _validate_thickness_derivation_physics(derivation.payload)
+    return inputs
+
+
+def _copy_control_input(
+    *, content: bytes, sha256: str, target: Path, overwrite: bool
+) -> Path:
+    if target.exists():
+        if not target.is_file() or _file_sha256(target) != sha256:
+            if not overwrite:
+                raise ValueError(
+                    f'existing provenance input differs from current source: {target}'
+                )
+        else:
+            return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(content)
+    return target
+
+
+def _copy_run_control_inputs(
+    config: BL19B2Abs2DConfig,
+    inputs: RunControlInputs,
+) -> tuple[BL19B2Abs2DConfig, RunControlInputs]:
+    target_dir = config.resolved_output_root() / 'config' / 'inputs'
+    include = inputs.include_manifest
+    derivation = inputs.thickness_derivation
+    if include is not None:
+        copied = _copy_control_input(
+            content=include.content,
+            sha256=include.sha256,
+            target=target_dir / 'include_manifest.csv',
+            overwrite=config.overwrite,
+        )
+        include = replace(include, copied_path=copied)
+    if derivation is not None:
+        copied = _copy_control_input(
+            content=derivation.content,
+            sha256=derivation.sha256,
+            target=target_dir / 'thickness_derivation.json',
+            overwrite=config.overwrite,
+        )
+        derivation = replace(derivation, copied_path=copied)
+    copied_inputs = RunControlInputs(
+        include_manifest=include, thickness_derivation=derivation
+    )
+    return (
+        replace(
+            config,
+            include_manifest_path=(include.copied_path if include is not None else None),
+            thickness_derivation_path=(
+                derivation.copied_path if derivation is not None else None
+            ),
+        ),
+        copied_inputs,
+    )
+
+
+def _control_inputs_signature_payload(inputs: RunControlInputs) -> dict[str, Any]:
+    include = inputs.include_manifest
+    derivation = inputs.thickness_derivation
+    return {
+        'include_manifest': (
+            {'sha256': include.sha256, 'row_count': len(include.relative_paths)}
+            if include is not None
+            else None
+        ),
+        'thickness_derivation': (
+            {
+                'sha256': derivation.sha256,
+                'fixed_thickness_cm': derivation.fixed_thickness_cm,
+                'payload': derivation.payload,
+            }
+            if derivation is not None
+            else None
+        ),
+    }
+
+
+def _control_inputs_provenance_payload(inputs: RunControlInputs) -> dict[str, Any]:
+    payload = _control_inputs_signature_payload(inputs)
+    include = inputs.include_manifest
+    derivation = inputs.thickness_derivation
+    if include is not None:
+        payload['include_manifest'].update(
+            {
+                'source_path': str(include.source_path),
+                'copied_path': str(include.copied_path or ''),
+            }
+        )
+    if derivation is not None:
+        payload['thickness_derivation'].update(
+            {
+                'source_path': str(derivation.source_path),
+                'copied_path': str(derivation.copied_path or ''),
+            }
+        )
+    return payload
 
 
 def _header_identity(header: BL19B2Header) -> dict[str, Any]:
@@ -1854,6 +2469,13 @@ def load_and_write_mask(
     )
 
 
+def _processing_signature_digest(payload: dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        raise ValueError('processing_signature_payload must be an object')
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def build_processing_signature(
     config: BL19B2Abs2DConfig,
     *,
@@ -1862,8 +2484,11 @@ def build_processing_signature(
     safe_poni_path: Path,
     reference_paths: ReferencePaths,
     reference_identities: dict[str, dict[str, Any]] | None = None,
+    control_inputs: RunControlInputs | None = None,
 ) -> tuple[str, dict[str, Any]]:
     monitor_mode = str(config.monitor_mode).strip().lower()
+    if control_inputs is None:
+        control_inputs = _load_run_control_inputs(config)
 
     def _reference_sha256(name: str, path: Path) -> str:
         if reference_identities is not None:
@@ -1894,6 +2519,7 @@ def build_processing_signature(
         },
     }
     payload = {
+        'run_control_inputs': _control_inputs_signature_payload(control_inputs),
         "schema": SCHEMA_VERSION,
         "formula_version": FORMULA_VERSION,
         "geometry_source": "pydidas_cali_yaml" if config.pydidas_cali_yaml is not None else "poni",
@@ -1903,6 +2529,7 @@ def build_processing_signature(
             "exposure_s * MON * ABS" if monitor_mode == "rate" else "MON * ABS"
         ),
         "dark_scaling": "exposure_matched",
+        "uncertainty_mask_policy": UNCERTAINTY_MASK_POLICY,
         "mu_cm_inv": config.mu_cm_inv,
         "sample_thickness_cm": config.sample_thickness_cm,
         "transmission_abs_uncertainty": config.transmission_abs_uncertainty,
@@ -1921,8 +2548,7 @@ def build_processing_signature(
         "dark_hot_pixel_threshold": float(config.dark_hot_pixel_threshold),
         "reference_files": reference_payload,
     }
-    text = json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-    return hashlib.sha256(text.encode("utf-8")).hexdigest(), payload
+    return _processing_signature_digest(payload), payload
 
 
 def _provenance_paths(out_root: Path) -> ProvenancePaths:
@@ -2077,14 +2703,75 @@ def _optional_path_text(value: str | Path | None) -> str:
     return "" if value is None else str(Path(value))
 
 
-def build_rerun_command(config: BL19B2Abs2DConfig, *, poni_path: Path | None = None) -> str:
+def _rerun_hash_preflight_lines(
+    *, variable: str, path: Path, expected_sha256: str, label: str
+) -> list[str]:
+    expected_variable = f'expected{variable[0].upper()}{variable[1:]}Sha256'
+    actual_variable = f'actual{variable[0].upper()}{variable[1:]}Sha256'
+    return [
+        f'${variable} = {_ps_single_quote(path)}',
+        f'${expected_variable} = {_ps_single_quote(expected_sha256)}',
+        (
+            f"if (-not (Test-Path -LiteralPath ${variable} -PathType Leaf)) "
+            f"{{ throw {_ps_single_quote(label + ' is missing or not a file')} }}"
+        ),
+        (
+            f'${actual_variable} = (Get-FileHash -Algorithm SHA256 '
+            f'-LiteralPath ${variable}).Hash.ToLowerInvariant()'
+        ),
+        (
+            f'if (${actual_variable} -ne ${expected_variable}) '
+            f"{{ throw {_ps_single_quote(label + ' SHA256 mismatch')} }}"
+        ),
+    ]
+
+
+def build_rerun_command(
+    config: BL19B2Abs2DConfig,
+    *,
+    poni_path: Path | None = None,
+    control_inputs: RunControlInputs | None = None,
+) -> str:
     qmin, qmax = config.q_window
     monitor_mode = str(config.monitor_mode).strip().lower()
-    lines = [
-        "$env:PYTHONPATH='src'",
+    lines = ["$env:PYTHONPATH='src'"]
+    if control_inputs is not None:
+        include = control_inputs.include_manifest
+        derivation = control_inputs.thickness_derivation
+        if include is not None:
+            include_path = Path(
+                config.include_manifest_path
+                or include.copied_path
+                or include.source_path
+            )
+            lines.extend(
+                _rerun_hash_preflight_lines(
+                    variable='includeManifest',
+                    path=include_path,
+                    expected_sha256=include.sha256,
+                    label='include manifest',
+                )
+            )
+        if derivation is not None:
+            derivation_path = Path(
+                config.thickness_derivation_path
+                or derivation.copied_path
+                or derivation.source_path
+            )
+            lines.extend(
+                _rerun_hash_preflight_lines(
+                    variable='thicknessDerivation',
+                    path=derivation_path,
+                    expected_sha256=derivation.sha256,
+                    label='thickness derivation',
+                )
+            )
+    lines.extend(
+        [
         f"& {_ps_single_quote(sys.executable)} -m saxsabs.cli bl19b2-abs2d `",
         f"  --input-root {_ps_single_quote(Path(config.input_root))} `",
-    ]
+        ]
+    )
     if config.pydidas_cali_yaml is not None:
         lines.append(f"  --pydidas-cali-yaml {_ps_single_quote(Path(config.pydidas_cali_yaml))} `")
     else:
@@ -2100,6 +2787,15 @@ def build_rerun_command(config: BL19B2Abs2DConfig, *, poni_path: Path | None = N
         lines.append(f"  --standard {_ps_single_quote(Path(config.standard_path))} `")
     if config.direct_path is not None:
         lines.append(f"  --direct-beam {_ps_single_quote(Path(config.direct_path))} `")
+    if config.include_manifest_path is not None:
+        lines.append(
+            f'  --include-manifest {_ps_single_quote(Path(config.include_manifest_path))} `'
+        )
+    if config.thickness_derivation_path is not None:
+        lines.append(
+            '  --thickness-derivation-json '
+            f'{_ps_single_quote(Path(config.thickness_derivation_path))} `'
+        )
     lines.extend(
         [
             f"  --output-root {_ps_single_quote(config.resolved_output_root())} `",
@@ -2199,14 +2895,25 @@ def write_provenance_package(
     software_versions: dict[str, Any],
     code_state: dict[str, Any],
     run_status: str,
+    control_inputs: RunControlInputs | None = None,
 ) -> ProvenancePaths:
     out_root = config.resolved_output_root()
     paths = _provenance_paths(out_root)
     paths.run_command.parent.mkdir(parents=True, exist_ok=True)
-    paths.run_command.write_text(build_rerun_command(config, poni_path=safe_poni_path), encoding="utf-8")
+    if control_inputs is None:
+        control_inputs = _load_run_control_inputs(config)
+    paths.run_command.write_text(
+        build_rerun_command(
+            config,
+            poni_path=safe_poni_path,
+            control_inputs=control_inputs,
+        ),
+        encoding="utf-8",
+    )
     _write_json(paths.processing_environment, software_versions)
     paths.code_state.write_text(format_code_state_text(code_state), encoding="utf-8")
     summary = {
+        'run_control_inputs': _control_inputs_provenance_payload(control_inputs),
         "schema": SCHEMA_VERSION,
         "generated_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "run_status": run_status,
@@ -2365,6 +3072,7 @@ def _write_processing_config(
     mask_info: MaskInfo | None = None,
     processing_signature: str = "",
     signature_payload: dict[str, Any] | None = None,
+    control_inputs: RunControlInputs | None = None,
 ) -> None:
     out_root = config.resolved_output_root()
     lines = [
@@ -2415,6 +3123,11 @@ def _write_processing_config(
         "solid_angle_applied_in_image: false",
         "polarization_applied_in_image: false",
     ]
+    if control_inputs is not None:
+        lines.append(
+            'run_control_inputs_json: '
+            + json.dumps(_control_inputs_provenance_payload(control_inputs), sort_keys=True)
+        )
     if mask_info is not None:
         lines.extend(
             [
@@ -2437,13 +3150,25 @@ def _write_processing_config(
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def scan_inputs(config: BL19B2Abs2DConfig) -> tuple[list[dict[str, Any]], list[Path]]:
+def scan_inputs(
+    config: BL19B2Abs2DConfig,
+    *,
+    include_manifest: IncludeManifestInfo | None = None,
+) -> tuple[list[dict[str, Any]], list[Path]]:
     """Scan TIFF inputs and return inventory rows plus candidate sample paths."""
     root = Path(config.input_root)
     if not root.exists():
         raise FileNotFoundError(f"input_root does not exist: {root}")
     rows: list[dict[str, Any]] = []
     sample_paths: list[Path] = []
+    manifest = include_manifest
+    if manifest is None:
+        manifest = _load_include_manifest(config)
+    included_keys = (
+        {_manifest_path_key(path) for path in manifest.relative_paths}
+        if manifest is not None
+        else None
+    )
     refs = find_reference_paths(
         root,
         mask_path=config.mask_path,
@@ -2479,6 +3204,18 @@ def scan_inputs(config: BL19B2Abs2DConfig) -> tuple[list[dict[str, Any]], list[P
         kind = "sample" if is_sample_tiff(path, root) else "ignored_tiff"
         if path.resolve() in reference_set:
             kind = "reference"
+        if kind == 'sample' and included_keys is not None:
+            key = _manifest_path_key(rel)
+            if key not in included_keys:
+                rows.append(
+                    {
+                        'relative_path': str(rel),
+                        'kind': 'sample_not_in_include_manifest',
+                        'status': 'ignored',
+                        'reason': 'not selected by include manifest',
+                    }
+                )
+                continue
         header = read_tiff_header(path)
         classification = (
             classify_sample_frame(
@@ -2509,6 +3246,24 @@ def scan_inputs(config: BL19B2Abs2DConfig) -> tuple[list[dict[str, Any]], list[P
                 "mtime": _dt.datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
             }
         )
+    if manifest is not None:
+        discovered = {
+            _manifest_path_key(path.relative_to(root)): path for path in sample_paths
+        }
+        missing = [
+            str(relative)
+            for relative in manifest.relative_paths
+            if _manifest_path_key(relative) not in discovered
+        ]
+        if missing:
+            raise ValueError(
+                'include manifest entries were not discovered as sample TIFFs: '
+                + '; '.join(missing)
+            )
+        sample_paths = [
+            discovered[_manifest_path_key(relative)]
+            for relative in manifest.relative_paths
+        ]
     return rows, sample_paths
 
 
@@ -2789,6 +3544,12 @@ def write_hdf5_image(
         data = entry.create_group("data")
         data.attrs["NX_class"] = "NXdata"
         data.attrs["signal"] = "I_abs_2d"
+        selection = metadata.get('sample_selection') or {}
+        derivation = metadata.get('thickness', {}).get('derivation') or {}
+        entry.attrs['include_manifest_sha256'] = str(selection.get('sha256', ''))
+        entry.attrs['thickness_derivation_sha256'] = str(
+            derivation.get('sha256', '')
+        )
         ds = data.create_dataset(
             "I_abs_2d",
             data=image,
@@ -2802,6 +3563,11 @@ def write_hdf5_image(
         uncertainty_group = data.create_group("uncertainty")
         uncertainty_group.attrs["schema"] = SCHEMA_VERSION
         uncertainty_group.attrs["formula_version"] = FORMULA_VERSION
+        uncertainty_group.attrs["mask_policy"] = str(
+            metadata.get("uncertainty", {}).get(
+                "mask_policy", UNCERTAINTY_MASK_POLICY
+            )
+        )
         uncertainty_group.attrs["status"] = str(
             metadata.get("uncertainty", {}).get("status", "unknown")
         )
@@ -2837,6 +3603,8 @@ def write_edf_image(path: Path, image: np.ndarray, metadata: dict[str, Any]) -> 
     dark = metadata.get("dark", {})
     mask = metadata.get("mask", {})
     corrections = metadata.get("corrections_applied_in_image", {})
+    selection = metadata.get('sample_selection') or {}
+    derivation = metadata.get('thickness', {}).get('derivation') or {}
     header = {
         "SAXSAbsSchema": SCHEMA_VERSION,
         "ImageType": "detector_space_absolute_corrected_2d",
@@ -2844,6 +3612,8 @@ def write_edf_image(path: Path, image: np.ndarray, metadata: dict[str, Any]) -> 
         "RawSample": str(metadata.get("raw_sample", "")),
         "ProcessingSignature": str(metadata.get("processing_signature", "")),
         "FrameSignature": str(metadata.get("frame_signature", "")),
+        "IncludeManifestSHA256": str(selection.get('sha256', '')),
+        "ThicknessDerivationSHA256": str(derivation.get('sha256', '')),
         "FormulaVersion": FORMULA_VERSION,
         "ImageSHA256": str(metadata.get("output_image", {}).get("sha256", "")),
         "OutputDType": str(metadata.get("output_image", {}).get("dtype", "")),
@@ -2874,7 +3644,27 @@ def write_edf_image(path: Path, image: np.ndarray, metadata: dict[str, Any]) -> 
     _write_edf_array(path, image, header=header)
 
 
-def write_preview_png(path: Path, image: np.ndarray) -> bool:
+def _unmasked_pixel_selector(
+    image: np.ndarray,
+    detector_mask: np.ndarray | None,
+) -> np.ndarray:
+    selector = np.ones(np.asarray(image).shape, dtype=bool)
+    if detector_mask is None:
+        return selector
+    mask = np.asarray(detector_mask, dtype=bool)
+    if mask.shape != selector.shape:
+        raise ValueError(
+            f"detector_mask shape mismatch: {mask.shape} vs {selector.shape}"
+        )
+    return ~mask
+
+
+def write_preview_png(
+    path: Path,
+    image: np.ndarray,
+    *,
+    detector_mask: np.ndarray | None = None,
+) -> bool:
     try:
         import matplotlib
 
@@ -2883,7 +3673,9 @@ def write_preview_png(path: Path, image: np.ndarray) -> bool:
     except Exception:
         return False
 
-    finite = image[np.isfinite(image)]
+    valid_pixels = _unmasked_pixel_selector(image, detector_mask)
+    finite_pixels = valid_pixels & np.isfinite(image)
+    finite = image[finite_pixels]
     if finite.size == 0:
         return False
     lo, hi = np.nanpercentile(finite, [1.0, 99.5])
@@ -2892,7 +3684,8 @@ def write_preview_png(path: Path, image: np.ndarray) -> bool:
         hi = float(np.nanmax(finite))
     path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(6.0, 6.8), dpi=120)
-    im = ax.imshow(image, origin="upper", cmap="viridis", vmin=lo, vmax=hi)
+    display_image = np.ma.array(image, mask=~finite_pixels)
+    im = ax.imshow(display_image, origin="upper", cmap="viridis", vmin=lo, vmax=hi)
     ax.set_axis_off()
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02, label=INTENSITY_UNIT)
     fig.tight_layout(pad=0.05)
@@ -2901,10 +3694,16 @@ def write_preview_png(path: Path, image: np.ndarray) -> bool:
     return True
 
 
-def _qc_stats(image: np.ndarray) -> dict[str, Any]:
-    finite_mask = np.isfinite(image)
+def _qc_stats(
+    image: np.ndarray,
+    *,
+    detector_mask: np.ndarray | None = None,
+) -> dict[str, Any]:
+    valid_pixels = _unmasked_pixel_selector(image, detector_mask)
+    valid_pixel_count = int(np.count_nonzero(valid_pixels))
+    finite_mask = valid_pixels & np.isfinite(image)
     finite = image[finite_mask]
-    if finite.size == 0:
+    if valid_pixel_count == 0 or finite.size == 0:
         return {
             "finite_fraction": 0.0,
             "negative_fraction": 0.0,
@@ -2916,7 +3715,7 @@ def _qc_stats(image: np.ndarray) -> dict[str, Any]:
             "p995": None,
         }
     return {
-        "finite_fraction": float(finite.size / image.size),
+        "finite_fraction": float(finite.size / valid_pixel_count),
         "negative_fraction": float(np.sum(finite < 0) / finite.size),
         "min": float(np.nanmin(finite)),
         "max": float(np.nanmax(finite)),
@@ -3013,6 +3812,16 @@ def _validate_existing_outputs(paths: OutputPaths, metadata: dict[str, Any]) -> 
                 raise ValueError("existing HDF5 processing signature mismatch")
             if entry.attrs.get("frame_signature") != metadata.get("frame_signature"):
                 raise ValueError("existing HDF5 frame signature mismatch")
+            selection = metadata.get('sample_selection') or {}
+            derivation = metadata.get('thickness', {}).get('derivation') or {}
+            if str(entry.attrs.get('include_manifest_sha256', '')) != str(
+                selection.get('sha256', '')
+            ):
+                raise ValueError('existing HDF5 include manifest checksum mismatch')
+            if str(entry.attrs.get('thickness_derivation_sha256', '')) != str(
+                derivation.get('sha256', '')
+            ):
+                raise ValueError('existing HDF5 thickness derivation checksum mismatch')
             if dataset.attrs.get("units") != INTENSITY_UNIT:
                 raise ValueError("existing HDF5 intensity unit mismatch")
             embedded_raw = h5["entry/metadata_json"][()]
@@ -3036,6 +3845,13 @@ def _validate_existing_outputs(paths: OutputPaths, metadata: dict[str, Any]) -> 
                 raise ValueError("existing HDF5 uncertainty schema mismatch")
             if uncertainty_group.attrs.get("formula_version") != FORMULA_VERSION:
                 raise ValueError("existing HDF5 uncertainty formula version mismatch")
+            expected_mask_policy = str(
+                metadata.get("uncertainty", {}).get(
+                    "mask_policy", UNCERTAINTY_MASK_POLICY
+                )
+            )
+            if uncertainty_group.attrs.get("mask_policy") != expected_mask_policy:
+                raise ValueError("existing HDF5 uncertainty mask policy mismatch")
             uncertainty_status = str(metadata.get("uncertainty", {}).get("status", "unknown"))
             if uncertainty_group.attrs.get("status") != uncertainty_status:
                 raise ValueError("existing HDF5 uncertainty status mismatch")
@@ -3080,47 +3896,102 @@ def _validate_existing_outputs(paths: OutputPaths, metadata: dict[str, Any]) -> 
         import fabio
 
         edf = fabio.open(str(paths.edf))
-        header = edf.header
-        if header.get("SAXSAbsSchema") != SCHEMA_VERSION:
-            raise ValueError("existing EDF internal schema mismatch")
-        if header.get("FormulaVersion") != FORMULA_VERSION:
-            raise ValueError("existing EDF formula version mismatch")
-        if header.get("ProcessingSignature") != metadata.get("processing_signature"):
-            raise ValueError("existing EDF processing signature mismatch")
-        if header.get("FrameSignature") != metadata.get("frame_signature"):
-            raise ValueError("existing EDF frame signature mismatch")
-        if header.get("IntensityUnit") != INTENSITY_UNIT:
-            raise ValueError("existing EDF intensity unit mismatch")
-        expected_k_headers = {
-            "KFactor": _edf_optional_float(external_k_contract["k_factor"]),
-            "KStd": _edf_optional_float(external_k_contract["k_std"]),
-            "KStdMeaning": str(external_k_contract["k_std_semantics"]).replace(";", ""),
-            "KStatStdU": _edf_optional_float(
-                external_k_contract["k_statistical_standard_uncertainty"]
-            ),
-            "KStandardU": _edf_optional_float(external_k_contract["k_standard_uncertainty"]),
-            "KExpandedU": _edf_optional_float(external_k_contract["k_expanded_uncertainty"]),
-            "KCoverage": _edf_optional_float(external_k_contract["coverage_factor"]),
-        }
-        for key, expected in expected_k_headers.items():
-            if header.get(key) != expected:
-                raise ValueError(f"existing EDF K calibration uncertainty mismatch for {key}")
-        expected_uncertainty_status = str(
-            metadata.get("uncertainty", {}).get("status", "unknown")
-        )
-        if header.get("UncertaintyStatus") != expected_uncertainty_status:
-            raise ValueError("existing EDF uncertainty status mismatch")
-        expected_expanded_status = str(
-            metadata.get("uncertainty", {}).get("expanded_status", "unavailable")
-        )
-        if header.get("ExpandedUStatus") != expected_expanded_status:
-            raise ValueError("existing EDF expanded uncertainty status mismatch")
-        if Path(str(header.get("UncertaintyHDF5", ""))).resolve() != paths.h5.resolve():
-            raise ValueError("existing EDF uncertainty HDF5 pointer mismatch")
-        edf_image = np.asarray(edf.data)
+        try:
+            header = edf.header
+            if header.get("SAXSAbsSchema") != SCHEMA_VERSION:
+                raise ValueError("existing EDF internal schema mismatch")
+            if header.get("FormulaVersion") != FORMULA_VERSION:
+                raise ValueError("existing EDF formula version mismatch")
+            if header.get("ProcessingSignature") != metadata.get("processing_signature"):
+                raise ValueError("existing EDF processing signature mismatch")
+            if header.get("FrameSignature") != metadata.get("frame_signature"):
+                raise ValueError("existing EDF frame signature mismatch")
+            selection = metadata.get('sample_selection') or {}
+            derivation = metadata.get('thickness', {}).get('derivation') or {}
+            if header.get('IncludeManifestSHA256', '') != str(selection.get('sha256', '')):
+                raise ValueError('existing EDF include manifest checksum mismatch')
+            if header.get('ThicknessDerivationSHA256', '') != str(
+                derivation.get('sha256', '')
+            ):
+                raise ValueError('existing EDF thickness derivation checksum mismatch')
+            if header.get("IntensityUnit") != INTENSITY_UNIT:
+                raise ValueError("existing EDF intensity unit mismatch")
+            expected_k_headers = {
+                "KFactor": _edf_optional_float(external_k_contract["k_factor"]),
+                "KStd": _edf_optional_float(external_k_contract["k_std"]),
+                "KStdMeaning": str(external_k_contract["k_std_semantics"]).replace(";", ""),
+                "KStatStdU": _edf_optional_float(
+                    external_k_contract["k_statistical_standard_uncertainty"]
+                ),
+                "KStandardU": _edf_optional_float(
+                    external_k_contract["k_standard_uncertainty"]
+                ),
+                "KExpandedU": _edf_optional_float(
+                    external_k_contract["k_expanded_uncertainty"]
+                ),
+                "KCoverage": _edf_optional_float(external_k_contract["coverage_factor"]),
+            }
+            for key, expected in expected_k_headers.items():
+                if header.get(key) != expected:
+                    raise ValueError(f"existing EDF K calibration uncertainty mismatch for {key}")
+            expected_uncertainty_status = str(
+                metadata.get("uncertainty", {}).get("status", "unknown")
+            )
+            if header.get("UncertaintyStatus") != expected_uncertainty_status:
+                raise ValueError("existing EDF uncertainty status mismatch")
+            expected_expanded_status = str(
+                metadata.get("uncertainty", {}).get("expanded_status", "unavailable")
+            )
+            if header.get("ExpandedUStatus") != expected_expanded_status:
+                raise ValueError("existing EDF expanded uncertainty status mismatch")
+            if Path(str(header.get("UncertaintyHDF5", ""))).resolve() != paths.h5.resolve():
+                raise ValueError("existing EDF uncertainty HDF5 pointer mismatch")
+            edf_image = np.asarray(edf.data)
+        finally:
+            edf.close()
     except (OSError, KeyError, TypeError) as exc:
         raise ValueError(f"existing EDF output is unreadable or incomplete: {paths.edf}") from exc
     _validate_resumed_array(edf_image, metadata=metadata, label="EDF")
+
+
+def _validate_metadata_processing_signature(metadata: dict[str, Any]) -> None:
+    payload = metadata.get('processing_signature_payload')
+    if not isinstance(payload, dict):
+        raise ValueError('existing processing_signature_payload is missing or invalid')
+    recorded_signature = metadata.get('processing_signature')
+    if recorded_signature != _processing_signature_digest(payload):
+        raise ValueError('existing processing signature payload digest mismatch')
+    run_controls = payload.get('run_control_inputs')
+    if not isinstance(run_controls, dict):
+        raise ValueError('existing processing signature lacks run_control_inputs')
+
+    selection = metadata.get('sample_selection')
+    signed_selection = run_controls.get('include_manifest')
+    if signed_selection is None:
+        if selection is not None:
+            raise ValueError('existing include manifest metadata/signature mismatch')
+    elif not isinstance(signed_selection, dict) or not isinstance(selection, dict):
+        raise ValueError('existing include manifest metadata/signature mismatch')
+    else:
+        for field_name in ('sha256', 'row_count'):
+            if selection.get(field_name) != signed_selection.get(field_name):
+                raise ValueError(
+                    f'existing include manifest {field_name} metadata/signature mismatch'
+                )
+
+    derivation = metadata.get('thickness', {}).get('derivation')
+    signed_derivation = run_controls.get('thickness_derivation')
+    if signed_derivation is None:
+        if derivation is not None:
+            raise ValueError('existing thickness derivation metadata/signature mismatch')
+    elif not isinstance(signed_derivation, dict) or not isinstance(derivation, dict):
+        raise ValueError('existing thickness derivation metadata/signature mismatch')
+    else:
+        for field_name in ('sha256', 'fixed_thickness_cm', 'payload'):
+            if derivation.get(field_name) != signed_derivation.get(field_name):
+                raise ValueError(
+                    f'existing thickness derivation {field_name} metadata/signature mismatch'
+                )
 
 
 def _frame_qc_row_from_metadata(
@@ -3141,10 +4012,16 @@ def _frame_qc_row_from_metadata(
             "existing BL19B2 output metadata schema mismatch for "
             f"{rel}: expected {SCHEMA_VERSION}, got {metadata.get('schema')!r}"
         )
+    _validate_metadata_processing_signature(metadata)
     if expected_signature is not None and metadata.get("processing_signature") != expected_signature:
         raise ValueError(
             "existing BL19B2 output processing_signature mismatch for "
             f"{rel}: expected {expected_signature}, got {metadata.get('processing_signature')!r}"
+        )
+    uncertainty = metadata.get("uncertainty")
+    if not isinstance(uncertainty, dict):
+        raise ValueError(
+            f"existing BL19B2 output uncertainty metadata is missing or invalid for {rel}"
         )
     if metadata.get("formula_version") != FORMULA_VERSION:
         raise ValueError(
@@ -3192,6 +4069,7 @@ def _frame_qc_row_from_metadata(
         "thickness_cm": thickness.get("thickness_cm", ""),
         "norm_sample": normalization.get("norm_sample", ""),
         "transmission_abs": normalization.get("transmission_abs", ""),
+        "uncertainty_status": uncertainty.get("status", ""),
         **qc,
         "warnings": warning_text,
     }
@@ -3220,8 +4098,13 @@ def _frame_metadata(
     warnings: list[str],
     image: np.ndarray,
     uncertainty_budget: AbsoluteUncertaintyBudget,
+    control_inputs: RunControlInputs | None = None,
 ) -> dict[str, Any]:
+    if control_inputs is None:
+        control_inputs = _load_run_control_inputs(config)
+    control_provenance = _control_inputs_provenance_payload(control_inputs)
     metadata = {
+        'sample_selection': control_provenance['include_manifest'],
         "schema": SCHEMA_VERSION,
         "formula_version": FORMULA_VERSION,
         "processing_signature": processing_signature,
@@ -3277,7 +4160,12 @@ def _frame_metadata(
             "standard_thickness_cm": calibration.standard_thickness_cm,
             "standard_thickness_source": calibration.standard_thickness_source,
         },
-        "uncertainty": _frame_uncertainty_metadata(config, calibration, uncertainty_budget),
+        "uncertainty": _frame_uncertainty_metadata(
+            config,
+            calibration,
+            uncertainty_budget,
+            detector_mask=mask_info.mask,
+        ),
         "background": {
             "background_file": str(reference_paths.background),
             "alpha": config.alpha,
@@ -3348,6 +4236,7 @@ def _frame_metadata(
         "qc": qc,
         "warnings": warnings,
     }
+    metadata['thickness']['derivation'] = control_provenance['thickness_derivation']
     metadata.update(
         build_provenance_metadata(
             provenance_paths=provenance_paths,
@@ -3416,6 +4305,7 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
         config = replace(config, monitor_mode=normalized_monitor_mode)
     input_root = Path(config.input_root)
     out_root = config.resolved_output_root()
+    control_inputs = _load_run_control_inputs(config)
     reference_paths = find_reference_paths(
         input_root,
         mask_path=config.mask_path,
@@ -3425,7 +4315,9 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
         standard_path=config.standard_path,
         direct_path=config.direct_path,
     )
-    inventory_rows, sample_paths = scan_inputs(config)
+    inventory_rows, sample_paths = scan_inputs(
+        config, include_manifest=control_inputs.include_manifest
+    )
 
     reference_sources: dict[str, DetectorSourceSnapshot] | None = None
     if not config.dry_run:
@@ -3438,6 +4330,7 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
         }
 
     _ensure_output_dirs(out_root)
+    config, control_inputs = _copy_run_control_inputs(config, control_inputs)
     safe_poni = _copy_poni_to_safe_path(config)
     _write_readme(out_root, config)
     software_versions = collect_software_versions()
@@ -3459,10 +4352,16 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
     sample_total = len(sample_paths)
     rejected_scan = [row for row in inventory_rows if row.get("kind") == "sample" and row["status"] != "ok"]
     if config.dry_run:
-        _write_processing_config(config, safe_poni)
+        _write_processing_config(
+            config, safe_poni, control_inputs=control_inputs
+        )
         provenance_paths.run_command.parent.mkdir(parents=True, exist_ok=True)
         provenance_paths.run_command.write_text(
-            build_rerun_command(config, poni_path=safe_poni),
+            build_rerun_command(
+                config,
+                poni_path=safe_poni,
+                control_inputs=control_inputs,
+            ),
             encoding="utf-8",
         )
         _write_json(provenance_paths.processing_environment, software_versions)
@@ -3511,6 +4410,7 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
         reference_identities={
             name: snapshot.identity for name, snapshot in reference_sources.items()
         },
+        control_inputs=control_inputs,
     )
     _write_processing_config(
         config,
@@ -3518,6 +4418,7 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
         mask_info=mask_info,
         processing_signature=processing_signature,
         signature_payload=signature_payload,
+        control_inputs=control_inputs,
     )
     standard_rows = [
         {
@@ -3732,9 +4633,10 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
                 calibration_background_monitor_relative_standard_uncertainty=(
                     config.calibration_background_monitor_relative_standard_uncertainty
                 ),
+                detector_mask=mask_info.mask,
             )
             image_out = _coerce_output_dtype(image_abs, config.dtype, mask=mask_info.mask)
-            qc = _qc_stats(image_out)
+            qc = _qc_stats(image_out, detector_mask=mask_info.mask)
             warnings = [*calibration.warnings, *instrument_warnings]
             if qc["finite_fraction"] < 0.99:
                 warnings.append(f"finite_fraction below 0.99: {qc['finite_fraction']:.6g}")
@@ -3763,6 +4665,7 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
                 warnings=warnings,
                 image=image_out,
                 uncertainty_budget=uncertainty_budget,
+                control_inputs=control_inputs,
             )
             write_hdf5_image(paths.h5, image_out, metadata, uncertainty_budget)
             write_edf_image(paths.edf, image_out, metadata)
@@ -3771,7 +4674,11 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
             _write_json(paths.metadata, metadata)
             preview_written = False
             if config.write_preview:
-                preview_written = write_preview_png(paths.preview, image_out)
+                preview_written = write_preview_png(
+                    paths.preview,
+                    image_out,
+                    detector_mask=mask_info.mask,
+                )
 
             row = {
                 "relative_path": str(rel),
@@ -3862,6 +4769,7 @@ def run_bl19b2_abs2d(config: BL19B2Abs2DConfig) -> dict[str, Any]:
         software_versions=software_versions,
         code_state=code_state,
         run_status=run_status,
+        control_inputs=control_inputs,
     )
     return {
         "status": run_status,

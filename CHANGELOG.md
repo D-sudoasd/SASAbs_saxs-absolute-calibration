@@ -2,6 +2,87 @@
 
 ## [Unreleased]
 
+### Added
+- Added a fingerprinted NIST 30 keV material-attenuation core with explicit wt%
+  composition, ideal-mixture density, partial-uncertainty/porosity warnings,
+  nominal Ti-24Nb-4Zr-8Sn, Ti-6Al-4V, and Zr-2.5Nb regression values, and JSON
+  provenance/fixed-thickness derivation helpers.
+- Added fail-closed BL19B2 `--include-manifest` and
+  `--thickness-derivation-json` controls. Their content hashes enter processing
+  signatures, rerun commands, run provenance, and frame metadata.
+- Added the strict calibrated-2D-to-1D integration workflow with CSR
+  integration, mask/solid-angle policy checks, 5500-point q output, frame CSV,
+  and spectrum-matrix exports without repeating detector-level corrections.
+- Added machine-readable 1D `intensity_state` and correction-ledger metadata,
+  with distinct `raw_counts`, reduced `relative`, `absolute_cm^-1`, and
+  `ambiguous` states.
+  Raw counts, absolute data, and ambiguous profiles now fail closed before K/Kd
+  scaling. `do_not_repeat` remains a duplicate-operation guard and can no longer
+  prove that a required physical correction was applied.
+- Added screen-aware initial Workbench geometry and an in-memory Dry Check
+  approval bound to a canonical configuration fingerprint.
+
+### Changed
+- Workbench formal Tab 2 is now fixed-thickness only. Per-frame Beer-Lambert
+  and both Tab 2/Tab 3 existence-only resume controls are UI-disabled, BLOCKED
+  by Dry Check if forced, and rejected again at Run. K and μ are read-only in
+  Tab 2; K remains read-only in Tab 3.
+- Tab 2 and Tab 3 Run buttons now require a current non-BLOCKED Dry Check;
+  tracked configuration changes invalidate approval, including direct BG/Dark
+  library mutations. Tab 3 raw correction is disabled until its
+  dark-exposure/NIST-blank contract shares the verified 2D core. Tab 3 K/d with
+  non-positive thickness is BLOCKED.
+- The μ dialog now separates the recommended NIST 30 keV snapshot from the
+  arbitrary-energy xraydb/Elam diagnostic model, is screen-aware/scrollable,
+  infers nominal identity from edited composition, invalidates stale μ/export,
+  disables porosity for Elam, records xraydb version, and binds/checks available
+  PONI energy for NIST provenance. PONI path/content/energy are revalidated at
+  export so a stale cached payload cannot be published. Formal fixed-thickness
+  metadata explicitly records that diagnostic attenuation was not used. JSON
+  publication remains atomic.
+- Absolute buffer subtraction now requires `absolute_cm^-1`, `1/cm`, K and
+  thickness entries in `corrections_applied`, no prior buffer correction, an
+  explicit full `CalibrationContext` fingerprint, and a matching numeric K.
+  Operator-payload compatibility alone is not accepted as absolute-scale proof.
+  Dry Check validates q coverage; reports record validated buffer state, unit,
+  ledger, context, K, alpha, optional alpha uncertainty, path, and hash. Tab 3
+  accepts finite non-negative `u(alpha)`; blank maps to `None`, preserving unknown
+  combined uncertainty as NaN. Buffered text profiles now distinguish statistical
+  and combined-standard uncertainty; the legacy error column aliases the combined
+  result. Every buffered profile records the buffer's safe filename/SHA-256, alpha,
+  alpha uncertainty, propagation model, and uncertainty type in portable
+  provenance. Frame reports include `BufferAlphaUncertainty`.
+- Closed FabIO handles in the strict 1D readers and strict 2D resume verifier.
+  Shared-reference, strict-2D main-read, and Workbench readers still require a
+  common close-safe loader.
+
+### Fixed
+- Prevented project-owned absolute 1D profiles from silently receiving K or
+  thickness a second time.
+- Preserved explicitly named all-NaN combined-standard uncertainty columns when
+  reading text profiles, instead of silently selecting a finite statistical-only
+  column. When both statistical and combined-standard columns are present without
+  a compatibility alias, the combined-standard column now wins regardless of
+  source-column order.
+- Made BL19B2 uncertainty propagation mask-aware so detector-gap sentinel or
+  non-finite values cannot invalidate otherwise usable frames or contaminate
+  uncertainty completeness, frame QC, or preview scaling; the mask policy is
+  now provenance-bound.
+
+### Known limitations
+- Formal multi-folder/per-sample fixed-thickness campaign ownership remains in
+  the strict CLI/batch path; Workbench and strict-runner kernels are not unified.
+- K-only requires an inherited thickness ledger marker but not yet its numeric
+  value/source.
+- Workbench has no atomic campaign publication or content-signature resume;
+  unsafe existence-only resume remains disabled.
+- Transactional calibrated-2D publication is scoped to the reusable
+  `saxsabs.io.calibrated2d` package; the strict BL19B2 runner still lacks atomic
+  whole-campaign publication.
+- Repository hygiene remains open: roughly 79 MiB under `audit_outputs/` and
+  campaign-specific tests retain private `H:\...` path coupling and are not
+  portable default fixtures.
+
 ## [2.0.0] - 2026-07-13
 
 ### Added
@@ -77,7 +158,10 @@
 
 ### Added
 - **Multi-standard calibration registry**: pluggable `STANDARD_REGISTRY` ships with NIST SRM 3600 glassy carbon and liquid water (temperature-dependent dΣ/dΩ model). Users can register custom reference datasets.
-- **Universal μ calculator**: computes linear attenuation coefficients from arbitrary chemical compositions and photon energies using the XCOM database via xraydb. Includes preset alloy/compound library and interactive GUI dialog.
+- **Universal μ calculator**: computes diagnostic linear attenuation
+  coefficients from arbitrary chemical compositions and photon energies using
+  xraydb's Elam database. Includes a preset alloy/compound library and
+  interactive GUI dialog.
 - **Buffer / solvent subtraction**: α-scaling subtraction with full error propagation for BioSAXS workflows. Available in both GUI (Tab 3) and core API.
 - **canSAS 1D XML output**: standards-compliant XML export following the canSAS 1D/1.1 schema.
 - **NXcanSAS HDF5 output**: NeXus-compliant HDF5 export following the NXcanSAS application definition.

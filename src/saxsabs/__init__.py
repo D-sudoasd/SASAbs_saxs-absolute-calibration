@@ -2,7 +2,30 @@
 
 from .core.normalization import compute_norm_factor, monitor_norm_formula
 from .core.calibration import KFactorEstimationResult, estimate_k_factor_robust
-from .core.mu_calculator import MuResult, calculate_mu, mu_rho_single, parse_composition_string
+from .core.mu_calculator import (
+    XRAYDB_VERSION,
+    MuResult,
+    calculate_mu,
+    mu_rho_single,
+    parse_composition_string,
+)
+from .core.material_attenuation import (
+    MaterialAttenuationResult,
+    NIST_30_KEV_TABLE,
+    NOMINAL_MATERIALS,
+    calculate_material_attenuation,
+    calculate_nominal_material_attenuation,
+    derive_fixed_thickness,
+    identify_nominal_material,
+    parse_weight_composition_string,
+)
+from .core.intensity_state import (
+    IntensityState,
+    IntensityStateAssessment,
+    assess_intensity_state,
+    require_absolute_input_for_buffer_subtraction,
+    require_relative_input_for_absolute_scaling,
+)
 from .core.buffer_subtraction import BufferSubtractionResult, subtract_buffer
 from .core.preflight import evaluate_preflight_gate, PreflightGateSummary
 from .core.execution_policy import (
@@ -73,9 +96,24 @@ __all__ = [
     "water_dsdw",
     # mu calculator
     "MuResult",
+    "XRAYDB_VERSION",
     "calculate_mu",
     "mu_rho_single",
     "parse_composition_string",
+    "MaterialAttenuationResult",
+    "NIST_30_KEV_TABLE",
+    "NOMINAL_MATERIALS",
+    "calculate_material_attenuation",
+    "calculate_nominal_material_attenuation",
+    "derive_fixed_thickness",
+    "identify_nominal_material",
+    "parse_weight_composition_string",
+    # correction-state safety
+    "IntensityState",
+    "IntensityStateAssessment",
+    "assess_intensity_state",
+    "require_absolute_input_for_buffer_subtraction",
+    "require_relative_input_for_absolute_scaling",
     # buffer subtraction
     "BufferSubtractionResult",
     "subtract_buffer",

@@ -68,6 +68,26 @@ class TestCanSAS1DXML:
             raise AssertionError("Expected ValueError for mismatched q/i shapes")
 
 
+    @pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf])
+    def test_write_rejects_nonfinite_q(self, tmp_path, bad_value):
+        with pytest.raises(ValueError, match="q must contain only finite values"):
+            write_cansas1d_xml(
+                tmp_path / "bad-q.xml",
+                np.array([0.1, bad_value]),
+                np.array([10.0, 9.0]),
+            )
+
+    @pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf])
+    def test_write_rejects_nonfinite_intensity(self, tmp_path, bad_value):
+        with pytest.raises(ValueError, match="intensity must contain only finite values"):
+            write_cansas1d_xml(
+                tmp_path / "bad-i.xml",
+                np.array([0.1, 0.2]),
+                np.array([10.0, bad_value]),
+            )
+
+
+
 # ---------------------------------------------------------------------------
 # NXcanSAS HDF5 round-trip (skip if h5py unavailable)
 # ---------------------------------------------------------------------------
@@ -100,6 +120,25 @@ class TestNXcanSASHDF5:
         write_nxcansas_h5(h5_path, q, i_abs, err)
         result = read_external_1d_profile(str(h5_path))
         np.testing.assert_allclose(result["x"], q, rtol=1e-10)
+
+    @pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf])
+    def test_write_rejects_nonfinite_q(self, tmp_path, bad_value):
+        with pytest.raises(ValueError, match="q must contain only finite values"):
+            write_nxcansas_h5(
+                tmp_path / "bad-q.h5",
+                np.array([0.1, bad_value]),
+                np.array([10.0, 9.0]),
+            )
+
+    @pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf])
+    def test_write_rejects_nonfinite_intensity(self, tmp_path, bad_value):
+        with pytest.raises(ValueError, match="intensity must contain only finite values"):
+            write_nxcansas_h5(
+                tmp_path / "bad-i.h5",
+                np.array([0.1, 0.2]),
+                np.array([10.0, bad_value]),
+            )
+
 
     def test_no_error_dataset(self, tmp_path):
         q, i_abs, _ = self._make_data()

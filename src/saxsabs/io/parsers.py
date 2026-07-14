@@ -35,6 +35,8 @@ COMMA_THOUSANDS_PATTERN = re.compile(r"(?<!\d)[-+]?\d{1,3}(?:,\d{3})+(?:[eE][-+]
 _OPERATOR_PROVENANCE_ALIASES = {
     "calibrationcontextfingerprint": "calibration_context_fingerprint",
     "contextfingerprint": "calibration_context_fingerprint",
+    "kfactor": "k_factor",
+    "calibrationk": "k_factor",
     "formulaversion": "formula_version",
     "monitormode": "monitor_mode",
     "correctsolidangle": "correct_solid_angle",
@@ -43,6 +45,16 @@ _OPERATOR_PROVENANCE_ALIASES = {
     "geometrysha256": "poni_sha256",
     "masksha256": "mask_sha256",
     "flatsha256": "flat_sha256",
+    "intensitystate": "intensity_state",
+    "correctionsapplied": "corrections_applied",
+    "donotrepeat": "do_not_repeat",
+    "intensityunit": "intensity_unit",
+    "buffersourcename": "buffer_source_name",
+    "buffersourcesha256": "buffer_source_sha256",
+    "bufferalpha": "buffer_alpha",
+    "bufferalphauncertainty": "buffer_alpha_uncertainty",
+    "uncertaintymodel": "uncertainty_model",
+    "uncertaintytype": "uncertainty_type",
 }
 
 
@@ -74,6 +86,19 @@ def _read_text_operator_provenance(path: str | Path) -> dict[str, str]:
 
 def _clean_column_name(name: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(name).strip().lower())
+
+
+def _error_column_preference(name: Any) -> int:
+    """Rank explicit uncertainty semantics before source-column order."""
+
+    normalized = _clean_column_name(name)
+    if normalized in {"error", "errorcm1", "error1cm", "err", "errcm1", "idev"}:
+        return 0
+    if "combined" in normalized:
+        return 1
+    if "statistical" in normalized:
+        return 3
+    return 2
 
 
 def _match_column_score(
@@ -396,8 +421,12 @@ def read_external_1d_profile(path: str | Path) -> dict[str, Any]:
         if i_col is None:
             continue
 
+        # Search every source column for an explicit uncertainty label, not
+        # only columns with three finite values.  An all-NaN combined-standard
+        # column is meaningful: it says the uncertainty budget is unknown and
+        # must not be silently replaced by a finite statistical-only column.
         err_col, err_named = _pick_named_column(
-            cols,
+            sorted(df.columns, key=_error_column_preference),
             {x_col, i_col},
             exact={"err", "error", "errors", "sigma", "std", "stdev", "unc", "uncertainty", "idev"},
             prefixes=("err", "error", "sigma", "std", "unc", "idev"),
@@ -469,6 +498,7 @@ def read_cansas1d_xml(path: str | Path) -> dict[str, Any]:
     q_vals: list[float] = []
     i_vals: list[float] = []
     e_vals: list[float] = []
+    intensity_unit = ""
 
     for idata in root.iter(f"{ns}Idata"):
         q_el = idata.find(f"{ns}Q")
@@ -478,6 +508,8 @@ def read_cansas1d_xml(path: str | Path) -> dict[str, Any]:
         try:
             q_vals.append(float(q_el.text))
             i_vals.append(float(i_el.text))
+            if not intensity_unit:
+                intensity_unit = str(i_el.attrib.get("unit", "") or "").strip()
         except (TypeError, ValueError):
             continue
         e_el = idata.find(f"{ns}Idev")
@@ -510,6 +542,7 @@ def read_cansas1d_xml(path: str | Path) -> dict[str, Any]:
         "x_col": "Q",
         "i_col": "I",
         "err_col": "Idev",
+        "intensity_unit": intensity_unit,
         "operator_provenance": operator_provenance,
     }
 
@@ -539,9 +572,10 @@ def read_nxcansas_h5(path: str | Path) -> dict[str, Any]:
         q_ds = None
         i_ds = None
         e_ds = None
+        intensity_unit = ""
 
         def _find_sasdata(group: Any) -> bool:
-            nonlocal q_ds, i_ds, e_ds
+            nonlocal q_ds, i_ds, e_ds, intensity_unit
             cls = group.attrs.get("canSAS_class", "")
             if isinstance(cls, bytes):
                 cls = cls.decode()
@@ -549,6 +583,10 @@ def read_nxcansas_h5(path: str | Path) -> dict[str, Any]:
                 if "Q" in group and "I" in group:
                     q_ds = group["Q"][()]
                     i_ds = group["I"][()]
+                    raw_unit = group["I"].attrs.get("units", "")
+                    if isinstance(raw_unit, bytes):
+                        raw_unit = raw_unit.decode("utf-8", errors="replace")
+                    intensity_unit = str(raw_unit or "").strip()
                     if "Idev" in group:
                         e_ds = group["Idev"][()]
                     return True
@@ -614,6 +652,7 @@ def read_nxcansas_h5(path: str | Path) -> dict[str, Any]:
         "x_col": "Q",
         "i_col": "I",
         "err_col": "Idev" if e_ds is not None else "",
+        "intensity_unit": intensity_unit,
         "operator_provenance": operator_provenance,
     }
 

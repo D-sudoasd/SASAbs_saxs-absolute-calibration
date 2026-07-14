@@ -3,6 +3,7 @@ import math
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -60,6 +61,36 @@ def _write_required_reference_files(ref: Path) -> None:
     for name in ("dark001.tif", "BG001.tif", "GC001.tif"):
         (ref / name).write_bytes(b"placeholder")
 
+
+def test_read_detector_image_closes_fabio_handle_and_returns_owned_array(monkeypatch):
+    opened = SimpleNamespace(data=np.array([[1, 2]], dtype=np.int16), close=Mock())
+    fake_fabio = SimpleNamespace(open=lambda path: opened)
+    monkeypatch.setitem(sys.modules, "fabio", fake_fabio)
+
+    image = bl19b2.read_detector_image("frame.tif")
+    opened.data[0, 0] = 99
+
+    np.testing.assert_array_equal(image, np.array([[1.0, 2.0]]))
+    assert image.dtype == np.float64
+    opened.close.assert_called_once_with()
+
+
+def test_read_detector_image_closes_fabio_handle_after_read_failure(monkeypatch):
+    opened = SimpleNamespace(close=Mock())
+
+    class BrokenData:
+        @property
+        def data(self):
+            raise RuntimeError("broken detector data")
+
+    broken = BrokenData()
+    broken.close = opened.close
+    fake_fabio = SimpleNamespace(open=lambda path: broken)
+    monkeypatch.setitem(sys.modules, "fabio", fake_fabio)
+
+    with pytest.raises(RuntimeError, match="broken detector data"):
+        bl19b2.read_detector_image("frame.tif")
+    opened.close.assert_called_once_with()
 
 def _complete_k_calibration_contract(**overrides):
     payload = {
@@ -604,6 +635,7 @@ def test_frame_qc_row_from_metadata_restores_existing_resume_summary(
     source_identity = {"sha256": "source-sha", "size_bytes": 6, "header": {}}
     frame_signature = bl19b2._frame_signature("sig-1", source_identity)
     monkeypatch.setattr(bl19b2, "_source_identity", lambda path: source_identity)
+    monkeypatch.setattr(bl19b2, "_validate_metadata_processing_signature", lambda metadata: None)
     monkeypatch.setattr(bl19b2, "_validate_existing_outputs", lambda paths, metadata: None)
     paths.metadata.write_text(
         """
@@ -623,6 +655,7 @@ def test_frame_qc_row_from_metadata_restores_existing_resume_summary(
   "normalization": {"norm_sample": 10.0, "transmission_abs": 0.5},
   "thickness": {"thickness_cm": 0.034},
   "absolute_calibration": {"k_factor": 11.4},
+  "uncertainty": {"status": "partial"},
   "qc": {"finite_fraction": 1.0, "negative_fraction": 0.01},
   "warnings": ["BG ABS=1.01619 recorded for QC only; background transmission is not applied"]
 }
@@ -648,6 +681,7 @@ def test_frame_qc_row_from_metadata_restores_existing_resume_summary(
     assert row["relative_path"] == str(Path("3#_sample") / "frame_001.tif")
     assert row["finite_fraction"] == 1.0
     assert row["k_factor"] == 11.4
+    assert row["uncertainty_status"] == "partial"
     assert "BG ABS" in row["warnings"]
 
 
@@ -677,6 +711,42 @@ def test_subtract_dark_matches_old_formula_when_exposure_is_same():
     )
 
     np.testing.assert_allclose(out, image - dark)
+
+
+def test_fixed_thickness_keeps_each_frames_transmission_normalization():
+    raw = np.array([[12.0]], dtype=np.float64)
+    dark = np.array([[2.0]], dtype=np.float64)
+    exposure_s = 2.0
+    monitor = 100.0
+    fixed_thickness_cm = 0.1
+    k_factor = 2.0
+
+    normalized_a, norm_a = bl19b2.normalize_dark_corrected_image(
+        raw,
+        dark,
+        image_exposure_s=exposure_s,
+        dark_exposure_s=1.0,
+        monitor=monitor,
+        transmission=0.5,
+        monitor_mode="rate",
+    )
+    normalized_b, norm_b = bl19b2.normalize_dark_corrected_image(
+        raw,
+        dark,
+        image_exposure_s=exposure_s,
+        dark_exposure_s=1.0,
+        monitor=monitor,
+        transmission=0.25,
+        monitor_mode="rate",
+    )
+    intensity_a = normalized_a * (k_factor / fixed_thickness_cm)
+    intensity_b = normalized_b * (k_factor / fixed_thickness_cm)
+
+    assert norm_a == pytest.approx(exposure_s * monitor * 0.5)
+    assert norm_b == pytest.approx(exposure_s * monitor * 0.25)
+    assert fixed_thickness_cm == pytest.approx(0.1)
+    np.testing.assert_allclose(normalized_b, 2.0 * normalized_a)
+    np.testing.assert_allclose(intensity_b, 2.0 * intensity_a)
 
 
 def test_bl19b2_uncertainty_budget_matches_independent_fixed_thickness_calculation():
@@ -760,6 +830,8 @@ def test_bl19b2_uncertainty_budget_matches_independent_fixed_thickness_calculati
     )
     summary = bl19b2._frame_uncertainty_metadata(config, calibration, budget)
     assert summary["status"] == "partial"
+    assert summary["mask_policy"] == bl19b2.UNCERTAINTY_MASK_POLICY
+    assert summary["masked_pixel_count"] == 0
     assert set(summary["unknown_components"]) == {
         "calibration_background_raw_counts_covariance",
         "calibration_dark_raw_counts_covariance",
@@ -769,6 +841,251 @@ def test_bl19b2_uncertainty_budget_matches_independent_fixed_thickness_calculati
     assert summary["datasets"]["combined_standard"].endswith(
         "/uncertainty/combined_standard"
     )
+
+
+
+def test_bl19b2_uncertainty_accepts_negative_detector_sentinels_only_when_masked():
+    common = {
+        "sample_exposure_s": 1.0,
+        "background_exposure_s": 1.0,
+        "dark_exposure_s": 1.0,
+        "norm_sample": 2.0,
+        "norm_background": 2.0,
+        "alpha": 1.0,
+        "k_factor": 2.0,
+        "thickness_cm": 1.0,
+        "transmission": 0.5,
+        "mu_cm_inv": None,
+        "k_statistical_standard_uncertainty": 0.0,
+        "k_standard_uncertainty": 0.0,
+        "standard_thickness_relative_standard_uncertainty": 0.0,
+        "transmission_abs_uncertainty": 0.01,
+        "monitor_relative_standard_uncertainty": 0.0,
+        "thickness_relative_standard_uncertainty": 0.0,
+        "mu_relative_standard_uncertainty": None,
+        "alpha_standard_uncertainty": 0.0,
+        "coverage_factor": 2.0,
+        "k_independent_standard_uncertainty": 0.0,
+        "k_alpha_relative_sensitivity": 0.0,
+        "k_calibration_background_monitor_relative_sensitivity": 0.0,
+        "calibration_background_monitor_relative_standard_uncertainty": 0.0,
+    }
+    mask = np.array([[0, 1]], dtype=np.uint8)
+
+    sentinel_budget = bl19b2.compute_bl19b2_uncertainty_budget(
+        np.array([[1.0, 0.0]]),
+        sample_raw=np.array([[4.0, -2.0]]),
+        background_raw=np.array([[1.0, -2.0]]),
+        dark_raw=np.array([[0.0, -2.0]]),
+        detector_mask=mask,
+        **common,
+    )
+    zeroed_budget = bl19b2.compute_bl19b2_uncertainty_budget(
+        np.array([[1.0, 0.0]]),
+        sample_raw=np.array([[4.0, 0.0]]),
+        background_raw=np.array([[1.0, 0.0]]),
+        dark_raw=np.array([[0.0, 0.0]]),
+        detector_mask=mask,
+        **common,
+    )
+
+    assert sentinel_budget.status == "complete"
+    assert sentinel_budget.unknown_components == ()
+    for attribute in bl19b2._UNCERTAINTY_DATASETS.values():
+        sentinel_values = getattr(sentinel_budget, attribute)
+        zeroed_values = getattr(zeroed_budget, attribute)
+        np.testing.assert_allclose(sentinel_values, zeroed_values)
+        assert sentinel_values[0, 1] == 0.0
+
+    with pytest.raises(ValueError, match="unmasked pixels"):
+        bl19b2.compute_bl19b2_uncertainty_budget(
+            np.array([[1.0, 0.0]]),
+            sample_raw=np.array([[-2.0, 4.0]]),
+            background_raw=np.array([[1.0, 1.0]]),
+            dark_raw=np.array([[0.0, 0.0]]),
+            detector_mask=mask,
+            **common,
+        )
+
+
+def test_bl19b2_uncertainty_neutralizes_masked_nonfinite_values():
+    common = {
+        "sample_exposure_s": 1.0,
+        "background_exposure_s": 1.0,
+        "dark_exposure_s": 1.0,
+        "norm_sample": 2.0,
+        "norm_background": 2.0,
+        "alpha": 1.0,
+        "k_factor": 2.0,
+        "thickness_cm": 1.0,
+        "transmission": 0.5,
+        "mu_cm_inv": None,
+        "k_statistical_standard_uncertainty": 0.0,
+        "k_standard_uncertainty": 0.0,
+        "standard_thickness_relative_standard_uncertainty": 0.0,
+        "transmission_abs_uncertainty": 0.01,
+        "monitor_relative_standard_uncertainty": 0.0,
+        "thickness_relative_standard_uncertainty": 0.0,
+        "mu_relative_standard_uncertainty": None,
+        "alpha_standard_uncertainty": 0.0,
+        "coverage_factor": 2.0,
+        "k_independent_standard_uncertainty": 0.0,
+        "k_alpha_relative_sensitivity": 0.0,
+        "k_calibration_background_monitor_relative_sensitivity": 0.0,
+        "calibration_background_monitor_relative_standard_uncertainty": 0.0,
+    }
+    mask = np.array([[False, True]])
+    budget = bl19b2.compute_bl19b2_uncertainty_budget(
+        np.array([[1.0, np.nan]]),
+        sample_raw=np.array([[4.0, np.nan]]),
+        background_raw=np.array([[1.0, np.inf]]),
+        dark_raw=np.array([[0.0, -2.0]]),
+        detector_mask=mask,
+        **common,
+    )
+
+    assert budget.status == "complete"
+    assert budget.unknown_components == ()
+    for attribute in bl19b2._UNCERTAINTY_DATASETS.values():
+        assert getattr(budget, attribute)[0, 1] == 0.0
+
+    with pytest.raises(ValueError, match="intensity_abs.*unmasked"):
+        bl19b2.compute_bl19b2_uncertainty_budget(
+            np.array([[np.nan, 1.0]]),
+            sample_raw=np.array([[4.0, 4.0]]),
+            background_raw=np.array([[1.0, 1.0]]),
+            dark_raw=np.array([[0.0, 0.0]]),
+            detector_mask=mask,
+            **common,
+        )
+
+
+def test_bl19b2_uncertainty_rejects_non_numeric_detector_mask():
+    with pytest.raises(ValueError, match="boolean or finite real numeric"):
+        bl19b2.compute_bl19b2_uncertainty_budget(
+            np.array([[1.0]]),
+            sample_raw=np.array([[4.0]]),
+            background_raw=np.array([[1.0]]),
+            dark_raw=np.array([[0.0]]),
+            sample_exposure_s=1.0,
+            background_exposure_s=1.0,
+            dark_exposure_s=1.0,
+            norm_sample=2.0,
+            norm_background=2.0,
+            alpha=1.0,
+            k_factor=2.0,
+            thickness_cm=1.0,
+            transmission=0.5,
+            mu_cm_inv=None,
+            k_statistical_standard_uncertainty=0.0,
+            k_standard_uncertainty=0.0,
+            standard_thickness_relative_standard_uncertainty=0.0,
+            transmission_abs_uncertainty=0.0,
+            monitor_relative_standard_uncertainty=0.0,
+            thickness_relative_standard_uncertainty=0.0,
+            mu_relative_standard_uncertainty=None,
+            alpha_standard_uncertainty=0.0,
+            coverage_factor=2.0,
+            detector_mask=np.array([[object()]], dtype=object),
+        )
+
+
+def test_uncertainty_summary_excludes_masked_placeholder_pixels():
+    summary = bl19b2._uncertainty_array_summary(
+        np.array([[2.0, 0.0]]),
+        detector_mask=np.array([[False, True]]),
+    )
+
+    assert summary == {"status": "known", "min": 2.0, "max": 2.0, "mean": 2.0}
+
+
+def test_qc_stats_excludes_masked_sentinels_and_nonfinite_values():
+    image = np.array([[1.0, -2.0], [3.0, np.nan]])
+    mask = np.array([[False, True], [False, True]])
+
+    qc = bl19b2._qc_stats(image, detector_mask=mask)
+
+    assert qc["finite_fraction"] == 1.0
+    assert qc["negative_fraction"] == 0.0
+    assert qc["min"] == 1.0
+    assert qc["max"] == 3.0
+    assert qc["mean"] == 2.0
+
+
+def test_qc_stats_finite_fraction_uses_only_unmasked_pixels():
+    image = np.array([[1.0, np.nan], [np.inf, -2.0]])
+    mask = np.array([[False, False], [True, True]])
+
+    qc = bl19b2._qc_stats(image, detector_mask=mask)
+
+    assert qc["finite_fraction"] == 0.5
+    assert qc["min"] == 1.0
+    assert qc["max"] == 1.0
+
+
+def test_preview_percentiles_exclude_masked_pixels(tmp_path: Path, monkeypatch):
+    pytest.importorskip("matplotlib")
+    image = np.array([[1.0, -1.0e9], [3.0, np.nan]])
+    mask = np.array([[False, True], [False, True]])
+    observed: dict[str, np.ndarray] = {}
+    original_nanpercentile = np.nanpercentile
+
+    def capture_nanpercentile(values, percentiles):
+        observed["values"] = np.asarray(values).copy()
+        return original_nanpercentile(values, percentiles)
+
+    monkeypatch.setattr(bl19b2.np, "nanpercentile", capture_nanpercentile)
+
+    assert bl19b2.write_preview_png(
+        tmp_path / "preview.png",
+        image,
+        detector_mask=mask,
+    )
+    np.testing.assert_array_equal(np.sort(observed["values"]), np.array([1.0, 3.0]))
+
+
+def test_qc_and_preview_reject_detector_mask_shape_mismatch(tmp_path: Path):
+    image = np.ones((2, 2), dtype=np.float64)
+    bad_mask = np.zeros((1, 2), dtype=np.uint8)
+
+    with pytest.raises(ValueError, match="detector_mask shape mismatch"):
+        bl19b2._qc_stats(image, detector_mask=bad_mask)
+    with pytest.raises(ValueError, match="detector_mask shape mismatch"):
+        bl19b2.write_preview_png(
+            tmp_path / "preview.png",
+            image,
+            detector_mask=bad_mask,
+        )
+
+
+def test_bl19b2_uncertainty_rejects_detector_mask_shape_mismatch():
+    with pytest.raises(ValueError, match="detector_mask shape mismatch"):
+        bl19b2.compute_bl19b2_uncertainty_budget(
+            np.array([[1.0]]),
+            sample_raw=np.array([[4.0]]),
+            background_raw=np.array([[1.0]]),
+            dark_raw=np.array([[0.0]]),
+            sample_exposure_s=1.0,
+            background_exposure_s=1.0,
+            dark_exposure_s=1.0,
+            norm_sample=2.0,
+            norm_background=2.0,
+            alpha=1.0,
+            k_factor=2.0,
+            thickness_cm=1.0,
+            transmission=0.5,
+            mu_cm_inv=None,
+            k_statistical_standard_uncertainty=0.0,
+            k_standard_uncertainty=0.0,
+            standard_thickness_relative_standard_uncertainty=0.0,
+            transmission_abs_uncertainty=0.0,
+            monitor_relative_standard_uncertainty=0.0,
+            thickness_relative_standard_uncertainty=0.0,
+            mu_relative_standard_uncertainty=None,
+            alpha_standard_uncertainty=0.0,
+            coverage_factor=2.0,
+            detector_mask=np.zeros((1, 2), dtype=np.uint8),
+        )
 
 
 @pytest.mark.parametrize(
@@ -1575,6 +1892,7 @@ def test_processing_signature_records_all_absolute_scale_choices(
     assert payload["standard_calibration"]["k_standard_uncertainty"] == 0.4
     assert payload["standard_calibration"]["k_expanded_uncertainty"] == 0.8
     assert payload["standard_calibration"]["coverage_factor"] == 2.0
+    assert payload["uncertainty_mask_policy"] == bl19b2.UNCERTAINTY_MASK_POLICY
 
 
 def test_resume_validates_source_and_hdf5_edf_checksums(
@@ -1582,7 +1900,7 @@ def test_resume_validates_source_and_hdf5_edf_checksums(
     monkeypatch: pytest.MonkeyPatch,
 ):
     pytest.importorskip("h5py")
-    pytest.importorskip("fabio")
+    fabio = pytest.importorskip("fabio")
     root = tmp_path / "dat001"
     source = root / "sample" / "frame.tif"
     source.parent.mkdir(parents=True)
@@ -1591,6 +1909,19 @@ def test_resume_validates_source_and_hdf5_edf_checksums(
     header = BL19B2Header(exposure_s=10.0, monitor=100.0, transmission=0.5)
     source_identity = bl19b2._source_identity(source, header)
     image = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+    signed_include = {"sha256": "a" * 64, "row_count": 1}
+    signed_derivation = {
+        "sha256": "b" * 64,
+        "fixed_thickness_cm": 0.034,
+        "payload": {"material": "test"},
+    }
+    signature_payload = {
+        "run_control_inputs": {
+            "include_manifest": signed_include,
+            "thickness_derivation": signed_derivation,
+        }
+    }
+    processing_signature = bl19b2._processing_signature_digest(signature_payload)
     budget = bl19b2.propagate_absolute_uncertainty(
         image,
         statistical_standard_uncertainty=0.1,
@@ -1606,9 +1937,11 @@ def test_resume_validates_source_and_hdf5_edf_checksums(
     metadata = {
         "schema": SCHEMA_VERSION,
         "formula_version": bl19b2.FORMULA_VERSION,
-        "processing_signature": "global-signature",
+        "processing_signature": processing_signature,
+        "processing_signature_payload": signature_payload,
+        "sample_selection": {**signed_include, "copied_path": "include.csv"},
         "source_identity": source_identity,
-        "frame_signature": bl19b2._frame_signature("global-signature", source_identity),
+        "frame_signature": bl19b2._frame_signature(processing_signature, source_identity),
         "outputs": {
             "hdf5": str(paths.h5),
             "edf": str(paths.edf),
@@ -1621,7 +1954,10 @@ def test_resume_validates_source_and_hdf5_edf_checksums(
             "sha256": bl19b2._array_sha256(image),
         },
         "normalization": {"norm_sample": 500.0, "transmission_abs": 0.5},
-        "thickness": {"thickness_cm": 0.034},
+        "thickness": {
+            "thickness_cm": 0.034,
+            "derivation": {**signed_derivation, "copied_path": "thickness.json"},
+        },
         "absolute_calibration": _complete_k_calibration_contract(),
         "uncertainty": {
             "status": "complete",
@@ -1640,18 +1976,41 @@ def test_resume_validates_source_and_hdf5_edf_checksums(
     bl19b2._write_json(paths.metadata, metadata)
     monkeypatch.setattr(bl19b2, "read_tiff_header", lambda path: header)
 
-    row = _frame_qc_row_from_metadata(
-        source=source,
-        rel=source.relative_to(root),
-        paths=paths,
-        expected_signature="global-signature",
-    )
+    real_fabio_open = fabio.open
+    with monkeypatch.context() as close_context:
+        opened_frame = real_fabio_open(str(paths.edf))
+        close_mock = Mock(wraps=opened_frame.close)
+        close_context.setattr(opened_frame, "close", close_mock)
+        close_context.setattr(fabio, "open", lambda path: opened_frame)
+        row = _frame_qc_row_from_metadata(
+            source=source,
+            rel=source.relative_to(root),
+            paths=paths,
+            expected_signature=processing_signature,
+        )
+        close_mock.assert_called_once_with()
     assert row["status"] == "success_existing"
     assert row["k_standard_uncertainty"] == 0.4
     assert row["k_expanded_uncertainty"] == 0.8
 
     original_hdf5 = paths.h5.read_bytes()
+    original_edf = paths.edf.read_bytes()
     import h5py
+
+    with h5py.File(paths.h5, "r+") as h5:
+        h5["entry"].attrs["include_manifest_sha256"] = "tampered"
+    metadata["outputs"]["hdf5_sha256"] = bl19b2._file_sha256(paths.h5)
+    bl19b2._write_json(paths.metadata, metadata)
+    with pytest.raises(ValueError, match="HDF5 include manifest checksum"):
+        _frame_qc_row_from_metadata(
+            source=source,
+            rel=source.relative_to(root),
+            paths=paths,
+            expected_signature=processing_signature,
+        )
+    paths.h5.write_bytes(original_hdf5)
+    metadata["outputs"]["hdf5_sha256"] = bl19b2._file_sha256(paths.h5)
+    bl19b2._write_json(paths.metadata, metadata)
 
     with h5py.File(paths.h5, "r+") as h5:
         del h5["entry/data/uncertainty/monitor"]
@@ -1662,7 +2021,22 @@ def test_resume_validates_source_and_hdf5_edf_checksums(
             source=source,
             rel=source.relative_to(root),
             paths=paths,
-            expected_signature="global-signature",
+            expected_signature=processing_signature,
+        )
+    paths.h5.write_bytes(original_hdf5)
+    metadata["outputs"]["hdf5_sha256"] = bl19b2._file_sha256(paths.h5)
+    bl19b2._write_json(paths.metadata, metadata)
+
+    with h5py.File(paths.h5, "r+") as h5:
+        h5["entry/data/uncertainty"].attrs["mask_policy"] = "tampered-policy"
+    metadata["outputs"]["hdf5_sha256"] = bl19b2._file_sha256(paths.h5)
+    bl19b2._write_json(paths.metadata, metadata)
+    with pytest.raises(ValueError, match="HDF5 uncertainty mask policy"):
+        _frame_qc_row_from_metadata(
+            source=source,
+            rel=source.relative_to(root),
+            paths=paths,
+            expected_signature=processing_signature,
         )
     paths.h5.write_bytes(original_hdf5)
     metadata["outputs"]["hdf5_sha256"] = bl19b2._file_sha256(paths.h5)
@@ -1675,9 +2049,31 @@ def test_resume_validates_source_and_hdf5_edf_checksums(
             source=source,
             rel=source.relative_to(root),
             paths=paths,
-            expected_signature="global-signature",
+            expected_signature=processing_signature,
         )
     metadata["absolute_calibration"]["k_standard_uncertainty"] = 0.4
+    bl19b2._write_json(paths.metadata, metadata)
+
+    tampered_metadata = json.loads(json.dumps(metadata))
+    tampered_metadata["sample_selection"]["sha256"] = "tampered"
+    bl19b2.write_edf_image(paths.edf, image, tampered_metadata)
+    metadata["outputs"]["edf_sha256"] = bl19b2._file_sha256(paths.edf)
+    bl19b2._write_json(paths.metadata, metadata)
+    with monkeypatch.context() as close_context:
+        opened_frame = real_fabio_open(str(paths.edf))
+        close_mock = Mock(wraps=opened_frame.close)
+        close_context.setattr(opened_frame, "close", close_mock)
+        close_context.setattr(fabio, "open", lambda path: opened_frame)
+        with pytest.raises(ValueError, match="EDF include manifest checksum"):
+            _frame_qc_row_from_metadata(
+                source=source,
+                rel=source.relative_to(root),
+                paths=paths,
+                expected_signature=processing_signature,
+            )
+        close_mock.assert_called_once_with()
+    paths.edf.write_bytes(original_edf)
+    metadata["outputs"]["edf_sha256"] = bl19b2._file_sha256(paths.edf)
     bl19b2._write_json(paths.metadata, metadata)
 
     paths.edf.write_bytes(paths.edf.read_bytes() + b"tampered")
@@ -1686,8 +2082,61 @@ def test_resume_validates_source_and_hdf5_edf_checksums(
             source=source,
             rel=source.relative_to(root),
             paths=paths,
-            expected_signature="global-signature",
+            expected_signature=processing_signature,
         )
+
+
+def _signed_control_metadata() -> dict[str, object]:
+    include = {"sha256": "a" * 64, "row_count": 2}
+    derivation = {
+        "sha256": "b" * 64,
+        "fixed_thickness_cm": 0.1,
+        "payload": {"material": "Ti-6Al-4V"},
+    }
+    signature_payload = {
+        "run_control_inputs": {
+            "include_manifest": include,
+            "thickness_derivation": derivation,
+        },
+        "alpha": 1.0,
+    }
+    return {
+        "processing_signature_payload": signature_payload,
+        "processing_signature": bl19b2._processing_signature_digest(signature_payload),
+        "sample_selection": {**include, "copied_path": "include.csv"},
+        "thickness": {
+            "derivation": {**derivation, "copied_path": "thickness.json"}
+        },
+    }
+
+
+def test_resume_recomputes_processing_signature_payload_digest():
+    metadata = _signed_control_metadata()
+    bl19b2._validate_metadata_processing_signature(metadata)
+    metadata["processing_signature_payload"]["alpha"] = 2.0
+
+    with pytest.raises(ValueError, match="payload digest mismatch"):
+        bl19b2._validate_metadata_processing_signature(metadata)
+
+
+@pytest.mark.parametrize(
+    ("binding", "error_match"),
+    [
+        ("include", "include manifest sha256"),
+        ("derivation", "thickness derivation sha256"),
+    ],
+)
+def test_resume_rejects_control_hash_metadata_signature_mismatch(
+    binding: str, error_match: str
+):
+    metadata = _signed_control_metadata()
+    if binding == "include":
+        metadata["sample_selection"]["sha256"] = "tampered"
+    else:
+        metadata["thickness"]["derivation"]["sha256"] = "tampered"
+
+    with pytest.raises(ValueError, match=error_match):
+        bl19b2._validate_metadata_processing_signature(metadata)
 
 
 def test_build_rerun_command_records_cli_paths_and_parameters(tmp_path: Path):
@@ -2314,3 +2763,284 @@ def test_shared_background_monitor_uses_joint_k_and_subtraction_sensitivity():
     assert budget.monitor[0, 0] == pytest.approx(
         math.hypot(sample_monitor_absolute, background_joint_absolute)
     )
+
+
+def _manifest_test_config(tmp_path: Path, manifest_text: str) -> BL19B2Abs2DConfig:
+    root = tmp_path / 'dat001'
+    _write_required_reference_files(root / 'reference_saxs')
+    manifest = tmp_path / 'include.csv'
+    manifest.write_text(manifest_text, encoding='utf-8')
+    return BL19B2Abs2DConfig(
+        input_root=root,
+        poni_path=tmp_path / 'geometry.poni',
+        include_manifest_path=manifest,
+        sample_thickness_cm=0.1,
+        monitor_mode='rate',
+    )
+
+
+def test_include_manifest_filters_before_classification_and_preserves_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _manifest_test_config(
+        tmp_path,
+        'relative_path\nfolder/frame_002.tif\nfolder/frame_001.tif\n',
+    )
+    root = Path(config.input_root)
+    folder = root / 'folder'
+    folder.mkdir()
+    for name in ('frame_001.tif', 'frame_002.tif', 'not_selected.tif'):
+        (folder / name).write_bytes(b'tiff')
+
+    classified: list[str] = []
+
+    def fake_header(path: Path) -> BL19B2Header:
+        classified.append(Path(path).name)
+        return BL19B2Header(exposure_s=1.0, monitor=2.0, transmission=0.5)
+
+    monkeypatch.setattr(bl19b2, 'read_tiff_header', fake_header)
+    rows, samples = bl19b2.scan_inputs(config)
+
+    assert [path.name for path in samples] == ['frame_002.tif', 'frame_001.tif']
+    assert 'not_selected.tif' not in classified
+    ignored = next(
+        row for row in rows if row['relative_path'].endswith('not_selected.tif')
+    )
+    assert ignored['kind'] == 'sample_not_in_include_manifest'
+    assert ignored['status'] == 'ignored'
+
+
+@pytest.mark.parametrize(
+    ('manifest_text', 'error_match'),
+    [
+        ('wrong\nfolder/frame.tif\n', 'relative_path column'),
+        ('relative_path\n../frame.tif\n', 'safe relative path'),
+        ('relative_path\nC:/frame.tif\n', 'must be relative'),
+        ('relative_path\n\\\\server\\share\\frame.tif\n', 'must be relative'),
+        ('relative_path\n/frame.tif\n', 'must be relative'),
+        (
+            'relative_path\nfolder/frame.tif\nFOLDER/FRAME.TIF\n',
+            'duplicate relative_path',
+        ),
+    ],
+)
+def test_include_manifest_rejects_unsafe_or_duplicate_entries(
+    tmp_path: Path, manifest_text: str, error_match: str
+):
+    config = _manifest_test_config(tmp_path, manifest_text)
+    frame = Path(config.input_root) / 'folder' / 'frame.tif'
+    frame.parent.mkdir()
+    frame.write_bytes(b'tiff')
+
+    with pytest.raises((ValueError, FileNotFoundError), match=error_match):
+        bl19b2._load_include_manifest(config)
+
+
+@pytest.mark.parametrize(
+    ('relative_path', 'entry_kind', 'error_match'),
+    [
+        ('folder/missing.tif', 'missing', 'not found or not a regular file'),
+        ('folder/directory.tif', 'directory', 'not found or not a regular file'),
+        ('folder/frame.dat', 'file', 'not a TIFF'),
+        ('test/frame.tif', 'file', 'not a discovered sample TIFF'),
+        ('reference_saxs/frame.tif', 'file', 'not a discovered sample TIFF'),
+    ],
+)
+def test_include_manifest_rejects_missing_directory_nontiff_or_nonsample(
+    tmp_path: Path,
+    relative_path: str,
+    entry_kind: str,
+    error_match: str,
+):
+    config = _manifest_test_config(
+        tmp_path, f'relative_path\n{relative_path}\n'
+    )
+    candidate = Path(config.input_root) / Path(relative_path)
+    if entry_kind == 'directory':
+        candidate.mkdir(parents=True)
+    elif entry_kind == 'file':
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.write_bytes(b'not necessarily a TIFF')
+
+    with pytest.raises((ValueError, FileNotFoundError), match=error_match):
+        bl19b2._load_include_manifest(config)
+
+
+def test_thickness_derivation_must_match_fixed_config_and_changes_hash(tmp_path: Path):
+    derivation = tmp_path / 'thickness.json'
+    derivation.write_text(
+        json.dumps({'material': 'Ti-6Al-4V', 'fixed_thickness_cm': 0.0123}),
+        encoding='utf-8',
+    )
+    base = {
+        'input_root': tmp_path / 'dat001',
+        'poni_path': tmp_path / 'geometry.poni',
+        'thickness_derivation_path': derivation,
+        'monitor_mode': 'rate',
+    }
+    config = BL19B2Abs2DConfig(sample_thickness_cm=0.0123, **base)
+    first = bl19b2._load_thickness_derivation(config)
+    assert first is not None
+    assert first.payload['material'] == 'Ti-6Al-4V'
+
+    derivation.write_text(
+        json.dumps(
+            {
+                'material': 'Ti-6Al-4V',
+                'fixed_thickness_cm': 0.0123,
+                'mu_cm_inv': 20.9,
+            }
+        ),
+        encoding='utf-8',
+    )
+    second = bl19b2._load_thickness_derivation(config)
+    assert second is not None
+    assert second.sha256 != first.sha256
+
+    mismatch = BL19B2Abs2DConfig(sample_thickness_cm=0.02, **base)
+    with pytest.raises(ValueError, match='does not match sample_thickness_cm'):
+        bl19b2._load_thickness_derivation(mismatch)
+
+
+def _valid_thickness_derivation_payload(
+    folder: str = 'folder', *, fixed_thickness_cm: float = 0.1
+) -> dict[str, object]:
+    mu_cm_inv = 10.0
+    representative = math.exp(-mu_cm_inv * fixed_thickness_cm)
+    return {
+        'schema': 'saxsabs.test.thickness_derivation.v1',
+        'folder': folder,
+        'material': 'synthetic titanium',
+        'method': 'composition model and robust median transmission',
+        'parameter_source': 'composition_model_derived',
+        'uncertainty_status': 'partial',
+        'composition_wt_percent': {'Ti': 100.0},
+        'energy_kev': 30.000086,
+        'nist_table_energy_kev': 30.0,
+        'nist_element_mass_attenuation_cm2_g_at_30kev': {'Ti': 2.0},
+        'nist_element_density_g_cm3': {'Ti': 5.0},
+        'mass_attenuation_cm2_g': 2.0,
+        'mixture_mass_attenuation_cm2_g': 2.0,
+        'ideal_mixture_density_g_cm3': 5.0,
+        'mu_cm_inv': mu_cm_inv,
+        'mass_attenuation_model': 'NIST weight-fraction mixture rule',
+        'mass_attenuation_model_formula': 'sum weight fraction times element value',
+        'density_model': 'ideal specific-volume additivity',
+        'density_model_formula': 'inverse sum weight fraction over element density',
+        'mu_model': 'mass attenuation times density',
+        'mu_model_formula': 'mu equals mass attenuation times density',
+        'representative_transmission': representative,
+        'transmission_statistics': {
+            'count': 10,
+            'median': representative,
+            'mad': 0.0,
+            'p5': representative,
+            'p95': representative,
+            'relative_p5_p95_span': 0.0,
+        },
+        'fixed_thickness_cm': fixed_thickness_cm,
+        'warnings': [],
+    }
+
+
+def test_thickness_derivation_physics_accepts_nearest_30kev_nist_table():
+    bl19b2._validate_thickness_derivation_physics(
+        _valid_thickness_derivation_payload()
+    )
+
+
+@pytest.mark.parametrize(
+    ('tamper', 'error_match'),
+    [
+        ('composition', 'composition wt% must sum to 100'),
+        ('element_keys', 'element tables must have identical keys'),
+        ('mixture_mu_rho', 'mixture mass attenuation is inconsistent'),
+        ('density', 'ideal mixture density is inconsistent'),
+        ('mu', 'linear mu is inconsistent'),
+        ('median', 'representative transmission does not equal median'),
+        ('thickness', 'fixed thickness is inconsistent'),
+        ('span', 'transmission relative span is inconsistent'),
+        ('energy', 'nearest NIST table point'),
+    ],
+)
+def test_thickness_derivation_physics_rejects_inconsistent_payload(
+    tamper: str, error_match: str
+):
+    payload = _valid_thickness_derivation_payload()
+    if tamper == 'composition':
+        payload['composition_wt_percent']['Ti'] = 99.0
+    elif tamper == 'element_keys':
+        payload['nist_element_density_g_cm3'] = {'Al': 5.0}
+    elif tamper == 'mixture_mu_rho':
+        payload['mixture_mass_attenuation_cm2_g'] = 3.0
+    elif tamper == 'density':
+        payload['ideal_mixture_density_g_cm3'] = 4.0
+    elif tamper == 'mu':
+        payload['mu_cm_inv'] = 11.0
+    elif tamper == 'median':
+        payload['transmission_statistics']['median'] *= 0.99
+        payload['transmission_statistics']['p5'] *= 0.99
+        payload['transmission_statistics']['p95'] *= 0.99
+    elif tamper == 'thickness':
+        payload['fixed_thickness_cm'] = 0.2
+    elif tamper == 'span':
+        payload['transmission_statistics']['relative_p5_p95_span'] = 0.1
+    else:
+        payload['energy_kev'] = 29.9
+
+    with pytest.raises(ValueError, match=error_match):
+        bl19b2._validate_thickness_derivation_physics(payload)
+
+
+def test_control_inputs_bind_one_folder_copy_hash_and_rerun_paths(tmp_path: Path):
+    input_root = tmp_path / 'folder'
+    input_root.mkdir()
+    manifest = tmp_path / 'include.csv'
+    manifest.write_text('relative_path\nframe.tif\n', encoding='utf-8')
+    frame = input_root / 'frame.tif'
+    frame.write_bytes(b'tiff')
+    derivation = tmp_path / 'thickness.json'
+    derivation.write_text(
+        json.dumps(_valid_thickness_derivation_payload()),
+        encoding='utf-8',
+    )
+    config = BL19B2Abs2DConfig(
+        input_root=input_root,
+        poni_path=tmp_path / 'geometry.poni',
+        output_root=tmp_path / 'out',
+        sample_thickness_cm=0.1,
+        monitor_mode='rate',
+        include_manifest_path=manifest,
+        thickness_derivation_path=derivation,
+    )
+
+    inputs = bl19b2._load_run_control_inputs(config)
+    copied_config, copied_inputs = bl19b2._copy_run_control_inputs(config, inputs)
+    signature_inputs = bl19b2._control_inputs_signature_payload(copied_inputs)
+    command = build_rerun_command(copied_config, control_inputs=copied_inputs)
+
+    assert signature_inputs['include_manifest']['sha256'] == inputs.include_manifest.sha256
+    assert signature_inputs['thickness_derivation']['sha256'] == (
+        inputs.thickness_derivation.sha256
+    )
+    assert '--include-manifest' in command
+    assert '--thickness-derivation-json' in command
+    assert 'Get-FileHash -Algorithm SHA256' in command
+    assert inputs.include_manifest.sha256 in command
+    assert inputs.thickness_derivation.sha256 in command
+    assert 'include manifest SHA256 mismatch' in command
+    assert 'thickness derivation SHA256 mismatch' in command
+    assert copied_config.include_manifest_path.is_file()
+    assert copied_config.thickness_derivation_path.is_file()
+
+    derivation.write_text(
+        json.dumps(
+            {
+                **inputs.thickness_derivation.payload,
+                'folder': 'other',
+            }
+        ),
+        encoding='utf-8',
+    )
+    with pytest.raises(ValueError, match='folder does not match input_root'):
+        bl19b2._load_run_control_inputs(config)

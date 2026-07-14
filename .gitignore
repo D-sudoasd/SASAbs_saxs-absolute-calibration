@@ -27,6 +27,8 @@ dist/
 logs/
 examples/minimal_2d/outputs/
 # Local audit build/test artifacts (Markdown ledgers remain trackable)
+.audit-work/
+audit_outputs/
 .audit-work/**/*.xml
 .audit-work/**/*.whl
 .audit-work/pip-cache*/

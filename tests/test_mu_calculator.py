@@ -5,11 +5,18 @@ import pytest
 
 from saxsabs.core.mu_calculator import (
     MATERIAL_PRESETS,
+    XRAYDB_VERSION,
     MuResult,
     calculate_mu,
     mu_rho_single,
     parse_composition_string,
 )
+
+
+def test_xraydb_version_is_exposed_for_diagnostic_provenance():
+    import xraydb
+
+    assert XRAYDB_VERSION == str(xraydb.__version__)
 
 
 # ---------------------------------------------------------------------------

@@ -48,9 +48,12 @@ def _read_package_version() -> str:
 APP_VERSION = _read_package_version()
 DEFAULT_STANDARD_THICKNESS_MM = 1.055
 DEFAULT_SAMPLE_MU_CM_INV = None
+DEFAULT_SAMPLE_THICKNESS_MODE = "fixed"
 WORKBENCH_FORMULA_VERSION = "v3_nist_blank_exposure_matched"
 MAX_BATCH_WORKERS = 32
 MAX_OUTPUT_STEM_LENGTH = 120
+DEFAULT_LEGACY_RESUME_ENABLED = False
+WORKBENCH_MIN_SIZE = (900, 600)
 
 logger = logging.getLogger(__name__)
 SUPPORTED_LANGUAGES = ("en", "zh")
@@ -208,21 +211,29 @@ I18N = {
         "lbl_t2_outdir": "Output dir:",
         # --- Tab2 hints ---
         "hint_t2_global": "K from Tab1. I0 mode selects normalisation formula; BG path for quick confirmation.",
-        "hint_t2_thickness": "Auto: d=−ln(T)/μ ; Fixed: all samples use same thickness (mm).",
+        "hint_t2_thickness": (
+            "Formal output uses fixed thickness; each frame still uses its own T "
+            "for normalization."
+        ),
         "hint_t2_integration": "Multi-select & output to different folders: full-ring / sector / texture run simultaneously.",
         "hint_t2_correction": "Recommend enabling solid angle. Optional mask / flat / polarisation & error model.",
         "hint_t2_execution": "Fix BG/Dark, or auto-match the closest BG/Dark by metadata.",
-        "hint_t2_queue": "Add multiple files. Click 'Dry Check' first to verify headers & thickness.",
+        "hint_t2_queue": "Add multiple files. Dry Check verifies headers and fixed thickness.",
         # --- Tab2 tooltips ---
         "tip_t2_guide": "Pre-check before running batch significantly reduces mid-run failures.",
         "tip_t2_k_factor": "Absolute intensity scale factor. Must be > 0.",
         "tip_t2_bg_label": "Current background path (shared from Tab1).",
         "tip_t2_norm_mode": "Global: rate means I0 is count rate; integrated means I0 is integrated counts.",
         "tip_t2_norm_hint": "Affects normalisation factors in both calibration and batch.",
-        "tip_t2_auto_thk": "Suitable when every sample has reliable transmission T.",
-        "tip_t2_mu": "Linear attenuation coefficient μ, unit cm⁻¹, must be > 0.",
-        "tip_t2_mu_est": "Estimate μ from alloy composition (30 keV empirical).",
-        "tip_t2_fix_thk": "When transmission is unreliable or missing, use fixed thickness.",
+        "tip_t2_auto_thk": (
+            "Disabled for formal output; per-frame Beer-Lambert thickness is "
+            "diagnostic-only."
+        ),
+        "tip_t2_mu": "Read-only diagnostic linear attenuation coefficient, unit cm⁻¹.",
+        "tip_t2_mu_est": (
+            "Open the provenance-aware NIST 30 keV or xraydb/Elam diagnostic calculator."
+        ),
+        "tip_t2_fix_thk": "Required for formal constant-thickness and in-situ processing.",
         "tip_t2_fix_thk_val": "Uniform thickness for all samples, in mm.",
         "tip_t2_mu_label": "Larger μ → smaller thickness for same T.",
         "tip_t2_full": "Recommended for isotropic samples. Can be combined with other modes.",
@@ -595,21 +606,21 @@ I18N = {
         "lbl_t2_outdir": "输出根目录:",
         # --- Tab2 hints ---
         "hint_t2_global": "K 因子来自 Tab1 标定结果。I0 语义决定归一化公式；BG 路径仅用于快速确认。",
-        "hint_t2_thickness": "自动模式: d=-ln(T)/mu；固定模式: 所有样品使用同一厚度(mm)。",
+        "hint_t2_thickness": "正式输出使用固定厚度；每帧仍使用自己的 T 做透射归一化。",
         "hint_t2_integration": "可多选并一次性输出到不同文件夹：全环/扇区/织构可同时运行。",
         "hint_t2_correction": "建议开启 solid angle。可选 mask/flat/polarization 与误差模型。",
         "hint_t2_execution": "可固定 BG/Dark，或按元数据自动匹配最接近的 BG/Dark。",
-        "hint_t2_queue": '可一次添加多个文件。建议先点"预检查"，确认头信息与厚度计算是否正常。',
+        "hint_t2_queue": '可一次添加多个文件。先点"预检查"，确认头信息与固定厚度。',
         # --- Tab2 tooltips ---
         "tip_t2_guide": "先预检查再正式跑批，可显著减少中途失败。",
         "tip_t2_k_factor": "绝对强度比例因子。必须大于 0。",
         "tip_t2_bg_label": "当前启用的背景图路径（由 Tab1 共享）。",
         "tip_t2_norm_mode": "全局生效：rate 表示 I0 为计数率；integrated 表示 I0 为积分计数。",
         "tip_t2_norm_hint": "该设置会影响标定与批处理的所有归一化因子。",
-        "tip_t2_auto_thk": "适合每个样品都具有可靠透过率 T 的情况。",
-        "tip_t2_mu": "线性衰减系数 mu，单位 cm^-1，必须大于 0。",
-        "tip_t2_mu_est": "按合金成分估算 mu（30 keV 经验）。",
-        "tip_t2_fix_thk": "透过率不稳定或缺失时，建议改为固定厚度。",
+        "tip_t2_auto_thk": "正式输出已禁用；逐帧 Beer-Lambert 厚度仅用于诊断。",
+        "tip_t2_mu": "只读诊断线性衰减系数 mu，单位 cm^-1。",
+        "tip_t2_mu_est": "打开带溯源的 NIST 30 keV 或 xraydb/Elam 诊断计算器。",
+        "tip_t2_fix_thk": "恒厚与原位样品的正式处理必须使用固定厚度。",
         "tip_t2_fix_thk_val": "所有样品统一厚度值，单位 mm。",
         "tip_t2_mu_label": "mu 越大，按同样 T 算出的厚度越小。",
         "tip_t2_full": "对各向同性样品优先推荐。可与其他模式同时勾选。",
@@ -832,6 +843,190 @@ I18N = {
     },
 }
 
+# Safety-critical copy is kept together so the legacy bilingual dictionaries
+# cannot silently drift back to the scientifically ambiguous labels.
+I18N["en"].update({
+    "lbl_k_record_readonly": "Read-only; from Tab1 (preflight must verify it)",
+    "lbl_mu_data_source": "Data source and model",
+    "title_mu_tool": "Material \u03bc calculator and provenance",
+    "opt_mu_source_nist": "NIST 30 keV composition model (recommended)",
+    "opt_mu_source_elam": "xraydb/Elam diagnostic",
+    "cb_mu_porosity_risk": "Porosity/EBM risk",
+    "btn_mu_apply": "Calculate \u03bc (diagnostic only)",
+    "btn_mu_export_json": "Export provenance JSON",
+    "title_mu_export": "Export material attenuation provenance",
+    "msg_mu_export_requires_calculation": "Calculate mu before exporting provenance.",
+    "msg_mu_geometry_changed": (
+        "The PONI path, content, or photon energy changed after calculation. "
+        "Recalculate mu before exporting provenance."
+    ),
+    "msg_mu_export_success": "Provenance JSON exported:\n{path}",
+    "warn_k_missing_invalid": "K factor is missing or not a finite positive number.",
+    "lbl_mu_density": "Density \u03c1 (Elam only, g/cm3):",
+    "tip_t2_k_factor": (
+        "Read-only K from Tab1. Formal output still requires the active complete "
+        "CalibrationRecord to pass preflight identity checks."
+    ),
+    "tip_t3_k_factor": (
+        "Read-only K from Tab1. Default or legacy K values cannot pass formal preflight."
+    ),
+    "t3_guide_text": (
+        "1. Obtain a provenance-backed K in Tab1\n"
+        "2. Import an explicitly relative external 1D profile\n"
+        "3. Choose K/d or K scaling and X-axis semantics\n"
+        "4. Dry-check correction state and calibration identity\n"
+        "5. Export absolute intensity with a correction ledger"
+    ),
+    "hint_t3_global": (
+        "Formal output accepts reduced relative (scaled) profiles only. Raw-count "
+        "correction is disabled until it shares the validated 2D reduction kernel."
+    ),
+    "lf_t3_raw_params": "3. Disabled legacy raw-1D parameters",
+    "rb_t2_auto_thk": "Disabled diagnostic: per-frame Beer-Lambert",
+    "hint_t2_thickness": (
+        "Formal output requires fixed d for constant-thickness/in-situ samples; every "
+        "frame still uses its own T for normalization. Per-frame d is diagnostic-only."
+    ),
+    "tip_t2_auto_thk": (
+        "Disabled for formal output. Diagnostic d=-ln(T)/mu can turn T drift into false "
+        "thickness drift for constant-thickness in-situ series."
+    ),
+    "tip_t2_fix_thk": (
+        "Recommended for constant-thickness and in-situ series. Per-frame T normalization "
+        "remains active."
+    ),
+    "cb_t2_resume": "Disabled: exists-only resume",
+    "tip_t2_resume": (
+        "Disabled because ordinary 1D outputs were skipped by existence only, without "
+        "processing-signature or content validation."
+    ),
+    "cb_t3_resume": "Disabled: exists-only resume",
+    "hint_t3_execution": (
+        "Dry Check is mandatory before running. Exists-only resume is disabled for formal "
+        "output."
+    ),
+    "tip_t3_resume": (
+        "Disabled because it has no processing-signature or content validation."
+    ),
+    "lbl_mu_source": (
+        "Source: xraydb mu_elam / Elam database (diagnostic composition model)"
+    ),
+    "rb_t3_raw": "Disabled: legacy raw 1D correction",
+    "hint_t3_raw": (
+        "Formal raw-1D correction is disabled until dark-exposure matching and the NIST "
+        "blank convention share the validated 2D reduction kernel."
+    ),
+    "tip_t3_raw": (
+        "Disabled for scientific safety. Reintegrate a strict calibrated-2D package or "
+        "provide an explicitly relative external profile."
+    ),
+    "tip_t2_mu_est": (
+        "Open the provenance-aware diagnostic calculator: bundled NIST 30 keV "
+        "composition snapshot or xraydb/Elam comparison."
+    ),
+    "tip_t2_mu": (
+        "Read-only diagnostic mu. Formal fixed-thickness output does not consume this "
+        "field or its provenance."
+    ),
+    "tip_t2_mu_label": (
+        "Diagnostic attenuation result only; fixed d is the formal thickness input."
+    ),
+    "lbl_t3_alpha_uncertainty": "u(\u03b1), optional:",
+    "hint_t3_alpha_uncertainty": (
+        "Leave u(\u03b1) blank when unknown; combined uncertainty stays NaN and is "
+        "never assumed to be zero."
+    ),
+})
+I18N["zh"].update({
+    "lbl_k_record_readonly": "\u53ea\u8bfb\uff1b\u7531 Tab1 \u751f\u6210\uff08\u987b\u901a\u8fc7\u9884\u68c0\uff09",
+    "lbl_mu_data_source": "\u6570\u636e\u6e90\u4e0e\u6a21\u578b",
+    "title_mu_tool": "\u6750\u6599 \u03bc \u8ba1\u7b97\u4e0e\u6eaf\u6e90",
+    "opt_mu_source_nist": "NIST 30 keV \u6210\u5206\u6a21\u578b\uff08\u63a8\u8350\uff09",
+    "opt_mu_source_elam": "xraydb/Elam \u8bca\u65ad\u6a21\u578b",
+    "cb_mu_porosity_risk": "\u5b54\u9699/EBM \u98ce\u9669",
+    "btn_mu_apply": "\u8ba1\u7b97 \u03bc\uff08\u4ec5\u8bca\u65ad\uff09",
+    "btn_mu_export_json": "\u5bfc\u51fa\u6eaf\u6e90 JSON",
+    "title_mu_export": "\u5bfc\u51fa\u6750\u6599\u8870\u51cf\u6eaf\u6e90",
+    "msg_mu_export_requires_calculation": "\u8bf7\u5148\u8ba1\u7b97 mu\uff0c\u518d\u5bfc\u51fa\u6eaf\u6e90\u3002",
+    "msg_mu_geometry_changed": (
+        "\u8ba1\u7b97\u540e PONI \u8def\u5f84\u3001\u6587\u4ef6\u5185\u5bb9\u6216\u5149\u5b50\u80fd\u91cf\u5df2\u53d8\u66f4\u3002"
+        "\u8bf7\u91cd\u65b0\u8ba1\u7b97 mu \u540e\u518d\u5bfc\u51fa\u6eaf\u6e90\u3002"
+    ),
+    "msg_mu_export_success": "\u6eaf\u6e90 JSON \u5df2\u5bfc\u51fa\uff1a\n{path}",
+    "warn_k_missing_invalid": "K \u56e0\u5b50\u7f3a\u5931\u6216\u4e0d\u662f\u6709\u9650\u6b63\u6570\u3002",
+    "lbl_mu_density": "\u5bc6\u5ea6 \u03c1\uff08\u4ec5 Elam\uff0cg/cm3\uff09:",
+    "tip_t2_k_factor": (
+        "K \u4e3a Tab1 \u53ea\u8bfb\u7ed3\u679c\u3002\u6b63\u5f0f\u8f93\u51fa\u4ecd\u5fc5\u987b\u7531\u5f53\u524d\u5b8c\u6574 CalibrationRecord "
+        "\u901a\u8fc7\u9884\u68c0\u8eab\u4efd\u6821\u9a8c\u3002"
+    ),
+    "tip_t3_k_factor": (
+        "K \u4e3a Tab1 \u53ea\u8bfb\u7ed3\u679c\uff1b\u9ed8\u8ba4\u503c\u6216\u65e7\u7248\u65e0\u6eaf\u6e90 K \u65e0\u6cd5\u901a\u8fc7\u6b63\u5f0f\u9884\u68c0\u3002"
+    ),
+    "t3_guide_text": (
+        "1. \u5148\u5728 Tab1 \u83b7\u5f97\u6709\u6eaf\u6e90 K\n"
+        "2. \u5bfc\u5165\u660e\u786e\u6807\u8bb0\u4e3a relative \u7684\u5916\u90e8 1D\n"
+        "3. \u9009\u62e9 K/d \u6216 K \u7f29\u653e\u53ca X \u8f74\u8bed\u4e49\n"
+        "4. \u9884\u68c0\u6821\u6b63\u72b6\u6001\u4e0e\u6807\u5b9a\u8eab\u4efd\n"
+        "5. \u5bfc\u51fa\u5e26\u6821\u6b63 ledger \u7684\u7edd\u5bf9\u5f3a\u5ea6"
+    ),
+    "hint_t3_global": (
+        "\u6b63\u5f0f\u8f93\u51fa\u53ea\u63a5\u53d7\u5df2\u5f52\u4e00\u5316\u7684 relative\uff08scaled\uff09\u66f2\u7ebf\u3002"
+        "raw counts \u6821\u6b63\u5728\u5171\u4eab\u5df2\u9a8c\u8bc1 2D \u6838\u5fc3\u524d\u4fdd\u6301\u7981\u7528\u3002"
+    ),
+    "lf_t3_raw_params": "3. \u5df2\u7981\u7528\u7684\u65e7\u7248 raw 1D \u53c2\u6570",
+    "rb_t2_auto_thk": "\u5df2\u7981\u7528\u8bca\u65ad\uff1a\u9010\u5e27 Beer-Lambert",
+    "hint_t2_thickness": (
+        "\u539f\u4f4d/\u6052\u539a\u6837\u54c1\u7684\u6b63\u5f0f\u8f93\u51fa\u5fc5\u987b\u4f7f\u7528\u56fa\u5b9a d\uff1b"
+        "\u6bcf\u5e27\u4ecd\u4f7f\u7528\u5404\u81ea T \u505a\u900f\u5c04\u5f52\u4e00\u5316\u3002"
+        "\u9010\u5e27 d=-ln(T)/mu \u4ec5\u4f5c\u8bca\u65ad\u3002"
+    ),
+    "tip_t2_auto_thk": (
+        "\u6b63\u5f0f\u8f93\u51fa\u5df2\u7981\u7528\u3002\u5bf9\u6052\u539a\u539f\u4f4d\u5e8f\u5217\uff0cT \u6f02\u79fb\u4f1a\u88ab\u8bef\u5f53\u6210\u539a\u5ea6\u6f02\u79fb\u3002"
+    ),
+    "tip_t2_fix_thk": (
+        "\u63a8\u8350\u7528\u4e8e\u539f\u4f4d\u548c\u6052\u539a\u5e8f\u5217\uff1b\u56fa\u5b9a d \u4e0d\u4f1a\u5173\u95ed\u9010\u5e27 T \u900f\u5c04\u5f52\u4e00\u5316\u3002"
+    ),
+    "cb_t2_resume": "\u5df2\u7981\u7528\uff1a\u4ec5\u6309\u5b58\u5728\u6027\u7eed\u8dd1",
+    "tip_t2_resume": (
+        "\u666e\u901a1D\u4ec5\u6309\u6587\u4ef6\u5b58\u5728\u6027\u8df3\u8fc7\uff0c\u4e0d\u6821\u9a8c\u7b7e\u540d\u6216\u5185\u5bb9\uff1b\u6821\u6b632D\u5305\u53e6\u6709\u72ec\u7acb\u5b8c\u6574\u6027\u6821\u9a8c\u3002"
+        "\u9664\u975e\u5df2\u5ba1\u8ba1\u65e7\u8f93\u51fa\uff0c\u5426\u5219\u4fdd\u6301\u5173\u95ed\u3002"
+    ),
+    "cb_t3_resume": "\u5df2\u7981\u7528\uff1a\u4ec5\u6309\u5b58\u5728\u6027\u7eed\u8dd1",
+    "hint_t3_execution": (
+        "\u6b63\u5f0f\u8fd0\u884c\u524d\u5fc5\u987b\u9884\u68c0\u67e5\u3002\u65e7\u7248\u7eed\u8dd1\u53ea\u68c0\u67e5\u8f93\u51fa\u662f\u5426\u5b58\u5728\uff0c\u9ed8\u8ba4\u5173\u95ed\u3002"
+    ),
+    "tip_t3_resume": (
+        "\u65e7\u7248/\u4e0d\u5b89\u5168\uff1a\u4ec5\u6309\u8f93\u51fa\u5b58\u5728\u6027\u8df3\u8fc7\uff0c\u4e0d\u6821\u9a8c\u5904\u7406\u7b7e\u540d\u6216\u6587\u4ef6\u5185\u5bb9\u3002"
+        "\u9664\u975e\u5df2\u5ba1\u8ba1\u65e7\u8f93\u51fa\uff0c\u5426\u5219\u4fdd\u6301\u5173\u95ed\u3002"
+    ),
+    "lbl_mu_source": (
+        "\u6765\u6e90\uff1axraydb mu_elam / Elam \u6570\u636e\u5e93\uff08\u8bca\u65ad\u6027\u6210\u5206\u6a21\u578b\uff09"
+    ),
+    "rb_t3_raw": "\u5df2\u7981\u7528\uff1a\u65e7\u7248 raw 1D \u6821\u6b63",
+    "hint_t3_raw": (
+        "\u5728\u6697\u573a\u66dd\u5149\u5339\u914d\u4e0e NIST blank \u7ea6\u5b9a\u7edf\u4e00\u5230\u5df2\u9a8c\u8bc1 2D \u6838\u5fc3\u524d\uff0c"
+        "\u7981\u6b62\u7528 raw 1D \u8def\u5f84\u4ea7\u751f\u6b63\u5f0f\u7edd\u5bf9\u5f3a\u5ea6\u3002"
+    ),
+    "tip_t3_raw": (
+        "\u51fa\u4e8e\u79d1\u5b66\u5b89\u5168\u5df2\u7981\u7528\u3002\u8bf7\u91cd\u79ef\u5206\u4e25\u683c\u6821\u6b632D\u5305\uff0c"
+        "\u6216\u8f93\u5165\u663e\u5f0f\u6807\u8bb0\u4e3a relative \u7684\u5916\u90e81D\u3002"
+    ),
+    "tip_t2_mu_est": (
+        "\u6253\u5f00\u5e26\u6eaf\u6e90\u7684\u8bca\u65ad\u8ba1\u7b97\u5668\uff1a\u5185\u7f6e NIST 30 keV \u6210\u5206\u5feb\u7167\uff0c"
+        "\u6216 xraydb/Elam \u5bf9\u7167\u3002"
+    ),
+    "tip_t2_mu": (
+        "\u53ea\u8bfb\u8bca\u65ad mu\u3002\u6b63\u5f0f\u56fa\u5b9a\u539a\u5ea6\u8f93\u51fa\u4e0d\u4f7f\u7528\u6b64\u503c\u53ca\u5176\u6eaf\u6e90\u3002"
+    ),
+    "tip_t2_mu_label": (
+        "\u4ec5\u663e\u793a\u8bca\u65ad\u8870\u51cf\u7ed3\u679c\uff1b\u6b63\u5f0f\u539a\u5ea6\u8f93\u5165\u4e3a\u56fa\u5b9a d\u3002"
+    ),
+    "lbl_t3_alpha_uncertainty": "u(\u03b1)\uff08\u53ef\u9009\uff09:",
+    "hint_t3_alpha_uncertainty": (
+        "u(\u03b1) \u672a\u77e5\u65f6\u7559\u7a7a\uff1b\u5408\u6210\u4e0d\u786e\u5b9a\u5ea6\u4fdd\u6301 NaN\uff0c\u7edd\u4e0d\u9ed8\u8ba4\u4e3a 0\u3002"
+    ),
+})
+
 try:
     from saxs_ui_kit import apply_ios_theme, promote_primary_buttons, toggle_theme, ToolTip
 except Exception:
@@ -1050,16 +1245,39 @@ except Exception:
 
 try:
     from saxsabs.core.mu_calculator import (
+        XRAYDB_VERSION,
         calculate_mu,
         mu_rho_single,
         parse_composition_string,
         MATERIAL_PRESETS,
     )
 except Exception:
+    XRAYDB_VERSION = "unavailable"
     calculate_mu = None
     mu_rho_single = None
     parse_composition_string = None
     MATERIAL_PRESETS = None
+
+try:
+    from saxsabs.core.material_attenuation import (
+        NIST_30_KEV_TABLE,
+        NOMINAL_MATERIALS,
+        WT_FRACTION_BASIS,
+        calculate_material_attenuation,
+        calculate_nominal_material_attenuation,
+        identify_nominal_material,
+        parse_weight_composition_string,
+        provenance_sha256,
+    )
+except ImportError:
+    NIST_30_KEV_TABLE = None
+    NOMINAL_MATERIALS = {}
+    WT_FRACTION_BASIS = "wt_fraction"
+    calculate_material_attenuation = None
+    calculate_nominal_material_attenuation = None
+    identify_nominal_material = None
+    parse_weight_composition_string = None
+    provenance_sha256 = None
 
 try:
     from saxsabs.core.buffer_subtraction import subtract_buffer
@@ -1091,6 +1309,30 @@ try:
     from saxsabs.core.preflight import evaluate_preflight_gate
 except Exception:
     evaluate_preflight_gate = None
+
+try:
+    from saxsabs.core.workbench_preflight_gate import (
+        approve_preflight,
+        choose_initial_window_geometry,
+        format_mu_for_batch,
+        require_current_preflight,
+    )
+except Exception:
+    approve_preflight = None
+    choose_initial_window_geometry = None
+    format_mu_for_batch = None
+    require_current_preflight = None
+
+try:
+    from saxsabs.core.intensity_state import (
+        require_absolute_input_for_buffer_subtraction,
+        require_relative_input_for_absolute_scaling,
+        serialize_correction_ledger,
+    )
+except ImportError:
+    require_absolute_input_for_buffer_subtraction = None
+    require_relative_input_for_absolute_scaling = None
+    serialize_correction_ledger = None
 
 try:
     from saxsabs.io.writers import write_cansas1d_xml, write_nxcansas_h5
@@ -1419,8 +1661,17 @@ class SAXSAbsWorkbenchApp:
         if self.language not in SUPPORTED_LANGUAGES:
             self.language = "en"
         self.root.title(self.tr("app_title"))
-        self.root.geometry("1280x900")
-        self.root.minsize(1100, 720)
+        if choose_initial_window_geometry is not None:
+            geometry = choose_initial_window_geometry(
+                self.root.winfo_screenwidth(),
+                self.root.winfo_screenheight(),
+                minimum_width=WORKBENCH_MIN_SIZE[0],
+                minimum_height=WORKBENCH_MIN_SIZE[1],
+            )
+            self.root.geometry(geometry.tk_geometry)
+        else:
+            self.root.geometry("960x620")
+        self.root.minsize(*WORKBENCH_MIN_SIZE)
         
         # Apply shared scientific plot defaults globally.
         saxs_mpl_style.apply_nature_style("raw_inspection")
@@ -1446,7 +1697,7 @@ class SAXSAbsWorkbenchApp:
         
         # === 全局共享状态 ===
         self.global_vars = {
-            "k_factor": tk.DoubleVar(value=1.0),
+            "k_factor": tk.StringVar(value=""),
             "poni_path": tk.StringVar(),
             "bg_path": tk.StringVar(),
             "dark_path": tk.StringVar(),
@@ -1468,6 +1719,12 @@ class SAXSAbsWorkbenchApp:
         self.calibration_uncertainty = None
         self.calibration_record_path = None
         self.session_geometry_fallback = {}
+        self.t2_preflight_approval = None
+        self.t2_preflight_fingerprint = None
+        self.t2_preflight_level = None
+        self.t3_preflight_approval = None
+        self.t3_preflight_fingerprint = None
+        self.t3_preflight_level = None
 
         # === 布局 ===
         self.nb = ttk.Notebook(root)
@@ -1623,6 +1880,62 @@ class SAXSAbsWorkbenchApp:
             raise FileNotFoundError(f"calibration context file not found: {file_path}")
         return sha256_file(file_path)
 
+    def _current_mu_poni_snapshot(self):
+        """Read the current PONI identity and photon energy for mu provenance."""
+
+        snapshot = {
+            "path": "",
+            "sha256": None,
+            "energy_kev": None,
+            "error": None,
+        }
+        poni_var = getattr(self, "global_vars", {}).get("poni_path")
+        path_text = str(
+            poni_var.get() if poni_var is not None and hasattr(poni_var, "get") else ""
+        ).strip()
+        if not path_text:
+            return snapshot
+        path = Path(path_text).expanduser().resolve()
+        snapshot["path"] = str(path)
+        try:
+            snapshot["sha256"] = self._optional_file_sha256(path)
+            ai = pyFAI.load(path)
+            wavelength_m = float(ai.wavelength)
+            if not np.isfinite(wavelength_m) or wavelength_m <= 0:
+                raise ValueError("PONI wavelength must be finite and > 0")
+            snapshot["energy_kev"] = float(HC_KEV_A / (wavelength_m * 1e10))
+        except Exception as exc:
+            snapshot["error"] = f"{type(exc).__name__}: {exc}"
+        return snapshot
+
+    @staticmethod
+    def _mu_payload_geometry_is_current(payload, snapshot):
+        """Return True only when cached mu provenance still matches the PONI."""
+
+        if not isinstance(payload, dict) or snapshot.get("error"):
+            return False
+        expected_path = str(payload.get("geometry_poni_path") or "")
+        current_path = str(snapshot.get("path") or "")
+        if expected_path != current_path:
+            return False
+        if payload.get("geometry_poni_sha256") != snapshot.get("sha256"):
+            return False
+        expected_energy = payload.get("geometry_energy_kev")
+        current_energy = snapshot.get("energy_kev")
+        if expected_energy is None or current_energy is None:
+            return expected_energy is None and current_energy is None
+        try:
+            return bool(
+                np.isclose(
+                    float(expected_energy),
+                    float(current_energy),
+                    rtol=0.0,
+                    atol=1.0e-12,
+                )
+            )
+        except (TypeError, ValueError):
+            return False
+
     def _refresh_and_verify_active_calibration_record(self, *, k_factor):
         """Re-read the active record and bind its K/context to the current cache."""
         if _core_read_calibration_record is None:
@@ -1763,12 +2076,12 @@ class SAXSAbsWorkbenchApp:
             raise ValueError("Tab3 当前 K 与标定记录不匹配或已被修改；请恢复标定 K。")
         normalized_pipeline = str(pipeline_mode or "").strip().lower()
         if normalized_pipeline == "raw":
-            normalized_monitor = str(monitor_mode or "").strip().lower()
-            if normalized_monitor != calibrated.monitor_mode:
-                raise ValueError(
-                    "Tab3 raw I0 monitor_mode 与 K 标定上下文不一致: "
-                    f"current={normalized_monitor or 'missing'}, calibrated={calibrated.monitor_mode}"
-                )
+            raise ValueError(
+                "Tab3 legacy raw 1D pipeline is disabled for formal absolute output: "
+                "its dark-exposure and NIST blank normalization contract is not yet shared "
+                "with the validated 2D workflow. Use relative input with explicit intensity "
+                "state, or reintegrate the strict calibrated-2D package."
+            )
         return calibrated
 
     def validate_standard_thickness_mm(self, standard_key, thickness_mm):
@@ -3186,8 +3499,20 @@ class SAXSAbsWorkbenchApp:
                     ))
         return targets
 
-    def profile_operator_metadata(self, calibration_context=None):
-        """Return portable operator provenance for a project-owned 1-D export."""
+    def profile_operator_metadata(
+        self,
+        calibration_context=None,
+        *,
+        corrections_applied=None,
+        k_factor=None,
+    ):
+        """Return portable operator provenance for a project-owned 1-D export.
+
+        ``corrections_applied`` is mandatory for paths such as Tab3 where the
+        active K calibration context is not the same thing as the corrections
+        performed on the imported profile.  Tab2 may omit it because its
+        detector reduction is derived directly from the validated context.
+        """
         active = (
             getattr(self, "calibration_context", None)
             if calibration_context is None
@@ -3197,7 +3522,40 @@ class SAXSAbsWorkbenchApp:
             return {}
         if CalibrationContext is None or not isinstance(active, CalibrationContext):
             raise ValueError("1-D export provenance requires a valid CalibrationContext")
-        return {"calibration_context_fingerprint": active.fingerprint()}
+        if serialize_correction_ledger is None:
+            raise RuntimeError("intensity-state ledger support is unavailable")
+        if corrections_applied is None:
+            corrections = ["monitor", "transmission", "thickness", "k"]
+            if active.dark_data_sha256:
+                corrections.append("dark")
+            if active.background_data_sha256:
+                corrections.append("background")
+            if active.correct_solid_angle:
+                corrections.append("solid_angle")
+            if active.polarization_factor is not None:
+                corrections.append("polarization")
+            if active.flat_sha256 is not None:
+                corrections.append("flat_field")
+        else:
+            corrections = list(corrections_applied)
+        serialized_corrections = serialize_correction_ledger(corrections)
+        if k_factor is None:
+            k_var = getattr(self, "global_vars", {}).get("k_factor")
+            if k_var is not None and hasattr(k_var, "get"):
+                k_factor = k_var.get()
+        metadata = {
+            "calibration_context_fingerprint": active.fingerprint(),
+            "intensity_state": "absolute_cm^-1",
+            "intensity_unit": "1/cm",
+            "corrections_applied": serialized_corrections,
+            "do_not_repeat": serialized_corrections,
+        }
+        if k_factor is not None and str(k_factor).strip():
+            k_value = float(k_factor)
+            if not np.isfinite(k_value) or k_value <= 0:
+                raise ValueError("1-D export provenance requires finite positive K")
+            metadata["k_factor"] = format(k_value, ".17g")
+        return metadata
 
     def save_profile_table(
         self,
@@ -3209,6 +3567,9 @@ class SAXSAbsWorkbenchApp:
         output_format="tsv",
         run_policy=None,
         calibration_context=None,
+        corrections_applied=None,
+        combined_uncertainty=None,
+        uncertainty_metadata=None,
     ):
         # Origin-friendly text table: first row is column names, tab-separated.
         out_path = Path(out_path)
@@ -3221,7 +3582,20 @@ class SAXSAbsWorkbenchApp:
         x_arr = np.asarray(x, dtype=np.float64)
         i_arr = np.asarray(i_abs, dtype=np.float64)
         e_arr = np.asarray(i_err, dtype=np.float64)
-        profile_metadata = self.profile_operator_metadata(calibration_context)
+        combined_arr = (
+            None
+            if combined_uncertainty is None
+            else np.asarray(combined_uncertainty, dtype=np.float64)
+        )
+        if combined_arr is not None and combined_arr.shape != e_arr.shape:
+            raise ValueError("combined uncertainty must match statistical uncertainty shape")
+        profile_metadata = self.profile_operator_metadata(
+            calibration_context,
+            corrections_applied=corrections_applied,
+        )
+        if uncertainty_metadata:
+            profile_metadata.update(dict(uncertainty_metadata))
+        compatibility_error = e_arr if combined_arr is None else combined_arr
 
         if output_format in ("cansas_xml", "nxcansas_h5") and str(x_label) != "Q_A^-1":
             raise ValueError(
@@ -3231,30 +3605,60 @@ class SAXSAbsWorkbenchApp:
         if output_format == "cansas_xml":
             if write_cansas1d_xml is None:
                 raise RuntimeError("canSAS XML writer is unavailable.")
-            write_cansas1d_xml(final_path, x_arr, i_arr, e_arr, metadata=profile_metadata)
+            write_cansas1d_xml(
+                final_path,
+                x_arr,
+                i_arr,
+                compatibility_error,
+                metadata=profile_metadata,
+            )
             return final_path
         if output_format == "nxcansas_h5":
             if write_nxcansas_h5 is None:
                 raise RuntimeError("NXcanSAS HDF5 writer is unavailable.")
-            write_nxcansas_h5(final_path, x_arr, i_arr, e_arr, metadata=profile_metadata)
+            write_nxcansas_h5(
+                final_path,
+                x_arr,
+                i_arr,
+                compatibility_error,
+                metadata=profile_metadata,
+            )
             return final_path
 
-        # ``i_err`` is the pyFAI statistical/azimuthal sigma after scaling.  Keep the
-        # legacy column for compatibility, but do not present it as a complete budget.
+        # Keep statistical and combined-standard uncertainty distinct.  The
+        # legacy Error column aliases the best available combined result.
         df = pd.DataFrame({
             x_label: x_arr,
             "I_abs_cm^-1": i_arr,
-            "Error_cm^-1": e_arr,
+            "Error_cm^-1": compatibility_error,
             "Error_Statistical_cm^-1": e_arr,
-            "Error_CombinedStandard_cm^-1": np.full_like(e_arr, np.nan),
+            "Error_CombinedStandard_cm^-1": (
+                np.full_like(e_arr, np.nan)
+                if combined_arr is None
+                else combined_arr
+            ),
         })
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
         sep = "," if output_format == "csv" else "\t"
         final_path.parent.mkdir(parents=True, exist_ok=True)
         with final_path.open("w", encoding="utf-8-sig", newline="") as stream:
-            fingerprint = profile_metadata.get("calibration_context_fingerprint")
-            if fingerprint:
-                stream.write(f"# calibration_context_fingerprint: {fingerprint}\n")
+            for key in (
+                "calibration_context_fingerprint",
+                "k_factor",
+                "intensity_state",
+                "intensity_unit",
+                "corrections_applied",
+                "do_not_repeat",
+                "buffer_source_name",
+                "buffer_source_sha256",
+                "buffer_alpha",
+                "buffer_alpha_uncertainty",
+                "uncertainty_model",
+                "uncertainty_type",
+            ):
+                value = profile_metadata.get(key)
+                if value is not None and str(value).strip():
+                    stream.write(f"# {key}: {value}\n")
             df.to_csv(
                 stream,
                 sep=sep,
@@ -3706,8 +4110,11 @@ class SAXSAbsWorkbenchApp:
         self.t2_mu = tk.StringVar(
             value="" if DEFAULT_SAMPLE_MU_CM_INV is None else str(DEFAULT_SAMPLE_MU_CM_INV)
         )
-        self.t2_calc_mode = tk.StringVar(value="fixed")
-        self.t2_fixed_thk = tk.DoubleVar(value=1.0)
+        self.t2_mu_provenance = None
+        self.t2_calc_mode = tk.StringVar(value=DEFAULT_SAMPLE_THICKNESS_MODE)
+        # No implicit scientific thickness: dry-check requires an explicit
+        # positive value or a future group-derived thickness plan.
+        self.t2_fixed_thk = tk.DoubleVar(value=0.0)
         self.t2_ref_mode = tk.StringVar(value="fixed")
         self.t2_error_model = tk.StringVar(value="azimuthal")
         self.t2_apply_solid_angle = self.global_vars["apply_solid_angle"]
@@ -3716,7 +4123,7 @@ class SAXSAbsWorkbenchApp:
         self.t2_output_root = tk.StringVar(value="")
         self.t2_mask_path = self.global_vars["mask_path"]
         self.t2_flat_path = self.global_vars["flat_path"]
-        self.t2_resume_enabled = tk.BooleanVar(value=True)
+        self.t2_resume_enabled = tk.BooleanVar(value=DEFAULT_LEGACY_RESUME_ENABLED)
         self.t2_overwrite = tk.BooleanVar(value=False)
         self.t2_workers = tk.IntVar(value=1)
         self.t2_strict_instrument = tk.BooleanVar(value=True)
@@ -3772,8 +4179,13 @@ class SAXSAbsWorkbenchApp:
         lbl_k.grid(row=0, column=0, sticky="e", pady=2)
         self._register_i18n_widget(lbl_k, "lbl_t2_k_factor")
 
-        e_k = ttk.Entry(c1_grid, textvariable=self.global_vars["k_factor"], width=12, 
-                        font=("Segoe UI", 13, "bold"))
+        e_k = ttk.Entry(
+            c1_grid,
+            textvariable=self.global_vars["k_factor"],
+            width=12,
+            font=("Segoe UI", 13, "bold"),
+            state="readonly",
+        )
         e_k.grid(row=0, column=1, padx=6, pady=2)
         # Make K the visually most important scalar
         try:
@@ -3781,8 +4193,11 @@ class SAXSAbsWorkbenchApp:
         except Exception:
             pass
 
-        # Elegant hint
-        ttk.Label(c1_grid, text="← most important value", style="Hint.TLabel").grid(row=0, column=2, padx=(4,0))
+        lbl_k_source = ttk.Label(
+            c1_grid, text=self.tr("lbl_k_record_readonly"), style="Hint.TLabel"
+        )
+        lbl_k_source.grid(row=0, column=2, padx=(4, 0))
+        self._register_i18n_widget(lbl_k_source, "lbl_k_record_readonly")
 
         lbl_bgf = ttk.Label(c1_grid, text=self.tr("lbl_t2_bg_file"))
         lbl_bgf.grid(row=1, column=0, sticky="e")
@@ -3823,11 +4238,12 @@ class SAXSAbsWorkbenchApp:
         r1.pack(anchor="w")
         rb_auto = ttk.Radiobutton(r1, text=self.tr("rb_t2_auto_thk"), variable=self.t2_calc_mode, value="auto")
         rb_auto.pack(side="left")
+        rb_auto.configure(state="disabled")
         self._register_i18n_widget(rb_auto, "rb_t2_auto_thk")
         lbl_mu = ttk.Label(r1, text=self.tr("lbl_t2_mu"))
         lbl_mu.pack(side="left")
         self._register_i18n_widget(lbl_mu, "lbl_t2_mu")
-        e_mu = ttk.Entry(r1, textvariable=self.t2_mu, width=6)
+        e_mu = ttk.Entry(r1, textvariable=self.t2_mu, width=14, state="readonly")
         e_mu.pack(side="left")
         btn_est = ttk.Button(r1, text=self.tr("btn_t2_mu_est"), command=self.open_mu_tool, width=8)
         btn_est.pack(side="left", padx=2)
@@ -4023,6 +4439,7 @@ class SAXSAbsWorkbenchApp:
         e_workers.pack(side="left")
         cb_resume = ttk.Checkbutton(row_exec, text=self.tr("cb_t2_resume"), variable=self.t2_resume_enabled)
         cb_resume.pack(side="left", padx=(8, 0))
+        cb_resume.configure(state="disabled")
         self._register_i18n_widget(cb_resume, "cb_t2_resume")
         cb_overwrite = ttk.Checkbutton(row_exec, text=self.tr("cb_t2_overwrite"), variable=self.t2_overwrite)
         cb_overwrite.pack(side="left", padx=(8, 0))
@@ -4161,6 +4578,8 @@ class SAXSAbsWorkbenchApp:
         bot_frame.pack(fill="x", padx=10, pady=10)
         btn_run = ttk.Button(bot_frame, text=self.tr("t2_run_btn"), command=self.run_batch, style="PrimaryAction.TButton")
         self._register_i18n_widget(btn_run, "t2_run_btn")
+        self.t2_run_button = btn_run
+        self.t2_run_button.configure(state="disabled")
         btn_run.pack(fill="x", ipady=8)  # strongest visual weight — this is the main action for most users
         self.prog_bar = ttk.Progressbar(bot_frame, mode="determinate")
         self.prog_bar.pack(fill="x", pady=5)
@@ -4182,6 +4601,37 @@ class SAXSAbsWorkbenchApp:
         self.t2_sector_save_each.trace_add("write", lambda *_: self.refresh_queue_status())
         self.t2_sector_save_combined.trace_add("write", lambda *_: self.refresh_queue_status())
         self.t2_output_root.trace_add("write", lambda *_: self.refresh_queue_status())
+        self._bind_preflight_invalidation(
+            "t2",
+            [
+                *self.global_vars.values(),
+                self.t2_calc_mode,
+                self.t2_fixed_thk,
+                self.t2_ref_mode,
+                self.t2_error_model,
+                self.t2_resume_enabled,
+                self.t2_overwrite,
+                self.t2_workers,
+                self.t2_strict_instrument,
+                self.t2_instr_tol_pct,
+                self.t2_alpha,
+                self.t2_alpha_enabled,
+                self.t2_output_format,
+                self.t2_export_cal2d,
+                self.t2_cal2d_dtype,
+                self.t2_cal2d_apply_flat,
+                self.t2_mode_full,
+                self.t2_mode_sector,
+                self.t2_mode_chi,
+                self.t2_sec_min,
+                self.t2_sec_max,
+                self.t2_sector_ranges_text,
+                self.t2_sector_save_each,
+                self.t2_sector_save_combined,
+                self.t2_rad_qmin,
+                self.t2_rad_qmax,
+            ],
+        )
         self.refresh_queue_status()
 
     # =========================================================================
@@ -4193,7 +4643,7 @@ class SAXSAbsWorkbenchApp:
         self.t3_files = []
         self.t3_pipeline_mode = tk.StringVar(value="scaled")
         self.t3_corr_mode = tk.StringVar(value="k_over_d")
-        self.t3_fixed_thk = tk.DoubleVar(value=1.0)
+        self.t3_fixed_thk = tk.DoubleVar(value=0.0)
         self.t3_x_mode = tk.StringVar(value="auto")
         self.t3_wavelength_a = tk.StringVar(value="")
         self.t3_meta_csv_path = tk.StringVar()
@@ -4210,7 +4660,7 @@ class SAXSAbsWorkbenchApp:
         self.t3_bg_i0 = tk.StringVar(value="")
         self.t3_bg_t = tk.StringVar(value="")
         self.t3_sync_bg_from_global = tk.BooleanVar(value=False)
-        self.t3_resume_enabled = tk.BooleanVar(value=True)
+        self.t3_resume_enabled = tk.BooleanVar(value=DEFAULT_LEGACY_RESUME_ENABLED)
         self.t3_overwrite = tk.BooleanVar(value=False)
         self.t3_queue_info = tk.StringVar(value=self._fmt_queue_info(0, 0))
         self.t3_out_hint = tk.StringVar(value=f"{self.tr('out_auto_prefix')}: processed_external_1d_abs")
@@ -4239,7 +4689,12 @@ class SAXSAbsWorkbenchApp:
         lbl_k3 = ttk.Label(c1_grid, text=self.tr("lbl_t3_k_factor"))
         lbl_k3.grid(row=0, column=0, sticky="e")
         self._register_i18n_widget(lbl_k3, "lbl_t3_k_factor")
-        e_k = ttk.Entry(c1_grid, textvariable=self.global_vars["k_factor"], width=10)
+        e_k = ttk.Entry(
+            c1_grid,
+            textvariable=self.global_vars["k_factor"],
+            width=10,
+            state="readonly",
+        )
         e_k.grid(row=0, column=1, padx=5, pady=1, sticky="w")
         lbl_pl = ttk.Label(c1_grid, text=self.tr("lbl_t3_pipeline"))
         lbl_pl.grid(row=1, column=0, sticky="e")
@@ -4254,6 +4709,7 @@ class SAXSAbsWorkbenchApp:
         )
         rb_raw.grid(row=2, column=1, sticky="w")
         self._register_i18n_widget(rb_raw, "rb_t3_raw")
+        rb_raw.configure(state="disabled")
 
         rb_kd = ttk.Radiobutton(
             c1_grid,
@@ -4309,6 +4765,7 @@ class SAXSAbsWorkbenchApp:
         row_exec.pack(fill="x")
         cb_resume = ttk.Checkbutton(c2, text=self.tr("cb_t3_resume"), variable=self.t3_resume_enabled)
         cb_resume.pack(anchor="w")
+        cb_resume.configure(state="disabled")
         self._register_i18n_widget(cb_resume, "cb_t3_resume")
         cb_overwrite = ttk.Checkbutton(c2, text=self.tr("cb_t3_overwrite"), variable=self.t3_overwrite)
         cb_overwrite.pack(anchor="w")
@@ -4394,6 +4851,7 @@ class SAXSAbsWorkbenchApp:
         self.t3_buffer_enabled = tk.BooleanVar(value=False)
         self.t3_buffer_path = tk.StringVar()
         self.t3_alpha = tk.DoubleVar(value=1.0)
+        self.t3_alpha_uncertainty = tk.StringVar(value="")
         self.t3_buffer_status = tk.StringVar(value=self.tr("lbl_t3_buffer_status"))
 
         buf_frame = ttk.LabelFrame(top, text=self.tr("lf_t3_buffer"), style="Group.TLabelframe")
@@ -4409,6 +4867,19 @@ class SAXSAbsWorkbenchApp:
         lbl_alpha.pack(side="left")
         self._register_i18n_widget(lbl_alpha, "lbl_t3_alpha")
         ttk.Entry(row_alpha, textvariable=self.t3_alpha, width=8).pack(side="left", padx=5)
+        lbl_alpha_unc = ttk.Label(
+            row_alpha,
+            text=self.tr("lbl_t3_alpha_uncertainty"),
+            anchor="e",
+        )
+        lbl_alpha_unc.pack(side="left", padx=(8, 0))
+        self._register_i18n_widget(lbl_alpha_unc, "lbl_t3_alpha_uncertainty")
+        ttk.Entry(
+            row_alpha,
+            textvariable=self.t3_alpha_uncertainty,
+            width=8,
+        ).pack(side="left", padx=5)
+        self.add_hint(buf_frame, "hint_t3_alpha_uncertainty", wraplength=360)
         ttk.Label(buf_frame, textvariable=self.t3_buffer_status, style="Hint.TLabel").pack(anchor="w", padx=3)
 
         # ---- Output format selector ----
@@ -4468,6 +4939,8 @@ class SAXSAbsWorkbenchApp:
         bot.pack(fill="x", padx=10, pady=10)
         btn_run = ttk.Button(bot, text=self.tr("t3_run_btn"), command=self.run_external_1d_batch, style="PrimaryAction.TButton")
         self._register_i18n_widget(btn_run, "t3_run_btn")
+        self.t3_run_button = btn_run
+        self.t3_run_button.configure(state="disabled")
         btn_run.pack(fill="x", ipady=7)
         self.t3_prog_bar = ttk.Progressbar(bot, mode="determinate")
         self.t3_prog_bar.pack(fill="x", pady=5)
@@ -4481,7 +4954,54 @@ class SAXSAbsWorkbenchApp:
         self.global_vars["bg_i0"].trace_add("write", self.on_global_bg_changed_for_t3)
         self.global_vars["bg_t"].trace_add("write", self.on_global_bg_changed_for_t3)
         self.t3_output_root.trace_add("write", lambda *_: self.refresh_external_1d_status())
+        self._bind_preflight_invalidation(
+            "t3",
+            [
+                *self.global_vars.values(),
+                self.t3_pipeline_mode,
+                self.t3_corr_mode,
+                self.t3_fixed_thk,
+                self.t3_x_mode,
+                self.t3_wavelength_a,
+                self.t3_meta_csv_path,
+                self.t3_bg1d_path,
+                self.t3_dark1d_path,
+                self.t3_use_meta_thk,
+                self.t3_sample_exp,
+                self.t3_sample_i0,
+                self.t3_sample_t,
+                self.t3_bg_exp,
+                self.t3_bg_i0,
+                self.t3_bg_t,
+                self.t3_sync_bg_from_global,
+                self.t3_resume_enabled,
+                self.t3_overwrite,
+                self.t3_buffer_enabled,
+                self.t3_buffer_path,
+                self.t3_alpha,
+                self.t3_alpha_uncertainty,
+                self.t3_output_format,
+            ],
+        )
         self.on_t3_sync_bg_toggle()
+        raw_control_classes = {
+            "TButton",
+            "TCheckbutton",
+            "TCombobox",
+            "TEntry",
+            "TRadiobutton",
+        }
+
+        def disable_raw_controls(parent):
+            for child in parent.winfo_children():
+                if child.winfo_class() in raw_control_classes:
+                    try:
+                        child.configure(state="disabled")
+                    except tk.TclError:
+                        pass
+                disable_raw_controls(child)
+
+        disable_raw_controls(c3)
         self.refresh_external_1d_status()
 
     def add_external_1d_files(self):
@@ -4502,6 +5022,7 @@ class SAXSAbsWorkbenchApp:
         self.refresh_external_1d_status()
 
     def refresh_external_1d_status(self):
+        self._invalidate_workbench_preflight("t3")
         if hasattr(self, "t3_queue_info"):
             total = len(getattr(self, "t3_files", []))
             uniq = len(dict.fromkeys(getattr(self, "t3_files", [])))
@@ -4560,6 +5081,12 @@ class SAXSAbsWorkbenchApp:
             "geometrysha256": "poni_sha256",
             "masksha256": "mask_sha256",
             "flatsha256": "flat_sha256",
+            "intensitystate": "intensity_state",
+            "correctionsapplied": "corrections_applied",
+            "donotrepeat": "do_not_repeat",
+            "intensityunit": "intensity_unit",
+            "kfactor": "k_factor",
+            "calibrationk": "k_factor",
         }
         try:
             lines = Path(path).read_text(encoding="utf-8-sig", errors="strict").splitlines()
@@ -4580,8 +5107,46 @@ class SAXSAbsWorkbenchApp:
                 provenance[target] = match.group(2).strip()
         return provenance
 
+    def require_relative_external_profile_for_scaling(
+        self,
+        profile,
+        profile_name,
+        *,
+        correction_mode=None,
+        apply_buffer=False,
+    ):
+        """Validate the exact Tab3 operators before changing an external profile."""
+        if require_relative_input_for_absolute_scaling is None:
+            raise RuntimeError("intensity-state ledger support is unavailable")
+        mode = str(
+            correction_mode
+            or getattr(getattr(self, "t3_corr_mode", None), "get", lambda: "k_over_d")()
+        ).strip().lower()
+        if mode == "k_only":
+            corrections_to_apply = ["k"]
+            required_existing = ["thickness"]
+        elif mode == "k_over_d":
+            corrections_to_apply = ["k", "thickness"]
+            required_existing = []
+        else:
+            raise ValueError(f"{profile_name}: unknown correction mode: {mode}")
+        if apply_buffer:
+            corrections_to_apply.append("buffer")
+        return require_relative_input_for_absolute_scaling(
+            profile,
+            profile_name=profile_name,
+            corrections_to_apply=corrections_to_apply,
+            required_existing_corrections=required_existing,
+        )
+
     def require_external_profile_operator_provenance(
-        self, profile, calibration_context, profile_name
+        self,
+        profile,
+        calibration_context,
+        profile_name,
+        *,
+        require_full_context_fingerprint=False,
+        required_k_factor=None,
     ):
         """Require a profile operator fingerprint or a complete matching operator payload."""
         provenance = profile.get("operator_provenance")
@@ -4598,8 +5163,19 @@ class SAXSAbsWorkbenchApp:
                 raise ValueError(
                     f"{profile_name}: CalibrationContext fingerprint 不匹配。"
                 )
+            if required_k_factor is not None:
+                self._require_matching_profile_k_factor(
+                    provenance,
+                    required_k_factor,
+                    profile_name,
+                )
             return expected_fingerprint
 
+        if require_full_context_fingerprint:
+            raise ValueError(
+                f"{profile_name}: absolute-scale input requires an explicit full "
+                "CalibrationContext fingerprint; operator payload alone is insufficient"
+            )
         expected = calibration_context.operator_payload()
         missing = [key for key in expected if key not in provenance]
         if missing:
@@ -4651,7 +5227,39 @@ class SAXSAbsWorkbenchApp:
             raise ValueError(
                 f"{profile_name}: operator provenance 与 K 不匹配: {', '.join(issues)}"
             )
+        if required_k_factor is not None:
+            self._require_matching_profile_k_factor(
+                provenance,
+                required_k_factor,
+                profile_name,
+            )
         return expected_fingerprint
+
+    @staticmethod
+    def _require_matching_profile_k_factor(provenance, expected_k, profile_name):
+        raw_k = provenance.get("k_factor")
+        if raw_k is None or not str(raw_k).strip():
+            raise ValueError(
+                f"{profile_name}: absolute-scale input is missing k_factor provenance"
+            )
+        try:
+            actual_k = float(raw_k)
+            expected = float(expected_k)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{profile_name}: k_factor provenance is not numeric"
+            ) from exc
+        if (
+            not np.isfinite(actual_k)
+            or not np.isfinite(expected)
+            or expected <= 0
+            or not np.isclose(actual_k, expected, rtol=1.0e-12, atol=0.0)
+        ):
+            raise ValueError(
+                f"{profile_name}: buffer k_factor ({actual_k:.12g}) does not match "
+                f"the active K ({expected:.12g})"
+            )
+        return actual_k
 
     def read_external_1d_profile(self, path):
         if _core_read_external_1d_profile is not None:
@@ -4754,10 +5362,17 @@ class SAXSAbsWorkbenchApp:
                     return 150
                 return 0
 
-            def pick_named(used, *, exact, prefixes=(), suffixes=()):
+            def pick_named(
+                used,
+                *,
+                exact,
+                prefixes=(),
+                suffixes=(),
+                candidates=None,
+            ):
                 best = None
                 best_score = 0
-                for c in cols:
+                for c in cols if candidates is None else candidates:
                     if c in used:
                         continue
                     score = match_score(clean_name(c), exact, prefixes, suffixes)
@@ -4791,6 +5406,21 @@ class SAXSAbsWorkbenchApp:
                 exact={"err", "error", "errors", "sigma", "std", "stdev", "unc", "uncertainty", "idev"},
                 prefixes=("err", "error", "sigma", "std", "unc", "idev"),
                 suffixes=("error", "sigma", "uncertainty"),
+                # Preserve an explicit all-NaN combined uncertainty rather than
+                # silently falling through to a finite statistical-only column.
+                candidates=sorted(
+                    df.columns,
+                    key=lambda value: (
+                        0
+                        if clean_name(value)
+                        in {"error", "errorcm1", "error1cm", "err", "errcm1", "idev"}
+                        else 1
+                        if "combined" in clean_name(value)
+                        else 3
+                        if "statistical" in clean_name(value)
+                        else 2
+                    ),
+                ),
             )
 
             x = pd.to_numeric(df[x_col], errors="coerce").to_numpy(dtype=np.float64, na_value=np.nan)
@@ -4840,12 +5470,34 @@ class SAXSAbsWorkbenchApp:
             "path": str(buffer_info.get("path") or ""),
             "sha256": buffer_info.get("sha256"),
             "alpha": buffer_info.get("alpha"),
+            "alpha_uncertainty": buffer_info.get("alpha_uncertainty"),
+            "k_factor": buffer_info.get("k_factor"),
             "calibration_context_fingerprint": buffer_info.get(
                 "calibration_context_fingerprint"
             ),
+            "intensity_state": buffer_info.get("intensity_state"),
+            "intensity_unit": buffer_info.get("intensity_unit"),
+            "corrections_applied": list(
+                buffer_info.get("corrections_applied") or ()
+            ),
         }
 
-    def prepare_external_buffer(self, *, pipeline_mode, calibration_context):
+    @staticmethod
+    def parse_optional_alpha_uncertainty(value):
+        """Parse optional standard uncertainty of buffer scale alpha."""
+
+        text = str(value if value is not None else "").strip()
+        if not text:
+            return None
+        try:
+            uncertainty = float(text)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Buffer alpha uncertainty must be numeric") from exc
+        if not np.isfinite(uncertainty) or uncertainty < 0:
+            raise ValueError("Buffer alpha uncertainty must be finite and >= 0")
+        return uncertainty
+
+    def prepare_external_buffer(self, *, pipeline_mode, calibration_context, k_factor=None):
         """Load and validate the optional absolute-scale buffer exactly once per run."""
         status_var = getattr(self, "t3_buffer_status", None)
 
@@ -4865,7 +5517,12 @@ class SAXSAbsWorkbenchApp:
                 "path": "",
                 "sha256": None,
                 "alpha": None,
+                "alpha_uncertainty": None,
+                "k_factor": None,
                 "calibration_context_fingerprint": None,
+                "intensity_state": None,
+                "intensity_unit": None,
+                "corrections_applied": [],
                 "profile": None,
             }
 
@@ -4876,19 +5533,42 @@ class SAXSAbsWorkbenchApp:
                 )
             if calibration_context is None:
                 raise ValueError("Buffer 扣除要求有效 CalibrationContext。")
+            active_k = float(k_factor)
+            if not np.isfinite(active_k) or active_k <= 0:
+                raise ValueError("Buffer subtraction requires finite positive active K")
             path_text = str(self.t3_buffer_path.get()).strip()
             if not path_text:
                 raise ValueError("已启用 Buffer 扣除，但未选择 Buffer 曲线。")
             alpha = float(self.t3_alpha.get())
             if not np.isfinite(alpha) or alpha <= 0:
                 raise ValueError("Buffer scaling factor alpha must be finite and > 0")
+            alpha_uncertainty_var = getattr(self, "t3_alpha_uncertainty", None)
+            alpha_uncertainty_text = str(
+                alpha_uncertainty_var.get()
+                if alpha_uncertainty_var is not None
+                and hasattr(alpha_uncertainty_var, "get")
+                else ""
+            ).strip()
+            alpha_uncertainty = self.parse_optional_alpha_uncertainty(
+                alpha_uncertainty_text
+            )
 
             buffer_path = Path(path_text).expanduser().resolve()
             profile = self.prepare_external_profile_axis(
                 buffer_path, self.read_external_1d_profile(buffer_path)
             )
+            if require_absolute_input_for_buffer_subtraction is None:
+                raise RuntimeError("absolute buffer-state validation is unavailable")
+            buffer_state = require_absolute_input_for_buffer_subtraction(
+                profile,
+                profile_name="Buffer",
+            )
             fingerprint = self.require_external_profile_operator_provenance(
-                profile, calibration_context, "Buffer"
+                profile,
+                calibration_context,
+                "Buffer",
+                require_full_context_fingerprint=True,
+                required_k_factor=active_k,
             )
             digest = self._optional_file_sha256(buffer_path)
             set_status(f"Buffer loaded: {buffer_path.name} ({len(profile['x'])} points)")
@@ -4897,12 +5577,54 @@ class SAXSAbsWorkbenchApp:
                 "path": str(buffer_path),
                 "sha256": digest,
                 "alpha": alpha,
+                "alpha_uncertainty": alpha_uncertainty,
+                "k_factor": active_k,
                 "calibration_context_fingerprint": fingerprint,
+                "intensity_state": buffer_state.state.value,
+                "intensity_unit": profile.get(
+                    "intensity_unit",
+                    profile["operator_provenance"].get("intensity_unit"),
+                ),
+                "corrections_applied": list(buffer_state.corrections_applied),
                 "profile": profile,
             }
         except Exception as exc:
             set_status(f"Buffer error: {exc}")
             raise
+
+    @staticmethod
+    def subtract_external_absolute_buffer(
+        sample_q,
+        sample_i,
+        sample_err,
+        buffer_profile,
+        alpha,
+        alpha_uncertainty=None,
+    ):
+        """Apply the single audited buffer kernel; never use a weaker fallback."""
+
+        if subtract_buffer is None:
+            raise RuntimeError("formal buffer subtraction kernel is unavailable")
+        args = (
+            np.asarray(sample_q, dtype=np.float64),
+            np.asarray(sample_i, dtype=np.float64),
+            np.asarray(sample_err, dtype=np.float64),
+            np.asarray(buffer_profile["x"], dtype=np.float64),
+            np.asarray(buffer_profile["i_rel"], dtype=np.float64),
+            np.asarray(buffer_profile["err_rel"], dtype=np.float64),
+        )
+        result = subtract_buffer(
+            *args,
+            alpha=alpha,
+            alpha_uncertainty=alpha_uncertainty,
+        )
+        if result.err_statistical is None:
+            raise RuntimeError("buffer kernel did not return statistical uncertainty")
+        return (
+            result.i_subtracted,
+            result.err_statistical,
+            result.err_subtracted,
+        )
 
     def _regularize_xy_triplet(self, x, y, e=None, min_points=3, name="profile"):
         x = np.asarray(x, dtype=np.float64)
@@ -5481,6 +6203,18 @@ class SAXSAbsWorkbenchApp:
             raise ValueError("raw流程下 BG 归一化因子无效，请检查 BG exp/i0/T。")
         return norm, ("header+explicit" if used_explicit else "header")
 
+    def _read_k_for_preflight(self):
+        """Return a finite positive K or a user-facing fail-closed reason."""
+        try:
+            value = float(self.global_vars["k_factor"].get())
+        except (TypeError, ValueError, tk.TclError):
+            return np.nan, self.tr("warn_k_missing_invalid")
+        if not np.isfinite(value):
+            return np.nan, self.tr("warn_k_missing_invalid")
+        if value <= 0:
+            return value, self.tr("warn_k_le_zero")
+        return value, None
+
     def dry_run_external_1d(self):
         if not self.t3_files:
             self.show_info("msg_preview_title", self.tr("msg_t3_queue_empty"))
@@ -5492,24 +6226,57 @@ class SAXSAbsWorkbenchApp:
         risky_files = 0
         pipeline_mode = self.t3_pipeline_mode.get().strip().lower()
         mode = self.t3_corr_mode.get()
-        k = float(self.global_vars["k_factor"].get())
-        thk_mm = float(self.t3_fixed_thk.get())
+        k, k_parse_error = self._read_k_for_preflight()
+        try:
+            thk_mm = float(self.t3_fixed_thk.get())
+        except (TypeError, ValueError, tk.TclError):
+            thk_mm = np.nan
         monitor_mode = self.get_monitor_mode()
         warnings = []
         k_trust_error = None
+        thickness_gate_error = None
+        buffer_gate_error = None
+        resume_gate_error = None
         active_calibration_context = None
 
-        if k <= 0:
-            warnings.append(self.tr("warn_k_le_zero"))
-        try:
-            active_calibration_context = self.require_trusted_k_for_external(
-                k, pipeline_mode=pipeline_mode, monitor_mode=monitor_mode
+        if k_parse_error is not None:
+            k_trust_error = k_parse_error
+            warnings.append(k_parse_error)
+        else:
+            try:
+                active_calibration_context = self.require_trusted_k_for_external(
+                    k, pipeline_mode=pipeline_mode, monitor_mode=monitor_mode
+                )
+            except ValueError as exc:
+                k_trust_error = str(exc)
+                warnings.append(k_trust_error)
+        if mode not in {"k_over_d", "k_only"}:
+            thickness_gate_error = f"Unknown correction mode: {mode}"
+            warnings.append(thickness_gate_error)
+        elif mode == "k_over_d" and (not np.isfinite(thk_mm) or thk_mm <= 0):
+            thickness_gate_error = self.tr("warn_kd_thk_le_zero")
+            warnings.append(thickness_gate_error)
+
+        resume_var = getattr(self, "t3_resume_enabled", None)
+        if resume_var is not None and bool(resume_var.get()):
+            resume_gate_error = (
+                "Legacy exists-only resume is disabled for formal Tab3 output; "
+                "use overwrite after auditing the destination."
             )
-        except ValueError as exc:
-            k_trust_error = str(exc)
-            warnings.append(k_trust_error)
-        if mode == "k_over_d" and thk_mm <= 0:
-            warnings.append(self.tr("warn_kd_thk_le_zero"))
+            warnings.append(resume_gate_error)
+
+        buffer_var = getattr(self, "t3_buffer_enabled", None)
+        buffer_enabled = bool(buffer_var.get()) if buffer_var is not None else False
+        buffer_info = {"enabled": False, "profile": None}
+        try:
+            buffer_info = self.prepare_external_buffer(
+                pipeline_mode=pipeline_mode,
+                calibration_context=active_calibration_context,
+                k_factor=k,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            buffer_gate_error = str(exc)
+            warnings.append(buffer_gate_error)
 
         meta_map = {}
         bg_prof = None
@@ -5566,6 +6333,12 @@ class SAXSAbsWorkbenchApp:
                 prof = self.prepare_external_profile_axis(
                     fp, self.read_external_1d_profile(fp)
                 )
+                self.require_relative_external_profile_for_scaling(
+                    prof,
+                    Path(fp).name,
+                    correction_mode=mode,
+                    apply_buffer=buffer_enabled,
+                )
                 x_label = prof["x_label"]
                 x_conversion = prof["x_conversion"]
                 if active_calibration_context is not None:
@@ -5579,6 +6352,20 @@ class SAXSAbsWorkbenchApp:
                 meta_src = "-"
                 outside_bg = 0
                 outside_dark = 0
+                outside_buffer = 0
+
+                if buffer_info["enabled"]:
+                    buffer_profile = buffer_info["profile"]
+                    self.assert_external_profile_axis_compatible(
+                        prof, buffer_profile, "Buffer"
+                    )
+                    _, _, outside_buffer = self.align_profile_to_x(
+                        prof["x"], buffer_profile, "Buffer"
+                    )
+                    if outside_buffer > 0:
+                        raise ValueError(
+                            f"sample grid has {outside_buffer} point(s) outside Buffer range"
+                        )
 
                 if pipeline_mode == "raw":
                     sp = self.resolve_external_sample_params(fp, meta_map, monitor_mode)
@@ -5626,6 +6413,7 @@ class SAXSAbsWorkbenchApp:
                     "MetaSrc": meta_src,
                     "BG_OutsidePts": outside_bg,
                     "Dark_OutsidePts": outside_dark,
+                    "Buffer_OutsidePts": outside_buffer,
                     "Status": status,
                     "Reason": reason,
                 })
@@ -5643,11 +6431,20 @@ class SAXSAbsWorkbenchApp:
                     "MetaSrc": "-",
                     "BG_OutsidePts": 0,
                     "Dark_OutsidePts": 0,
+                    "Buffer_OutsidePts": 0,
                     "Status": self.tr("status_fail"),
                     "Reason": str(e),
                 })
 
-        if k_trust_error is not None:
+        if any(
+            error is not None
+            for error in (
+                k_trust_error,
+                thickness_gate_error,
+                buffer_gate_error,
+                resume_gate_error,
+            )
+        ):
             failed_files = max(failed_files, len(files))
 
 
@@ -5657,6 +6454,7 @@ class SAXSAbsWorkbenchApp:
             warnings_count=len(warnings),
             risky_files=risky_files,
         )
+        self._record_workbench_preflight("t3", gate)
 
         top = tk.Toplevel(self.root)
         top.title(self.tr("title_t3_dryrun"))
@@ -5690,6 +6488,11 @@ class SAXSAbsWorkbenchApp:
 
     def run_external_1d_batch(self):
         try:
+            self._require_current_workbench_preflight("t3")
+            if bool(self.t3_resume_enabled.get()):
+                raise ValueError(
+                    "Tab3 formal output does not permit legacy exists-only resume."
+                )
             if not self.t3_files:
                 raise ValueError("队列为空：请先添加外部1D文件。")
 
@@ -5726,6 +6529,7 @@ class SAXSAbsWorkbenchApp:
             buffer_info = self.prepare_external_buffer(
                 pipeline_mode=pipeline_mode,
                 calibration_context=active_calibration_context,
+                k_factor=k,
             )
             buffer_audit = self.external_buffer_audit_payload(buffer_info)
 
@@ -5810,9 +6614,18 @@ class SAXSAbsWorkbenchApp:
                 meta_source = "-"
                 outside_bg = 0
                 outside_dark = 0
+                corrections_applied_serialized = ""
+                combined_uncertainty = None
+                uncertainty_metadata = None
                 try:
                     prof = self.prepare_external_profile_axis(
                         fp, self.read_external_1d_profile(fp)
+                    )
+                    input_state = self.require_relative_external_profile_for_scaling(
+                        prof,
+                        Path(fp).name,
+                        correction_mode=corr_mode,
+                        apply_buffer=bool(buffer_info["enabled"]),
                     )
                     points = len(prof["x"])
                     x_label = prof["x_label"]
@@ -5906,46 +6719,55 @@ class SAXSAbsWorkbenchApp:
                                 prof, buf_prof, "Buffer"
                             )
                             buf_alpha = buffer_info["alpha"]
-                            if subtract_buffer is not None:
-                                buf_x = np.asarray(buf_prof["x"], dtype=np.float64)
-                                buf_i = np.asarray(buf_prof["i_rel"], dtype=np.float64)
-                                buf_e = np.asarray(buf_prof["err_rel"], dtype=np.float64)
-                                result_buf = subtract_buffer(
-                                    np.asarray(prof["x"], dtype=np.float64),
-                                    i_abs, err_abs,
-                                    buf_x, buf_i, buf_e,
-                                    alpha=buf_alpha,
-                                )
-                                i_abs = result_buf.i_subtracted
-                                err_abs = result_buf.err_subtracted
-                            else:
-                                # Fallback without library: subtraction + error propagation
-                                _x_s = np.asarray(prof["x"], dtype=np.float64)
-                                _x_b = np.asarray(buf_prof["x"], dtype=np.float64)
-                                if not np.isfinite(buf_alpha) or buf_alpha <= 0:
-                                    raise ValueError("Buffer scaling factor alpha must be finite and > 0")
-                                order_b = np.argsort(_x_b)
-                                _x_b = _x_b[order_b]
-                                _buf_i = np.asarray(buf_prof["i_rel"], dtype=np.float64)[order_b]
-                                _buf_e = np.asarray(buf_prof["err_rel"], dtype=np.float64)[order_b]
-                                tol = max(
-                                    1e-12,
-                                    1e-9 * max(abs(_x_b[0]), abs(_x_b[-1]), abs(_x_s).max(initial=0.0))
-                                )
-                                if np.min(_x_s) < _x_b[0] - tol or np.max(_x_s) > _x_b[-1] + tol:
-                                    raise ValueError(
-                                        "sample q grid extends outside buffer q range "
-                                        f"({_x_b[0]:.6g} to {_x_b[-1]:.6g})"
+                            (
+                                i_abs,
+                                err_abs,
+                                combined_uncertainty,
+                            ) = self.subtract_external_absolute_buffer(
+                                prof["x"],
+                                i_abs,
+                                err_abs,
+                                buf_prof,
+                                buf_alpha,
+                                buffer_info["alpha_uncertainty"],
+                            )
+                            uncertainty_metadata = {
+                                "buffer_source_name": Path(
+                                    buffer_info["path"]
+                                ).name,
+                                "buffer_source_sha256": buffer_info["sha256"],
+                                "buffer_alpha": repr(float(buf_alpha)),
+                                "buffer_alpha_uncertainty": (
+                                    "unknown"
+                                    if buffer_info["alpha_uncertainty"] is None
+                                    else repr(
+                                        float(buffer_info["alpha_uncertainty"])
                                     )
-                                buf_i_interp = np.interp(
-                                    _x_s, _x_b, _buf_i,
-                                )
-                                buf_e_interp = np.interp(
-                                    _x_s, _x_b, _buf_e,
-                                )
-                                i_abs = i_abs - buf_alpha * buf_i_interp
-                                err_abs = np.sqrt(err_abs**2 + (buf_alpha * buf_e_interp)**2)
+                                ),
+                                "uncertainty_model": (
+                                    "u_combined^2=u_sample^2+alpha^2*u_buffer^2+"
+                                    "I_buffer^2*u_alpha^2"
+                                ),
+                                "uncertainty_type": (
+                                    "combined_standard_unknown_alpha"
+                                    if buffer_info["alpha_uncertainty"] is None
+                                    else "combined_standard"
+                                ),
+                            }
 
+                        output_corrections = list(input_state.corrections_applied)
+                        output_corrections.append("k")
+                        if corr_mode == "k_over_d":
+                            output_corrections.append("thickness")
+                        if pipeline_mode == "raw":
+                            output_corrections.extend(
+                                ["dark", "background", "monitor", "transmission"]
+                            )
+                        if buffer_info["enabled"]:
+                            output_corrections.append("buffer")
+                        corrections_applied_serialized = serialize_correction_ledger(
+                            output_corrections
+                        )
                         written_path = self.save_profile_table(
                             out_path,
                             prof["x"],
@@ -5954,6 +6776,9 @@ class SAXSAbsWorkbenchApp:
                             x_label,
                             output_format=output_format,
                             run_policy=run_policy,
+                            corrections_applied=output_corrections,
+                            combined_uncertainty=combined_uncertainty,
+                            uncertainty_metadata=uncertainty_metadata,
                         )
                         if buffer_info["enabled"]:
                             buffer_applied = True
@@ -5975,6 +6800,7 @@ class SAXSAbsWorkbenchApp:
                     "XLabel": x_label,
                     "XConversion": x_conversion,
                     "CalibrationContextFingerprint": operator_fingerprint,
+                    "CorrectionsApplied": corrections_applied_serialized,
                     "BufferEnabled": buffer_audit["enabled"],
                     "BufferApplied": buffer_applied,
                     "BufferPath": buffer_audit["path"],
@@ -5984,8 +6810,23 @@ class SAXSAbsWorkbenchApp:
                         if buffer_audit["alpha"] is not None
                         else np.nan
                     ),
+                    "BufferKFactor": (
+                        buffer_audit["k_factor"]
+                        if buffer_audit["k_factor"] is not None
+                        else np.nan
+                    ),
+                    "BufferAlphaUncertainty": (
+                        buffer_audit["alpha_uncertainty"]
+                        if buffer_audit["alpha_uncertainty"] is not None
+                        else np.nan
+                    ),
                     "BufferContextFingerprint": (
                         buffer_audit["calibration_context_fingerprint"] or ""
+                    ),
+                    "BufferIntensityState": buffer_audit["intensity_state"] or "",
+                    "BufferIntensityUnit": buffer_audit["intensity_unit"] or "",
+                    "BufferCorrectionsApplied": serialize_correction_ledger(
+                        buffer_audit["corrections_applied"]
                     ),
                     "PipelineMode": pipeline_mode,
                     "CorrMode": corr_mode,
@@ -6258,7 +7099,10 @@ A7：
    - processed_robust_1d_sector_combined/*.dat（扇区合并保存，若勾选）
    - processed_robust_radial_chi/*.chi
    每个文件均为：坐标列 + I_abs_cm^-1 + 兼容误差列 Error_cm^-1
-   + Error_Statistical_cm^-1；Error_CombinedStandard_cm^-1 当前为 NaN（系统不确定度尚未完整输入）。
+   + Error_Statistical_cm^-1 + Error_CombinedStandard_cm^-1。
+   Tab2 未输入完整系统不确定度时 combined 列为 NaN；Tab3 使用 buffer 时，statistical 列不含
+   u(alpha) 项，combined 列包含该项，兼容 Error 列指向 combined。逐谱头同时记录 buffer
+   安全文件名/SHA-256、alpha、u(alpha)、传播公式和 uncertainty type。
    - processed_robust_reports/batch_report_*.csv
    - processed_robust_reports/metadata_for_tab3_*.csv
    - processed_robust_reports/metadata.csv
@@ -7134,17 +7978,23 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
 
     def add_bg_library_files(self):
         fs = filedialog.askopenfilenames(filetypes=[("Image", "*.tif *.tiff *.edf *.cbf")])
+        initial_count = len(self.t2_bg_candidates)
         for f in fs:
             if f not in self.t2_bg_candidates:
                 self.t2_bg_candidates.append(f)
         self.t2_bg_lib_info.set(self.tr("var_bg_lib").format(n=len(self.t2_bg_candidates)))
+        if len(self.t2_bg_candidates) != initial_count:
+            self._invalidate_workbench_preflight("t2")
 
     def add_dark_library_files(self):
         fs = filedialog.askopenfilenames(filetypes=[("Image", "*.tif *.tiff *.edf *.cbf")])
+        initial_count = len(self.t2_dark_candidates)
         for f in fs:
             if f not in self.t2_dark_candidates:
                 self.t2_dark_candidates.append(f)
         self.t2_dark_lib_info.set(self.tr("var_dark_lib").format(n=len(self.t2_dark_candidates)))
+        if len(self.t2_dark_candidates) != initial_count:
+            self._invalidate_workbench_preflight("t2")
 
     def _collect_image_files_recursive(self, root_dir):
         root = Path(root_dir)
@@ -7170,6 +8020,9 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         self.t2_bg_lib_info.set(self.tr("var_bg_lib").format(n=len(self.t2_bg_candidates)))
         self.log(f"[BG库] 递归添加 {added} 个背景候选文件。")
 
+        if added:
+            self._invalidate_workbench_preflight("t2")
+
     def add_dark_library_folder_recursive(self):
         directory = filedialog.askdirectory()
         if not directory:
@@ -7182,13 +8035,19 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         self.t2_dark_lib_info.set(self.tr("var_dark_lib").format(n=len(self.t2_dark_candidates)))
         self.log(f"[Dark库] 递归添加 {added} 个暗场候选文件。")
 
+        if added:
+            self._invalidate_workbench_preflight("t2")
+
     def clear_reference_libraries(self):
         if (self.t2_bg_candidates or self.t2_dark_candidates) and not self.confirm_action("confirm_clear_ref_lib"):
             return
+        changed = bool(self.t2_bg_candidates or self.t2_dark_candidates)
         self.t2_bg_candidates = []
         self.t2_dark_candidates = []
         self.t2_bg_lib_info.set(self.tr("var_bg_lib").format(n=0))
         self.t2_dark_lib_info.set(self.tr("var_dark_lib").format(n=0))
+        if changed:
+            self._invalidate_workbench_preflight("t2")
 
     def process_sample_task(self, idx, fpath, out_stem, context):
         logs = []
@@ -7960,6 +8819,16 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         }
     def run_batch(self):
         try:
+            self._require_current_workbench_preflight("t2")
+            if str(self.t2_calc_mode.get()).strip().lower() != "fixed":
+                raise ValueError(
+                    "Tab2 formal output requires fixed thickness; legacy per-frame "
+                    "Beer-Lambert thickness is diagnostic-only."
+                )
+            if bool(self.t2_resume_enabled.get()):
+                raise ValueError(
+                    "Tab2 formal output does not permit legacy exists-only resume."
+                )
             if not self.t2_files:
                 raise ValueError("队列为空：请先添加样品文件。")
             k = float(self.global_vars["k_factor"].get())
@@ -8348,6 +9217,12 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         "ref_mode": ref_mode,
                         "calc_mode": self.t2_calc_mode.get(),
                         "mu": mu if self.t2_calc_mode.get() == "auto" else None,
+                        "mu_used_in_thickness_model": self.t2_calc_mode.get() == "auto",
+                        "mu_provenance": (
+                            getattr(self, "t2_mu_provenance", None)
+                            if self.t2_calc_mode.get() == "auto"
+                            else None
+                        ),
                         "fixed_thk_cm": fixed_thk_cm if self.t2_calc_mode.get() == "fixed" else None,
                         "alpha": float(self.t2_alpha.get()) if self.t2_alpha_enabled.get() else 1.0,
                         "output_format": self.t2_output_format.get() if hasattr(self, "t2_output_format") else "tsv",
@@ -8537,6 +9412,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
 
     # --- Helpers ---
     def refresh_queue_status(self):
+        self._invalidate_workbench_preflight("t2")
         if hasattr(self, "t2_queue_info"):
             total = len(getattr(self, "t2_files", []))
             uniq = len(dict.fromkeys(getattr(self, "t2_files", [])))
@@ -8579,6 +9455,189 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     )
                 else:
                     self.t2_out_hint_var.set(f"{self.tr('out_auto_prefix')}: {', '.join(dirs)}{sec_note}")
+
+    @staticmethod
+    def _preflight_var_value(value, default=None):
+        if value is None:
+            return default
+        try:
+            value = value.get()
+        except (AttributeError, tk.TclError, TypeError, ValueError):
+            pass
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    @staticmethod
+    def _preflight_file_identity(path):
+        text = str(path or "").strip()
+        if not text:
+            return {"path": "", "exists": False}
+        try:
+            resolved = Path(text).expanduser().resolve()
+            stat = resolved.stat()
+            return {
+                "path": str(resolved),
+                "exists": True,
+                "size": int(stat.st_size),
+                "mtime_ns": int(stat.st_mtime_ns),
+            }
+        except OSError:
+            return {"path": text, "exists": False}
+
+    def _preflight_calibration_identity(self):
+        context = getattr(self, "calibration_context", None)
+        fingerprint = None
+        if context is not None and hasattr(context, "fingerprint"):
+            try:
+                fingerprint = str(context.fingerprint())
+            except (AttributeError, TypeError, ValueError):
+                fingerprint = None
+        return {
+            "context_fingerprint": fingerprint,
+            "record_path": str(getattr(self, "calibration_record_path", None) or ""),
+            "provenance_complete": self._preflight_var_value(
+                getattr(self, "calibration_record_provenance_complete", None)
+            ),
+            "source_files_verified": self._preflight_var_value(
+                getattr(self, "calibration_record_source_files_verified", None)
+            ),
+            "calibration_k": self._preflight_var_value(
+                getattr(self, "calibration_k_value", None)
+            ),
+        }
+
+    def _preflight_global_config(self):
+        global_vars = getattr(self, "global_vars", {}) or {}
+        values = {
+            key: self._preflight_var_value(value)
+            for key, value in sorted(global_vars.items())
+        }
+        for key in ("poni_path", "bg_path", "dark_path", "mask_path", "flat_path"):
+            if key in values:
+                if key in {"bg_path", "dark_path"}:
+                    paths = str(values[key] or "").split(";")
+                else:
+                    paths = [values[key]]
+                values[f"{key}_identity"] = [
+                    self._preflight_file_identity(path) for path in paths
+                ]
+        return values
+
+    def _t2_preflight_config(self):
+        names = (
+            "t2_mu", "t2_calc_mode", "t2_fixed_thk", "t2_ref_mode",
+            "t2_error_model", "t2_apply_solid_angle", "t2_polarization_enabled",
+            "t2_polarization", "t2_output_root", "t2_mask_path", "t2_flat_path",
+            "t2_resume_enabled", "t2_overwrite", "t2_workers",
+            "t2_strict_instrument", "t2_instr_tol_pct", "t2_alpha",
+            "t2_alpha_enabled", "t2_output_format", "t2_export_cal2d",
+            "t2_cal2d_dtype", "t2_cal2d_apply_flat", "t2_mode_full",
+            "t2_mode_sector", "t2_mode_chi", "t2_sec_min", "t2_sec_max",
+            "t2_sector_ranges_text", "t2_sector_save_each",
+            "t2_sector_save_combined", "t2_rad_qmin", "t2_rad_qmax",
+        )
+        config = {
+            name: self._preflight_var_value(getattr(self, name, None))
+            for name in names
+        }
+        calc_mode = str(config.get("t2_calc_mode") or "fixed").strip().lower()
+        if calc_mode != "auto":
+            config["t2_mu"] = None
+        files = list(dict.fromkeys(str(item) for item in getattr(self, "t2_files", [])))
+        bg_files = list(
+            dict.fromkeys(str(item) for item in getattr(self, "t2_bg_candidates", []))
+        )
+        dark_files = list(
+            dict.fromkeys(str(item) for item in getattr(self, "t2_dark_candidates", []))
+        )
+        config.update({
+            "schema": "saxsabs-workbench-tab2-preflight-v1",
+            "mu_provenance": (
+                getattr(self, "t2_mu_provenance", None)
+                if calc_mode == "auto"
+                else None
+            ),
+            "files": [self._preflight_file_identity(path) for path in files],
+            "bg_candidates": [self._preflight_file_identity(path) for path in bg_files],
+            "dark_candidates": [
+                self._preflight_file_identity(path) for path in dark_files
+            ],
+            "global": self._preflight_global_config(),
+            "calibration": self._preflight_calibration_identity(),
+        })
+        return config
+
+    def _t3_preflight_config(self):
+        names = (
+            "t3_pipeline_mode", "t3_corr_mode", "t3_fixed_thk", "t3_x_mode",
+            "t3_wavelength_a", "t3_meta_csv_path", "t3_bg1d_path",
+            "t3_dark1d_path", "t3_output_root", "t3_use_meta_thk",
+            "t3_sample_exp", "t3_sample_i0", "t3_sample_t", "t3_bg_exp",
+            "t3_bg_i0", "t3_bg_t", "t3_sync_bg_from_global",
+            "t3_resume_enabled", "t3_overwrite", "t3_buffer_enabled",
+            "t3_buffer_path", "t3_alpha", "t3_alpha_uncertainty", "t3_output_format",
+        )
+        config = {
+            name: self._preflight_var_value(getattr(self, name, None))
+            for name in names
+        }
+        files = list(dict.fromkeys(str(item) for item in getattr(self, "t3_files", [])))
+        for name in ("t3_meta_csv_path", "t3_bg1d_path", "t3_dark1d_path", "t3_buffer_path"):
+            config[f"{name}_identity"] = self._preflight_file_identity(config[name])
+        config.update({
+            "schema": "saxsabs-workbench-tab3-preflight-v1",
+            "files": [self._preflight_file_identity(path) for path in files],
+            "global": self._preflight_global_config(),
+            "calibration": self._preflight_calibration_identity(),
+        })
+        return config
+
+    def _invalidate_workbench_preflight(self, tab):
+        setattr(self, f"{tab}_preflight_approval", None)
+        setattr(self, f"{tab}_preflight_fingerprint", None)
+        setattr(self, f"{tab}_preflight_level", None)
+        button = getattr(self, f"{tab}_run_button", None)
+        if button is not None:
+            try:
+                button.configure(state="disabled")
+            except (AttributeError, tk.TclError):
+                pass
+
+    def _bind_preflight_invalidation(self, tab, variables):
+        for variable in variables:
+            if variable is None or not hasattr(variable, "trace_add"):
+                continue
+            variable.trace_add(
+                "write", lambda *_args, target=tab: self._invalidate_workbench_preflight(target)
+            )
+
+    def _record_workbench_preflight(self, tab, gate):
+        if approve_preflight is None:
+            raise RuntimeError("Workbench preflight safety helper is unavailable.")
+        config = self._t2_preflight_config() if tab == "t2" else self._t3_preflight_config()
+        approval = approve_preflight(config, gate.level)
+        setattr(self, f"{tab}_preflight_approval", approval)
+        setattr(self, f"{tab}_preflight_fingerprint", approval.fingerprint)
+        setattr(self, f"{tab}_preflight_level", approval.level)
+        button = getattr(self, f"{tab}_run_button", None)
+        if button is not None:
+            try:
+                button.configure(state="normal" if approval.allows_run else "disabled")
+            except (AttributeError, tk.TclError):
+                pass
+        return approval
+
+    def _require_current_workbench_preflight(self, tab):
+        if require_current_preflight is None:
+            raise RuntimeError("Run blocked: workbench preflight safety helper is unavailable.")
+        config = self._t2_preflight_config() if tab == "t2" else self._t3_preflight_config()
+        approval = getattr(self, f"{tab}_preflight_approval", None)
+        return require_current_preflight(approval, config)
 
     def _evaluate_preflight_gate(self, total_files, failed_files, warnings_count, risky_files=0):
         if evaluate_preflight_gate is not None:
@@ -8630,6 +9689,18 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         selected_modes = self.get_selected_modes()
         warnings = []
         calibration_gate_error = None
+        formal_config_errors = []
+        if str(mode).strip().lower() != "fixed":
+            formal_config_errors.append(
+                "Formal Tab2 output requires fixed thickness; per-frame "
+                "Beer-Lambert thickness is disabled."
+            )
+        resume_var = getattr(self, "t2_resume_enabled", None)
+        if resume_var is not None and bool(resume_var.get()):
+            formal_config_errors.append(
+                "Legacy exists-only resume is disabled for formal Tab2 output."
+            )
+        warnings.extend(formal_config_errors)
         try:
             k_factor = float(self.global_vars["k_factor"].get())
             polarization_applied, polarization_factor = self.resolve_t2_polarization()
@@ -8829,7 +9900,11 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                         )
                     )
 
-        if calibration_gate_error is not None or worker_gate_error is not None:
+        if (
+            calibration_gate_error is not None
+            or worker_gate_error is not None
+            or formal_config_errors
+        ):
             failed_files = max(failed_files, len(files))
 
         gate = self._evaluate_preflight_gate(
@@ -8838,6 +9913,7 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             warnings_count=len(warnings),
             risky_files=risky_files,
         )
+        self._record_workbench_preflight("t2", gate)
         
         top = tk.Toplevel(self.root)
         top.title(self.tr("title_t2_dryrun"))
@@ -9148,10 +10224,43 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
     def open_mu_tool(self):
         top = tk.Toplevel(self.root)
         top.title(self.tr("title_mu_tool"))
-        top.geometry("520x480")
+        if choose_initial_window_geometry is not None:
+            geometry = choose_initial_window_geometry(
+                top.winfo_screenwidth(),
+                top.winfo_screenheight(),
+                preferred_width=700,
+                preferred_height=650,
+                minimum_width=520,
+                minimum_height=420,
+                horizontal_margin=48,
+                vertical_margin=80,
+            )
+            top.geometry(geometry.tk_geometry)
+        else:
+            top.geometry("700x650")
+        top.minsize(520, 420)
+        if not hasattr(self, "_scroll_canvases"):
+            self._scroll_canvases = []
+        content = self._make_scrollable_frame(top)
+
+        source_choices = {
+            self.tr("opt_mu_source_nist"): "nist30",
+            self.tr("opt_mu_source_elam"): "elam",
+        }
+        source_var = tk.StringVar(value=next(iter(source_choices)))
+        frm_source = ttk.LabelFrame(content, text=self.tr("lbl_mu_data_source"))
+        frm_source.pack(fill="x", padx=8, pady=4)
+        cb_source = ttk.Combobox(
+            frm_source,
+            values=tuple(source_choices),
+            textvariable=source_var,
+            state="readonly",
+            width=44,
+        )
+        cb_source.pack(fill="x", padx=4, pady=4)
 
         # --- Energy / wavelength ---
-        frm_energy = ttk.LabelFrame(top, text=self.tr("lbl_mu_energy"))
+        frm_energy = ttk.LabelFrame(content, text=self.tr("lbl_mu_energy"))
         frm_energy.pack(fill="x", padx=8, pady=4)
 
         energy_var = tk.DoubleVar(value=30.0)
@@ -9184,25 +10293,38 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
         e_wl.pack(side="left")
         e_wl.bind("<FocusOut>", _sync_energy)
 
-        # Try to auto-fill from PONI wavelength
-        try:
-            poni_path = self.global_vars["poni_path"].get()
-            if poni_path:
-                ai = pyFAI.load(poni_path)
-                wl_m = ai.wavelength  # metres
-                wl_A = wl_m * 1e10
-                e_keV = HC_KEV_A / wl_A
-                energy_var.set(round(e_keV, 4))
-                wl_var.set(round(wl_A, 4))
-        except Exception:
-            pass
+        # Capture detector geometry independently from editable diagnostic
+        # fields.  It is refreshed again at calculation and export time.
+        poni_energy = self._current_mu_poni_snapshot()
+        if poni_energy["energy_kev"] is not None and poni_energy["error"] is None:
+            e_keV = float(poni_energy["energy_kev"])
+            energy_var.set(round(e_keV, 4))
+            wl_var.set(round(HC_KEV_A / e_keV, 4))
 
         # --- Material preset ---
-        frm_mat = ttk.LabelFrame(top, text=self.tr("lbl_mu_preset"))
+        frm_mat = ttk.LabelFrame(content, text=self.tr("lbl_mu_preset"))
         frm_mat.pack(fill="x", padx=8, pady=4)
 
-        preset_keys = list(MATERIAL_PRESETS.keys()) if MATERIAL_PRESETS else []
-        preset_names = [MATERIAL_PRESETS[k][0] for k in preset_keys] if MATERIAL_PRESETS else []
+        elam_preset_payloads = {}
+        if MATERIAL_PRESETS:
+            for key in MATERIAL_PRESETS:
+                display_name, composition, density = MATERIAL_PRESETS[key]
+                elam_preset_payloads[display_name] = {
+                    "composition": dict(composition),
+                    "density": float(density),
+                    "material_key": str(key),
+                    "material_name": str(display_name),
+                }
+        nist_preset_payloads = {}
+        for spec in (NOMINAL_MATERIALS or {}).values():
+            nist_preset_payloads[f"{spec.display_name} [NIST nominal]"] = {
+                "composition": spec.composition_dict(),
+                "density": None,
+                "material_key": spec.key,
+                "material_name": spec.display_name,
+            }
+        preset_payloads = dict(nist_preset_payloads)
+        preset_names = list(preset_payloads)
         preset_var = tk.StringVar(value=preset_names[0] if preset_names else "")
         cb_preset = ttk.Combobox(frm_mat, values=preset_names, textvariable=preset_var, width=30, state="readonly")
         cb_preset.pack(side="left", padx=4, pady=4)
@@ -9210,56 +10332,249 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
             cb_preset.current(0)
 
         # --- Density ---
-        rho_var = tk.DoubleVar(value=4.43)
+        rho_var = tk.StringVar(value="")
         row_rho = ttk.Frame(frm_mat)
         row_rho.pack(fill="x", pady=2)
         ttk.Label(row_rho, text=self.tr("lbl_mu_density")).pack(side="left", padx=4)
         e_rho = ttk.Entry(row_rho, textvariable=rho_var, width=8)
         e_rho.pack(side="left")
+        porosity_var = tk.BooleanVar(value=False)
+        cb_porosity = ttk.Checkbutton(
+            row_rho,
+            text=self.tr("cb_mu_porosity_risk"),
+            variable=porosity_var,
+        )
+        cb_porosity.pack(side="left", padx=(12, 4))
+
+        def _on_source_changed(*_args):
+            source_code = source_choices[source_var.get()]
+            if source_code == "nist30":
+                energy_var.set(30.0)
+                wl_var.set(round(HC_KEV_A / 30.0, 4))
+                e_energy.configure(state="disabled")
+                e_wl.configure(state="disabled")
+                e_rho.configure(state="disabled")
+                cb_porosity.configure(state="normal")
+            else:
+                e_energy.configure(state="normal")
+                e_wl.configure(state="normal")
+                e_rho.configure(state="normal")
+                porosity_var.set(False)
+                cb_porosity.configure(state="disabled")
+            active_presets = (
+                nist_preset_payloads if source_code == "nist30" else elam_preset_payloads
+            )
+            preset_payloads.clear()
+            preset_payloads.update(active_presets)
+            active_names = list(active_presets)
+            cb_preset.configure(values=active_names)
+            if preset_var.get() not in active_presets:
+                preset_var.set(active_names[0] if active_names else "")
+            _fill_from_preset()
+
+        cb_source.bind("<<ComboboxSelected>>", _on_source_changed)
 
         # --- Custom composition ---
-        frm_comp = ttk.LabelFrame(top, text=self.tr("lbl_mu_custom_comp"))
+        frm_comp = ttk.LabelFrame(content, text=self.tr("lbl_mu_custom_comp"))
         frm_comp.pack(fill="x", padx=8, pady=4)
 
         comp_var = tk.StringVar(value="")
-        ttk.Label(frm_comp, text="e.g. Fe:0.69, Cr:0.19, Ni:0.10").pack(anchor="w", padx=4)
+        ttk.Label(
+            frm_comp,
+            text="wt fractions or wt% (sum = 1 or 100), e.g. Ti:90, Al:6, V:4",
+        ).pack(anchor="w", padx=4)
         e_comp = ttk.Entry(frm_comp, textvariable=comp_var, width=50)
         e_comp.pack(fill="x", padx=4, pady=2)
 
         def _fill_from_preset(*_a):
             sel = preset_var.get()
-            for k in preset_keys:
-                if MATERIAL_PRESETS[k][0] == sel:
-                    comp_dict = MATERIAL_PRESETS[k][1]
-                    rho_var.set(MATERIAL_PRESETS[k][2])
-                    comp_var.set(", ".join(f"{el}:{w}" for el, w in comp_dict.items()))
-                    break
+            payload = preset_payloads.get(sel)
+            if payload is not None:
+                comp_dict = payload["composition"]
+                density = payload["density"]
+                if density is not None:
+                    rho_var.set(density)
+                else:
+                    rho_var.set("")
+                comp_var.set(", ".join(f"{el}:{w}" for el, w in comp_dict.items()))
         cb_preset.bind("<<ComboboxSelected>>", _fill_from_preset)
-        _fill_from_preset()  # initialize
+        _on_source_changed()  # initialize source-specific presets and fields
 
         # --- Result display ---
-        frm_res = ttk.LabelFrame(top, text=self.tr("lbl_mu_contrib"))
+        frm_res = ttk.LabelFrame(content, text=self.tr("lbl_mu_contrib"))
         frm_res.pack(fill="both", expand=True, padx=8, pady=4)
 
         result_text = tk.Text(frm_res, height=8, width=55, state="disabled", font=self._get_ui_font(9))
         result_text.pack(fill="both", expand=True, padx=4, pady=4)
         self._register_native_widget(result_text)
+        latest_provenance = {"payload": None}
+        export_button = {"widget": None}
+
+        def _invalidate_mu_result(*_args, show_message=True):
+            latest_provenance["payload"] = None
+            self.t2_mu_provenance = None
+            if hasattr(self, "t2_mu"):
+                self.t2_mu.set("")
+            widget = export_button["widget"]
+            if widget is not None:
+                widget.configure(state="disabled")
+            result_text.configure(state="normal")
+            result_text.delete("1.0", "end")
+            if show_message:
+                stale_message = (
+                    "Inputs changed; recalculate before using or exporting mu."
+                    if self.language == "en"
+                    else "\u8f93\u5165\u5df2\u53d8\u66f4\uff1b\u4f7f\u7528\u6216\u5bfc\u51fa mu \u524d\u8bf7\u91cd\u65b0\u8ba1\u7b97\u3002"
+                )
+                result_text.insert("end", stale_message)
+            result_text.configure(state="disabled")
+
+        def _mark_mu_result_current(payload):
+            latest_provenance["payload"] = payload
+            self.t2_mu_provenance = payload
+            widget = export_button["widget"]
+            if widget is not None:
+                widget.configure(state="normal")
 
         def do_calc():
+            _invalidate_mu_result(show_message=False)
             try:
+                current_poni = self._current_mu_poni_snapshot()
+                poni_energy.clear()
+                poni_energy.update(current_poni)
+                if poni_energy["error"] is not None:
+                    raise ValueError(
+                        "PONI geometry cannot be bound to mu provenance: "
+                        + str(poni_energy["error"])
+                    )
                 e_keV = energy_var.get()
-                rho = rho_var.get()
                 comp_str = comp_var.get().strip()
                 if not comp_str:
                     raise ValueError("请输入成分或选择预设材料。")
+                source_code = source_choices[source_var.get()]
+                if source_code == "nist30":
+                    if (
+                        calculate_material_attenuation is None
+                        or calculate_nominal_material_attenuation is None
+                        or identify_nominal_material is None
+                        or NIST_30_KEV_TABLE is None
+                        or parse_weight_composition_string is None
+                    ):
+                        raise RuntimeError("NIST material attenuation support is unavailable")
+                    if not np.isclose(float(e_keV), 30.0, rtol=0.0, atol=1e-9):
+                        raise ValueError("The bundled NIST snapshot is valid only at 30 keV")
+                    geometry_energy_kev = poni_energy["energy_kev"]
+                    if geometry_energy_kev is not None and not np.isclose(
+                        float(geometry_energy_kev),
+                        30.0,
+                        rtol=1.0e-3,
+                        atol=0.02,
+                    ):
+                        raise ValueError(
+                            "PONI photon energy "
+                            f"({geometry_energy_kev:.6g} keV) is incompatible with the "
+                            "bundled NIST 30 keV attenuation snapshot"
+                        )
+                    comp = parse_weight_composition_string(comp_str)
+                    matched_material = identify_nominal_material(comp)
+                    if matched_material is not None:
+                        nist_result = calculate_nominal_material_attenuation(
+                            matched_material.key,
+                            porosity_risk=bool(porosity_var.get()),
+                        )
+                    else:
+                        nist_result = calculate_material_attenuation(
+                            comp,
+                            composition_basis=WT_FRACTION_BASIS,
+                            material_key=None,
+                            material_name=None,
+                            porosity_risk=bool(porosity_var.get()),
+                        )
+                    payload = nist_result.to_dict()
+                    payload.pop("provenance_sha256", None)
+                    payload.update(
+                        {
+                            "geometry_poni_path": poni_energy["path"] or None,
+                            "geometry_poni_sha256": poni_energy["sha256"],
+                            "geometry_energy_kev": geometry_energy_kev,
+                            "geometry_energy_matches_model": (
+                                None if geometry_energy_kev is None else True
+                            ),
+                        }
+                    )
+                    if provenance_sha256 is not None:
+                        payload["provenance_sha256"] = provenance_sha256(payload)
+
+                    result_text.config(state="normal")
+                    result_text.delete("1.0", "end")
+                    result_text.insert(
+                        "end", f"NIST snapshot: {NIST_30_KEV_TABLE.snapshot_id}\n"
+                    )
+                    result_text.insert(
+                        "end", f"table SHA-256: {NIST_30_KEV_TABLE.fingerprint()}\n"
+                    )
+                    result_text.insert(
+                        "end", f"composition basis = {WT_FRACTION_BASIS}\n"
+                    )
+                    result_text.insert(
+                        "end",
+                        "PONI energy = "
+                        + (
+                            "unavailable (not geometry-bound)\n"
+                            if geometry_energy_kev is None
+                            else f"{geometry_energy_kev:.12g} keV (30 keV match)\n"
+                        ),
+                    )
+                    result_text.insert(
+                        "end",
+                        "density model = ideal specific-volume additivity "
+                        f"({nist_result.ideal_mixture_density_g_cm3:.12g} g/cm^3)\n",
+                    )
+                    result_text.insert(
+                        "end",
+                        "mu/rho(mix) = "
+                        f"{nist_result.mixture_mass_attenuation_cm2_g:.12g} cm^2/g\n",
+                    )
+                    result_text.insert(
+                        "end",
+                        "mu_linear (full precision) = "
+                        f"{nist_result.linear_attenuation_cm_inv:.12g} cm^-1\n",
+                    )
+                    result_text.insert(
+                        "end",
+                        "uncertainty status = partial; ideal density is not a measured "
+                        "bulk-density certification\n",
+                    )
+                    if nist_result.porosity_warning:
+                        result_text.insert(
+                            "end", f"WARNING: {nist_result.porosity_warning}\n"
+                        )
+                    result_text.config(state="disabled")
+                    if format_mu_for_batch is not None:
+                        self.t2_mu.set(
+                            format_mu_for_batch(nist_result.linear_attenuation_cm_inv)
+                        )
+                    else:
+                        self.t2_mu.set(
+                            format(nist_result.linear_attenuation_cm_inv, ".12g")
+                        )
+                    _mark_mu_result_current(payload)
+                    return
+
                 if calculate_mu is None:
                     raise ImportError("xraydb 未安装，无法计算。")
 
                 comp = parse_composition_string(comp_str)
+                rho = float(rho_var.get())
                 res = calculate_mu(comp, rho, e_keV)
 
                 result_text.config(state="normal")
                 result_text.delete("1.0", "end")
+                result_text.insert("end", self.tr("lbl_mu_source") + "\n")
+                result_text.insert(
+                    "end",
+                    f"mu_linear (full precision) = {res.mu_linear_cm_inv:.12g} cm^-1\n",
+                )
                 result_text.insert("end", f"Energy: {e_keV:.2f} keV  |  ρ = {rho:.3f} g/cm³\n")
                 result_text.insert("end", f"μ/ρ(mix) = {res.mu_rho_cm2_g:.4f} cm²/g\n")
                 result_text.insert("end", f"μ_linear = {res.mu_linear_cm_inv:.4f} cm⁻¹\n")
@@ -9271,11 +10586,134 @@ For advanced details, keep the Chinese help mode or refer to repository docs.
                     result_text.insert("end", f"{el:<8} {wf:<10.4f} {murho_i:<12.4f} {contrib:<12.4f}\n")
                 result_text.config(state="disabled")
 
-                self.t2_mu.set(round(res.mu_linear_cm_inv, 2))
+                if format_mu_for_batch is not None:
+                    self.t2_mu.set(format_mu_for_batch(res.mu_linear_cm_inv))
+                else:
+                    self.t2_mu.set(format(res.mu_linear_cm_inv, ".12g"))
+                payload = {
+                    "schema": "saxsabs.material_attenuation.diagnostic.v1",
+                    "parameter_source": "xraydb_elam_diagnostic",
+                    "xraydb_version": XRAYDB_VERSION,
+                    "energy_kev": float(e_keV),
+                    "geometry_poni_path": poni_energy["path"] or None,
+                    "geometry_poni_sha256": poni_energy["sha256"],
+                    "geometry_energy_kev": poni_energy["energy_kev"],
+                    "geometry_energy_matches_model": (
+                        None
+                        if poni_energy["energy_kev"] is None
+                        else bool(
+                            np.isclose(
+                                float(poni_energy["energy_kev"]),
+                                float(e_keV),
+                                rtol=1.0e-3,
+                                atol=0.02,
+                            )
+                        )
+                    ),
+                    "composition_basis": "wt_fraction",
+                    "composition_wt_fraction": dict(res.composition),
+                    "density_g_cm3": float(rho),
+                    "mixture_mass_attenuation_cm2_g": float(res.mu_rho_cm2_g),
+                    "linear_attenuation_cm_inv": float(res.mu_linear_cm_inv),
+                    "uncertainty_status": "partial",
+                    "uncertainty_limitations": [
+                        "density_is_user_supplied_not_certified_by_this_calculation",
+                        "database_difference_is_not_a_total_uncertainty_budget",
+                    ],
+                }
+                if provenance_sha256 is not None:
+                    payload["provenance_sha256"] = provenance_sha256(payload)
+                _mark_mu_result_current(payload)
             except Exception as exc:
                 self.show_error("msg_input_error_title", self.tr("msg_mu_fail").format(e=exc))
 
-        ttk.Button(top, text=self.tr("btn_mu_apply"), command=do_calc).pack(pady=8)
+        def export_provenance():
+            payload = latest_provenance["payload"]
+            if payload is None:
+                messagebox.showwarning(
+                    self.tr("msg_warning_title"),
+                    self.tr("msg_mu_export_requires_calculation"),
+                    parent=top,
+                )
+                return
+            current_poni = self._current_mu_poni_snapshot()
+            if not self._mu_payload_geometry_is_current(payload, current_poni):
+                _invalidate_mu_result(show_message=True)
+                messagebox.showwarning(
+                    self.tr("msg_warning_title"),
+                    self.tr("msg_mu_geometry_changed"),
+                    parent=top,
+                )
+                return
+            target = filedialog.asksaveasfilename(
+                parent=top,
+                title=self.tr("title_mu_export"),
+                defaultextension=".json",
+                filetypes=[("JSON", "*.json"), ("All files", "*.*")],
+                initialfile="material_attenuation_provenance.json",
+            )
+            if not target:
+                return
+            target_path = Path(target)
+            temporary = target_path.with_name(
+                f".{target_path.name}.{uuid.uuid4().hex}.tmp"
+            )
+            try:
+                temporary.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False)
+                    + "\n",
+                    encoding="utf-8",
+                )
+                os.replace(temporary, target_path)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+            messagebox.showinfo(
+                self.tr("title_mu_export"),
+                self.tr("msg_mu_export_success").format(path=target_path),
+                parent=top,
+            )
+
+        row_actions = ttk.Frame(content)
+        row_actions.pack(fill="x", padx=8, pady=8)
+        ttk.Button(
+            row_actions,
+            text=self.tr("btn_mu_apply"),
+            command=do_calc,
+        ).pack(side="left", expand=True, padx=(0, 4))
+        export_button["widget"] = ttk.Button(
+            row_actions,
+            text=self.tr("btn_mu_export_json"),
+            command=export_provenance,
+            state="disabled",
+        )
+        export_button["widget"].pack(side="left", expand=True, padx=(4, 0))
+
+        for variable in (
+            source_var,
+            energy_var,
+            wl_var,
+            preset_var,
+            comp_var,
+            rho_var,
+            porosity_var,
+        ):
+            variable.trace_add("write", _invalidate_mu_result)
+
+        poni_path_var = getattr(self, "global_vars", {}).get("poni_path")
+        poni_trace_id = None
+        if poni_path_var is not None and hasattr(poni_path_var, "trace_add"):
+            poni_trace_id = poni_path_var.trace_add("write", _invalidate_mu_result)
+
+        def _remove_poni_trace(event):
+            if event.widget is not top or poni_trace_id is None:
+                return
+            try:
+                poni_path_var.trace_remove("write", poni_trace_id)
+            except (AttributeError, tk.TclError):
+                pass
+
+        top.bind("<Destroy>", _remove_poni_trace, add="+")
 
     def add_file_row(self, p, label_text, v, pat, cmd=None):
         f = ttk.Frame(p)

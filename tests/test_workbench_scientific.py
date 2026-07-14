@@ -97,7 +97,7 @@ def test_tab3_requires_calibrated_k_source(tmp_path):
     with pytest.raises(ValueError, match="修改|匹配"):
         app.require_trusted_k_for_external(2.6)
 
-def test_tab3_raw_monitor_mode_must_match_calibrated_k(tmp_path):
+def test_tab3_raw_pipeline_is_disabled_until_shared_reduction_is_validated(tmp_path):
     module = _load_workbench_module()
     app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
     poni = tmp_path / "geometry.poni"
@@ -108,7 +108,7 @@ def test_tab3_raw_monitor_mode_must_match_calibrated_k(tmp_path):
     app.calibration_k_value = 2.5
     _trust_cached_record_for_gate_unit_test(app)
 
-    with pytest.raises(ValueError, match="monitor_mode|I0"):
+    with pytest.raises(ValueError, match="legacy raw 1D pipeline is disabled"):
         app.require_trusted_k_for_external(
             2.5, pipeline_mode="raw", monitor_mode="integrated"
         )
@@ -223,6 +223,26 @@ def test_tab3_profile_parser_preserves_operator_fingerprint_header(tmp_path):
 
     assert profile["x_col"] == "q_A^-1"
     assert profile["operator_provenance"]["calibration_context_fingerprint"] == fingerprint
+
+
+def test_tab3_profile_parser_prefers_combined_over_earlier_statistical_column(
+    tmp_path,
+):
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    profile_path = tmp_path / "profile_uncertainties.csv"
+    profile_path.write_text(
+        "q,intensity,Error_Statistical_cm^-1,Error_CombinedStandard_cm^-1\n"
+        "0.10,100,1.0,1.5\n"
+        "0.20,90,2.0,2.5\n"
+        "0.30,80,3.0,3.5\n",
+        encoding="utf-8",
+    )
+
+    profile = app.read_external_1d_profile(profile_path)
+
+    assert profile["err_col"] == "Error_CombinedStandard_cm^-1"
+    np.testing.assert_allclose(profile["err_rel"], [1.5, 2.5, 3.5])
 
 
 def test_tab3_formal_external_profile_requires_matching_operator_provenance(tmp_path):
@@ -375,6 +395,322 @@ def test_tab2_dry_run_marks_calibration_gate_failure_as_blocked():
     assert captured["total_files"] == 1
     assert captured["failed_files"] == 1
     assert captured["warnings_count"] >= 1
+
+
+@pytest.mark.parametrize(
+    ("mode", "resume_enabled"),
+    [("auto", False), ("fixed", True)],
+)
+def test_tab2_dry_run_blocks_disabled_formal_configurations(mode, resume_enabled):
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    app.language = "en"
+    app.t2_files = ["sample.tif"]
+    app.global_vars = {
+        "k_factor": _Var(2.5),
+        "poni_path": _Var("geometry.poni"),
+        "bg_exp": _Var(1.0),
+        "bg_i0": _Var(10.0),
+        "bg_t": _Var(1.0),
+    }
+    app.t2_calc_mode = _Var(mode)
+    app.t2_resume_enabled = _Var(resume_enabled)
+    app.t2_mu = _Var("20.0")
+    app.t2_fixed_thk = _Var(1.0)
+    app.t2_mask_path = _Var("")
+    app.t2_flat_path = _Var("")
+    app.t2_apply_solid_angle = _Var(True)
+    app.t2_workers = _Var(1)
+    app.t2_ref_mode = _Var("fixed")
+    app.t2_strict_instrument = _Var(False)
+    app.get_monitor_mode = lambda: "rate"
+    app.get_selected_modes = lambda: ["1d_full"]
+    app.resolve_t2_polarization = lambda: (False, None)
+    app.compute_norm_factor = lambda *_args: 1.0
+    app.parse_header = lambda _path: (1.0, 10.0, 0.5)
+    app.require_calibration_context_for_batch = lambda **_kwargs: object()
+    captured = {}
+
+    class StopAfterGate(Exception):
+        pass
+
+    def capture_gate(**kwargs):
+        captured.update(kwargs)
+        raise StopAfterGate
+
+    app._evaluate_preflight_gate = capture_gate
+    with pytest.raises(StopAfterGate):
+        app.dry_run()
+
+    assert captured["total_files"] == 1
+    assert captured["failed_files"] == 1
+    assert captured["warnings_count"] >= 1
+
+
+@pytest.mark.parametrize(
+    ("thickness_mm", "resume_enabled"),
+    [(0.0, False), (1.0, True)],
+)
+def test_tab3_dry_run_blocks_zero_thickness_and_exists_only_resume(
+    tmp_path,
+    thickness_mm,
+    resume_enabled,
+):
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    app.language = "en"
+    fingerprint = "c" * 64
+    sample = tmp_path / "sample.dat"
+    sample.write_text(
+        f"# calibration_context_fingerprint: {fingerprint}\n"
+        "# intensity_state: relative\n"
+        "# corrections_applied: []\n"
+        "# q_A^-1 I_rel Error\n"
+        "0.01 10 0.1\n0.02 9 0.1\n0.03 8 0.1\n",
+        encoding="utf-8",
+    )
+    app.t3_files = [str(sample)]
+    app.t3_pipeline_mode = _Var("scaled")
+    app.t3_corr_mode = _Var("k_over_d")
+    app.t3_fixed_thk = _Var(thickness_mm)
+    app.t3_resume_enabled = _Var(resume_enabled)
+    app.t3_buffer_enabled = _Var(False)
+    app.t3_buffer_path = _Var("")
+    app.t3_buffer_status = _Var("")
+    app.t3_alpha = _Var(1.0)
+    app.t3_x_mode = _Var("auto")
+    app.t3_wavelength_a = _Var("")
+    app.global_vars = {"k_factor": _Var(2.5)}
+    app.get_monitor_mode = lambda: "rate"
+    context = SimpleNamespace(fingerprint=lambda: fingerprint)
+    app.require_trusted_k_for_external = lambda *_args, **_kwargs: context
+    captured = {}
+
+    class StopAfterGate(Exception):
+        pass
+
+    def capture_gate(**kwargs):
+        captured.update(kwargs)
+        raise StopAfterGate
+
+    app._evaluate_preflight_gate = capture_gate
+    with pytest.raises(StopAfterGate):
+        app.dry_run_external_1d()
+
+    assert captured["total_files"] == 1
+    assert captured["failed_files"] == 1
+    assert captured["warnings_count"] >= 1
+
+
+@pytest.mark.parametrize(
+    ("mode", "resume_enabled", "expected"),
+    [
+        ("auto", False, "requires fixed thickness"),
+        ("fixed", True, "exists-only resume"),
+    ],
+)
+def test_tab2_run_hard_rejects_disabled_paths(mode, resume_enabled, expected):
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    app.t2_calc_mode = _Var(mode)
+    app.t2_resume_enabled = _Var(resume_enabled)
+    app._require_current_workbench_preflight = lambda _tab: None
+    errors = []
+    app.show_error = lambda _title, message: errors.append(message)
+
+    app.run_batch()
+
+    assert errors and expected in errors[0]
+
+
+def test_tab3_run_hard_rejects_exists_only_resume():
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    app.t3_resume_enabled = _Var(True)
+    app._require_current_workbench_preflight = lambda _tab: None
+    errors = []
+    app.show_error = lambda _title, message: errors.append(message)
+
+    app.run_external_1d_batch()
+
+    assert errors and "exists-only resume" in errors[0]
+
+
+def test_reference_library_mutations_immediately_invalidate_tab2_preflight(
+    monkeypatch,
+):
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    app.language = "en"
+    app.t2_bg_candidates = []
+    app.t2_dark_candidates = []
+    app.t2_bg_lib_info = _Var("")
+    app.t2_dark_lib_info = _Var("")
+    invalidations = []
+    app._invalidate_workbench_preflight = invalidations.append
+    app.log = lambda _message: None
+    app.confirm_action = lambda _key: True
+
+    selections = iter([("bg.tif",), ("dark.tif",)])
+    monkeypatch.setattr(
+        module.filedialog,
+        "askopenfilenames",
+        lambda **_kwargs: next(selections),
+    )
+    app.add_bg_library_files()
+    app.add_dark_library_files()
+
+    monkeypatch.setattr(module.filedialog, "askdirectory", lambda: "library")
+    recursive = iter([["bg-recursive.tif"], ["dark-recursive.tif"]])
+    app._collect_image_files_recursive = lambda _directory: next(recursive)
+    app.add_bg_library_folder_recursive()
+    app.add_dark_library_folder_recursive()
+    app.clear_reference_libraries()
+
+    assert invalidations == ["t2"] * 5
+
+
+def test_workbench_safety_copy_and_legacy_resume_default_are_explicit():
+    module = _load_workbench_module()
+
+    assert module.DEFAULT_LEGACY_RESUME_ENABLED is False
+    assert module.DEFAULT_SAMPLE_THICKNESS_MODE == "fixed"
+    assert module.WORKBENCH_MIN_SIZE == (900, 600)
+    assert module.WORKBENCH_MIN_SIZE[0] <= 980
+    assert module.WORKBENCH_MIN_SIZE[1] <= 640
+    assert "Disabled diagnostic" in module.I18N["en"]["rb_t2_auto_thk"]
+    assert "Per-frame T normalization remains active" in module.I18N["en"][
+        "tip_t2_fix_thk"
+    ]
+    assert "Disabled" in module.I18N["en"]["cb_t3_resume"]
+    assert "xraydb mu_elam / Elam" in module.I18N["en"]["lbl_mu_source"]
+    assert "reduced relative" in module.I18N["en"]["hint_t3_global"]
+    assert "provenance-aware diagnostic" in module.I18N["en"]["tip_t2_mu_est"]
+    assert "optional" in module.I18N["en"]["lbl_t3_alpha_uncertainty"]
+    assert "stays NaN" in module.I18N["en"]["hint_t3_alpha_uncertainty"]
+    assert "\u539f\u4f4d" in module.I18N["zh"]["hint_t2_thickness"]
+
+
+def test_fixed_tab2_preflight_excludes_diagnostic_mu_payload():
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    app.global_vars = {}
+    app.t2_files = []
+    app.t2_bg_candidates = []
+    app.t2_dark_candidates = []
+    app.t2_calc_mode = _Var("fixed")
+    app.t2_mu = _Var("74.5503553881")
+    app.t2_mu_provenance = {"provenance_sha256": "diagnostic"}
+
+    fixed = app._t2_preflight_config()
+
+    assert fixed["t2_mu"] is None
+    assert fixed["mu_provenance"] is None
+
+    app.t2_calc_mode.set("auto")
+    diagnostic = app._t2_preflight_config()
+    assert diagnostic["t2_mu"] == "74.5503553881"
+    assert diagnostic["mu_provenance"] == app.t2_mu_provenance
+
+
+def test_mu_poni_snapshot_detects_path_content_energy_and_read_failures(
+    tmp_path,
+    monkeypatch,
+):
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    poni = tmp_path / "geometry.poni"
+    poni.write_text("first", encoding="utf-8")
+    app.global_vars = {"poni_path": _Var(str(poni))}
+    wavelength_m = (module.HC_KEV_A / 30.0) * 1e-10
+    monkeypatch.setattr(
+        module.pyFAI,
+        "load",
+        lambda _path: SimpleNamespace(wavelength=wavelength_m),
+    )
+
+    snapshot = app._current_mu_poni_snapshot()
+    payload = {
+        "geometry_poni_path": snapshot["path"],
+        "geometry_poni_sha256": snapshot["sha256"],
+        "geometry_energy_kev": snapshot["energy_kev"],
+    }
+
+    assert snapshot["error"] is None
+    assert snapshot["energy_kev"] == pytest.approx(30.0)
+    assert app._mu_payload_geometry_is_current(payload, snapshot)
+
+    poni.write_text("second-content", encoding="utf-8")
+    changed = app._current_mu_poni_snapshot()
+    assert changed["sha256"] != snapshot["sha256"]
+    assert not app._mu_payload_geometry_is_current(payload, changed)
+
+    def fail_load(_path):
+        raise ValueError("bad PONI")
+
+    monkeypatch.setattr(module.pyFAI, "load", fail_load)
+    unreadable = app._current_mu_poni_snapshot()
+    assert "bad PONI" in unreadable["error"]
+    assert not app._mu_payload_geometry_is_current(payload, unreadable)
+
+
+def test_workbench_blocked_preflight_disables_run_button():
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    app.global_vars = {}
+    app.t2_files = []
+
+    class Button:
+        def __init__(self):
+            self.state = None
+
+        def configure(self, *, state):
+            self.state = state
+
+    app.t2_run_button = Button()
+    blocked = SimpleNamespace(level="BLOCKED")
+    approval = app._record_workbench_preflight("t2", blocked)
+
+    assert approval.level == "BLOCKED"
+    assert app.t2_preflight_level == "BLOCKED"
+    assert app.t2_preflight_fingerprint == approval.fingerprint
+    assert app.t2_run_button.state == "disabled"
+
+    ready = SimpleNamespace(level="READY")
+    app._record_workbench_preflight("t2", ready)
+    assert app.t2_run_button.state == "normal"
+
+
+def test_workbench_preflight_is_bound_to_current_gui_configuration():
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    app.global_vars = {}
+    app.t2_files = []
+    app.t2_fixed_thk = _Var(1.0)
+    app.t2_preflight_approval = module.approve_preflight(
+        app._t2_preflight_config(), "READY"
+    )
+
+    app._require_current_workbench_preflight("t2")
+    app.t2_fixed_thk.set(1.1)
+    with pytest.raises(RuntimeError, match="configuration changed"):
+        app._require_current_workbench_preflight("t2")
+
+
+def test_workbench_preflight_detects_input_file_change(tmp_path):
+    module = _load_workbench_module()
+    sample = tmp_path / "sample.tif"
+    sample.write_bytes(b"first")
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    app.global_vars = {}
+    app.t2_files = [str(sample)]
+    app.t2_preflight_approval = module.approve_preflight(
+        app._t2_preflight_config(), "READY"
+    )
+
+    sample.write_bytes(b"changed-size")
+    with pytest.raises(RuntimeError, match="configuration changed"):
+        app._require_current_workbench_preflight("t2")
 
 def test_workbench_requires_explicit_thickness_after_selecting_non_srm_standard():
     module = _load_workbench_module()
@@ -978,9 +1314,157 @@ def test_tab3_external_buffer_empty_path_fails_closed_and_updates_status():
         app.prepare_external_buffer(
             pipeline_mode="scaled",
             calibration_context=SimpleNamespace(fingerprint=lambda: "a" * 64),
+            k_factor=2.5,
         )
 
     assert "Buffer error:" in app.t3_buffer_status.get()
+
+
+def test_tab3_external_buffer_rejects_relative_curve_even_with_matching_context(
+    tmp_path,
+):
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    fingerprint = "b" * 64
+    buffer_path = tmp_path / "relative_buffer.dat"
+    buffer_path.write_text(
+        f"# calibration_context_fingerprint: {fingerprint}\n"
+        "# intensity_state: relative\n"
+        "# corrections_applied: [\"thickness\"]\n"
+        "# q_A^-1 I_rel Error\n"
+        "0.01 1.0 0.1\n0.02 1.0 0.1\n0.03 1.0 0.1\n",
+        encoding="utf-8",
+    )
+    app.t3_buffer_enabled = _Var(True)
+    app.t3_buffer_path = _Var(str(buffer_path))
+    app.t3_alpha = _Var(1.0)
+    app.t3_buffer_status = _Var("")
+    app.t3_x_mode = _Var("auto")
+    app.t3_wavelength_a = _Var("")
+
+    with pytest.raises(ValueError, match="must be explicit absolute"):
+        app.prepare_external_buffer(
+            pipeline_mode="scaled",
+            calibration_context=SimpleNamespace(fingerprint=lambda: fingerprint),
+            k_factor=2.5,
+        )
+
+    assert "Buffer error:" in app.t3_buffer_status.get()
+
+
+def test_absolute_buffer_requires_full_context_fingerprint_and_matching_k():
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    fingerprint = "c" * 64
+    operator_payload = {
+        "formula_version": "saxsabs-v1",
+        "monitor_mode": "rate",
+        "poni_sha256": "d" * 64,
+        "mask_sha256": None,
+        "flat_sha256": None,
+        "correct_solid_angle": True,
+        "polarization_factor": None,
+    }
+    context = SimpleNamespace(
+        fingerprint=lambda: fingerprint,
+        operator_payload=lambda: operator_payload,
+    )
+    payload_only = {"operator_provenance": dict(operator_payload)}
+
+    with pytest.raises(ValueError, match="explicit full CalibrationContext fingerprint"):
+        app.require_external_profile_operator_provenance(
+            payload_only,
+            context,
+            "Buffer",
+            require_full_context_fingerprint=True,
+            required_k_factor=2.5,
+        )
+
+    missing_k = {
+        "operator_provenance": {
+            "calibration_context_fingerprint": fingerprint,
+        }
+    }
+    with pytest.raises(ValueError, match="missing k_factor provenance"):
+        app.require_external_profile_operator_provenance(
+            missing_k,
+            context,
+            "Buffer",
+            require_full_context_fingerprint=True,
+            required_k_factor=2.5,
+        )
+
+    wrong_k = {
+        "operator_provenance": {
+            "calibration_context_fingerprint": fingerprint,
+            "k_factor": "3.0",
+        }
+    }
+    with pytest.raises(ValueError, match="does not match the active K"):
+        app.require_external_profile_operator_provenance(
+            wrong_k,
+            context,
+            "Buffer",
+            require_full_context_fingerprint=True,
+            required_k_factor=2.5,
+        )
+
+    matching = {
+        "operator_provenance": {
+            "calibration_context_fingerprint": fingerprint,
+            "k_factor": "2.5",
+        }
+    }
+    assert app.require_external_profile_operator_provenance(
+        matching,
+        context,
+        "Buffer",
+        require_full_context_fingerprint=True,
+        required_k_factor=2.5,
+    ) == fingerprint
+
+
+def test_formal_buffer_subtraction_has_no_weaker_fallback(monkeypatch):
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    buffer_profile = {
+        "x": np.array([0.01, 0.02, 0.03]),
+        "i_rel": np.array([1.0, 1.0, 1.0]),
+        "err_rel": np.array([0.1, 0.1, 0.1]),
+    }
+    monkeypatch.setattr(module, "subtract_buffer", None)
+
+    with pytest.raises(RuntimeError, match="formal buffer subtraction kernel"):
+        app.subtract_external_absolute_buffer(
+            np.array([0.01, 0.02, 0.03]),
+            np.array([10.0, 9.0, 8.0]),
+            np.array([0.2, 0.2, 0.2]),
+            buffer_profile,
+            0.5,
+        )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("", None),
+        (None, None),
+        ("0", 0.0),
+        ("0.05", 0.05),
+    ],
+)
+def test_workbench_parses_optional_buffer_alpha_uncertainty(raw, expected):
+    module = _load_workbench_module()
+
+    assert module.SAXSAbsWorkbenchApp.parse_optional_alpha_uncertainty(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["bad", "-0.1", "nan", "inf", "-inf"])
+def test_workbench_rejects_invalid_buffer_alpha_uncertainty(raw):
+    module = _load_workbench_module()
+
+    with pytest.raises(ValueError, match="Buffer alpha uncertainty"):
+        module.SAXSAbsWorkbenchApp.parse_optional_alpha_uncertainty(raw)
 
 
 def test_tab3_run_preloads_buffer_once_and_reports_provenance(tmp_path):
@@ -989,10 +1473,26 @@ def test_tab3_run_preloads_buffer_once_and_reports_provenance(tmp_path):
     app.language = "en"
     fingerprint = "a" * 64
 
-    def write_profile(path, values):
+    def write_profile(
+        path,
+        values,
+        *,
+        intensity_state,
+        intensity_unit,
+        corrections_applied,
+        intensity_column,
+        k_factor=None,
+    ):
+        ledger = json.dumps(corrections_applied, separators=(",", ":"))
+        k_line = "" if k_factor is None else f"# k_factor: {k_factor:.17g}\n"
         path.write_text(
             f"# calibration_context_fingerprint: {fingerprint}\n"
-            "# q_A^-1 I_rel Error\n"
+            + k_line
+            + f"# intensity_state: {intensity_state}\n"
+            f"# intensity_unit: {intensity_unit}\n"
+            f"# corrections_applied: {ledger}\n"
+            f"# do_not_repeat: {ledger}\n"
+            f"# q_A^-1 {intensity_column} Error\n"
             + "\n".join(
                 f"{q:.3f} {intensity:.3f} 0.1"
                 for q, intensity in zip((0.01, 0.02, 0.03), values)
@@ -1004,18 +1504,33 @@ def test_tab3_run_preloads_buffer_once_and_reports_provenance(tmp_path):
     sample_a = tmp_path / "sample_a.dat"
     sample_b = tmp_path / "sample_b.dat"
     buffer_path = tmp_path / "buffer.dat"
-    write_profile(sample_a, (10.0, 9.0, 8.0))
-    write_profile(sample_b, (12.0, 11.0, 10.0))
-    write_profile(buffer_path, (1.0, 1.0, 1.0))
+    sample_kwargs = {
+        "intensity_state": "relative",
+        "intensity_unit": "relative",
+        "corrections_applied": ["thickness"],
+        "intensity_column": "I_rel",
+    }
+    write_profile(sample_a, (10.0, 9.0, 8.0), **sample_kwargs)
+    write_profile(sample_b, (12.0, 11.0, 10.0), **sample_kwargs)
+    write_profile(
+        buffer_path,
+        (1.0, 1.0, 1.0),
+        intensity_state="absolute_cm^-1",
+        intensity_unit="1/cm",
+        corrections_applied=["k", "thickness"],
+        intensity_column="I_abs_cm^-1",
+        k_factor=2.5,
+    )
 
     app.t3_files = [str(sample_a), str(sample_b)]
-    app.global_vars = {"k_factor": _Var(1.0)}
+    app.global_vars = {"k_factor": _Var(2.5)}
     app.t3_pipeline_mode = _Var("scaled")
     app.t3_corr_mode = _Var("k_only")
     app.t3_fixed_thk = _Var(1.0)
     app.t3_buffer_enabled = _Var(True)
     app.t3_buffer_path = _Var(str(buffer_path))
     app.t3_alpha = _Var(0.5)
+    app.t3_alpha_uncertainty = _Var("0.05")
     app.t3_buffer_status = _Var("")
     app.t3_output_root = _Var(str(tmp_path / "output"))
     app.t3_resume_enabled = _Var(False)
@@ -1044,6 +1559,9 @@ def test_tab3_run_preloads_buffer_once_and_reports_provenance(tmp_path):
         return real_read(path)
 
     app.read_external_1d_profile = counted_read
+    app.t3_preflight_approval = module.approve_preflight(
+        app._t3_preflight_config(), "READY"
+    )
     app.run_external_1d_batch()
 
     resolved_buffer = str(buffer_path.resolve())
@@ -1058,7 +1576,46 @@ def test_tab3_run_preloads_buffer_once_and_reports_provenance(tmp_path):
     assert report["BufferPath"].tolist() == [resolved_buffer, resolved_buffer]
     assert report["BufferSHA256"].nunique() == 1
     assert report["BufferAlpha"].tolist() == pytest.approx([0.5, 0.5])
+    assert report["BufferAlphaUncertainty"].tolist() == pytest.approx([0.05, 0.05])
+    assert report["BufferKFactor"].tolist() == pytest.approx([2.5, 2.5])
     assert report["BufferContextFingerprint"].tolist() == [fingerprint, fingerprint]
+    assert all(
+        json.loads(value) == ["buffer", "k", "thickness"]
+        for value in report["CorrectionsApplied"]
+    )
+    assert report["BufferIntensityState"].tolist() == [
+        "absolute_cm^-1",
+        "absolute_cm^-1",
+    ]
+    assert report["BufferIntensityUnit"].tolist() == ["1/cm", "1/cm"]
+    assert all(
+        json.loads(value) == ["k", "thickness"]
+        for value in report["BufferCorrectionsApplied"]
+    )
+
+    sample_output = tmp_path / "output" / "processed_external_1d_abs" / "sample_a.dat"
+    output_profile = app.read_external_1d_profile(sample_output)
+    assert output_profile["i_rel"][0] == pytest.approx(24.5)
+    assert output_profile["operator_provenance"]["buffer_alpha"] == "0.5"
+    assert output_profile["operator_provenance"]["buffer_alpha_uncertainty"] == "0.05"
+    assert output_profile["operator_provenance"]["buffer_source_name"] == "buffer.dat"
+    assert output_profile["operator_provenance"]["buffer_source_sha256"] == sha256_file(
+        buffer_path
+    )
+    assert output_profile["operator_provenance"]["uncertainty_type"] == "combined_standard"
+    output_table = __import__("pandas").read_csv(
+        sample_output,
+        sep="\t",
+        comment="#",
+    )
+    assert np.all(
+        output_table["Error_CombinedStandard_cm^-1"]
+        > output_table["Error_Statistical_cm^-1"]
+    )
+    np.testing.assert_allclose(
+        output_table["Error_cm^-1"],
+        output_table["Error_CombinedStandard_cm^-1"],
+    )
 
     meta_path = next(report_dir.glob("external1d_meta_*.json"))
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -1067,7 +1624,12 @@ def test_tab3_run_preloads_buffer_once_and_reports_provenance(tmp_path):
         "path": resolved_buffer,
         "sha256": sha256_file(buffer_path),
         "alpha": 0.5,
+        "alpha_uncertainty": 0.05,
+        "k_factor": 2.5,
         "calibration_context_fingerprint": fingerprint,
+        "intensity_state": "absolute_cm^-1",
+        "intensity_unit": "1/cm",
+        "corrections_applied": ["k", "thickness"],
     }
 
 def _make_complete_custom_record(module, tmp_path):
@@ -1166,7 +1728,7 @@ def test_formal_gates_revalidate_record_and_sources_after_load(tmp_path, target,
         ("nxcansas_h5", ".h5"),
     ],
 )
-def test_project_owned_profile_roundtrips_through_formal_tab3_gate(
+def test_project_owned_absolute_profile_carries_ledger_and_is_rejected_by_tab3_scaling(
     tmp_path,
     output_format,
     suffix,
@@ -1185,6 +1747,7 @@ def test_project_owned_profile_roundtrips_through_formal_tab3_gate(
         "Q_A^-1",
         output_format=output_format,
         calibration_context=active_context,
+        corrections_applied=["monitor", "transmission", "k"],
     )
     assert written.suffix == suffix
 
@@ -1198,3 +1761,262 @@ def test_project_owned_profile_roundtrips_through_formal_tab3_gate(
 
     assert fingerprint == active_context.fingerprint()
     assert profile["operator_provenance"]["calibration_context_fingerprint"] == fingerprint
+    assert profile["operator_provenance"]["intensity_state"] == "absolute_cm^-1"
+    assert profile["operator_provenance"]["intensity_unit"] == "1/cm"
+    assert float(profile["operator_provenance"]["k_factor"]) == pytest.approx(2.5)
+    assert json.loads(profile["operator_provenance"]["corrections_applied"]) == [
+        "k",
+        "monitor",
+        "transmission",
+    ]
+    assert profile["operator_provenance"]["do_not_repeat"] == (
+        profile["operator_provenance"]["corrections_applied"]
+    )
+    assert "thickness" not in profile["operator_provenance"]["corrections_applied"]
+    with pytest.raises(ValueError, match="already absolute intensity"):
+        app.require_relative_external_profile_for_scaling(profile, written.name)
+
+
+@pytest.mark.parametrize("output_format", ["tsv", "csv", "cansas_xml", "nxcansas_h5"])
+def test_buffer_combined_uncertainty_and_provenance_roundtrip_all_formats(
+    tmp_path,
+    output_format,
+):
+    if output_format == "nxcansas_h5":
+        pytest.importorskip("h5py")
+    module = _load_workbench_module()
+    app, _files = _make_complete_custom_record(module, tmp_path)
+    context = app.require_trusted_k_for_external(2.5)
+    statistical = np.array([0.1, 0.2, 0.3])
+    combined = np.array([0.15, 0.25, 0.35])
+
+    written = app.save_profile_table(
+        tmp_path / "buffered.dat",
+        np.array([0.01, 0.02, 0.03]),
+        np.array([10.0, 9.0, 8.0]),
+        statistical,
+        "Q_A^-1",
+        output_format=output_format,
+        calibration_context=context,
+        corrections_applied=["buffer", "k", "thickness"],
+        combined_uncertainty=combined,
+        uncertainty_metadata={
+            "buffer_source_name": "buffer.dat",
+            "buffer_source_sha256": "a" * 64,
+            "buffer_alpha": "0.5",
+            "buffer_alpha_uncertainty": "0.05",
+            "uncertainty_model": "test-model",
+            "uncertainty_type": "combined_standard",
+        },
+    )
+
+    profile = app.read_external_1d_profile(written)
+    np.testing.assert_allclose(profile["err_rel"], combined)
+    provenance = profile["operator_provenance"]
+    assert provenance["buffer_source_name"] == "buffer.dat"
+    assert provenance["buffer_source_sha256"] == "a" * 64
+    assert provenance["buffer_alpha"] == "0.5"
+    assert provenance["buffer_alpha_uncertainty"] == "0.05"
+    assert provenance["uncertainty_model"] == "test-model"
+    assert provenance["uncertainty_type"] == "combined_standard"
+
+
+@pytest.mark.parametrize("output_format", ["tsv", "csv", "cansas_xml", "nxcansas_h5"])
+def test_unknown_buffer_alpha_uncertainty_stays_unknown_all_formats(
+    tmp_path,
+    output_format,
+):
+    if output_format == "nxcansas_h5":
+        pytest.importorskip("h5py")
+    module = _load_workbench_module()
+    app, _files = _make_complete_custom_record(module, tmp_path)
+    context = app.require_trusted_k_for_external(2.5)
+    statistical = np.array([0.1, 0.2, 0.3])
+    unknown_combined = np.full(3, np.nan)
+
+    written = app.save_profile_table(
+        tmp_path / "buffered_unknown.dat",
+        np.array([0.01, 0.02, 0.03]),
+        np.array([10.0, 9.0, 8.0]),
+        statistical,
+        "Q_A^-1",
+        output_format=output_format,
+        calibration_context=context,
+        corrections_applied=["buffer", "k", "thickness"],
+        combined_uncertainty=unknown_combined,
+        uncertainty_metadata={
+            "buffer_source_name": "buffer.dat",
+            "buffer_source_sha256": "b" * 64,
+            "buffer_alpha": "0.5",
+            "buffer_alpha_uncertainty": "unknown",
+            "uncertainty_model": "test-model",
+            "uncertainty_type": "combined_standard_unknown_alpha",
+        },
+    )
+
+    profile = app.read_external_1d_profile(written)
+    assert np.all(np.isnan(profile["err_rel"]))
+    provenance = profile["operator_provenance"]
+    assert provenance["buffer_source_name"] == "buffer.dat"
+    assert provenance["buffer_source_sha256"] == "b" * 64
+    assert provenance["buffer_alpha_uncertainty"] == "unknown"
+    assert provenance["uncertainty_type"] == "combined_standard_unknown_alpha"
+
+    if output_format in {"tsv", "csv"}:
+        table = __import__("pandas").read_csv(
+            written,
+            sep="," if output_format == "csv" else "\t",
+            comment="#",
+        )
+        np.testing.assert_allclose(
+            table["Error_Statistical_cm^-1"],
+            statistical,
+        )
+        assert np.all(np.isnan(table["Error_CombinedStandard_cm^-1"]))
+        assert np.all(np.isnan(table["Error_cm^-1"]))
+
+
+def test_profile_operator_metadata_default_ledger_matches_detector_context(tmp_path):
+    module = _load_workbench_module()
+    app, _files = _make_complete_custom_record(module, tmp_path)
+    active_context = app.require_trusted_k_for_external(2.5)
+
+    metadata = app.profile_operator_metadata(active_context)
+    corrections = set(json.loads(metadata["corrections_applied"]))
+
+    assert {"dark", "background", "monitor", "transmission", "thickness", "k"} <= corrections
+    assert "solid_angle" in corrections
+    assert "polarization" not in corrections
+    assert metadata["do_not_repeat"] == metadata["corrections_applied"]
+
+
+def test_profile_operator_metadata_records_buffer_without_inventing_thickness(tmp_path):
+    module = _load_workbench_module()
+    app, _files = _make_complete_custom_record(module, tmp_path)
+    active_context = app.require_trusted_k_for_external(2.5)
+
+    metadata = app.profile_operator_metadata(
+        active_context,
+        corrections_applied=["monitor", "k", "buffer"],
+    )
+
+    assert json.loads(metadata["corrections_applied"]) == ["buffer", "k", "monitor"]
+    assert "thickness" not in metadata["corrections_applied"]
+
+
+def test_tab3_requires_explicit_relative_intensity_state_before_scaling():
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+
+    with pytest.raises(ValueError, match="intensity state is ambiguous"):
+        app.require_relative_external_profile_for_scaling(
+            {"i_col": "I", "operator_provenance": {}},
+            "ambiguous.dat",
+            correction_mode="k_over_d",
+        )
+
+    with pytest.raises(ValueError, match="raw counts, not a reduced relative profile"):
+        app.require_relative_external_profile_for_scaling(
+            {
+                "i_col": "raw_intensity",
+                "intensity_unit": "counts",
+                "operator_provenance": {
+                    "intensity_state": "raw",
+                    "corrections_applied": "[]",
+                },
+            },
+            "raw-counts.dat",
+            correction_mode="k_over_d",
+        )
+
+    assessment = app.require_relative_external_profile_for_scaling(
+        {
+            "i_col": "I_rel",
+            "operator_provenance": {
+                "intensity_state": "relative",
+                "corrections_applied": '["thickness"]',
+            },
+        },
+        "relative.dat",
+        correction_mode="k_only",
+    )
+    assert assessment.state.value == "relative"
+
+    with pytest.raises(ValueError, match="missing required existing.*thickness"):
+        app.require_relative_external_profile_for_scaling(
+            {
+                "i_col": "I_rel",
+                "operator_provenance": {"intensity_state": "relative"},
+            },
+            "missing-thickness.dat",
+            correction_mode="k_only",
+        )
+
+    with pytest.raises(ValueError, match="missing required existing.*thickness"):
+        app.require_relative_external_profile_for_scaling(
+            {
+                "i_col": "I_rel",
+                "operator_provenance": {
+                    "intensity_state": "relative",
+                    "do_not_repeat": '["thickness"]',
+                },
+            },
+            "guard-only-thickness.dat",
+            correction_mode="k_only",
+        )
+
+    with pytest.raises(ValueError, match="requested correction.*thickness"):
+        app.require_relative_external_profile_for_scaling(
+            {
+                "i_col": "I_rel",
+                "operator_provenance": {
+                    "intensity_state": "relative",
+                    "corrections_applied": '["thickness"]',
+                },
+            },
+            "duplicate-thickness.dat",
+            correction_mode="k_over_d",
+        )
+
+    with pytest.raises(ValueError, match="requested correction.*buffer"):
+        app.require_relative_external_profile_for_scaling(
+            {
+                "i_col": "I_rel",
+                "operator_provenance": {
+                    "intensity_state": "relative",
+                    "corrections_applied": '["buffer","thickness"]',
+                },
+            },
+            "duplicate-buffer.dat",
+            correction_mode="k_only",
+            apply_buffer=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected_value", "message_key"),
+    [
+        ("", np.nan, "warn_k_missing_invalid"),
+        ("not-a-number", np.nan, "warn_k_missing_invalid"),
+        (float("nan"), np.nan, "warn_k_missing_invalid"),
+        (0.0, 0.0, "warn_k_le_zero"),
+        (2.5, 2.5, None),
+    ],
+)
+def test_tab3_preflight_k_reader_handles_blank_default_without_crashing(
+    raw_value,
+    expected_value,
+    message_key,
+):
+    module = _load_workbench_module()
+    app = module.SAXSAbsWorkbenchApp.__new__(module.SAXSAbsWorkbenchApp)
+    app.language = "en"
+    app.global_vars = {"k_factor": _Var(raw_value)}
+
+    value, message = app._read_k_for_preflight()
+
+    if np.isnan(expected_value):
+        assert np.isnan(value)
+    else:
+        assert value == pytest.approx(expected_value)
+    assert message == (app.tr(message_key) if message_key is not None else None)

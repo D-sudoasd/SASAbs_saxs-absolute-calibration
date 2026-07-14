@@ -156,6 +156,19 @@ def _add_bl19b2_arguments(
     )
     parser.add_argument("--output-root", type=Path, default=None)
 
+    parser.add_argument(
+        '--include-manifest',
+        type=Path,
+        default=None,
+        help='UTF-8 CSV allowlist with a required relative_path column',
+    )
+    parser.add_argument(
+        '--thickness-derivation-json',
+        type=Path,
+        default=None,
+        help='JSON provenance for a configured fixed sample thickness',
+    )
+
     thickness_mode = parser.add_mutually_exclusive_group(required=not legacy_v1)
     thickness_mode.add_argument(
         "--mu",
@@ -438,6 +451,8 @@ def main() -> None:
                 standard_path=args.standard,
                 direct_path=args.direct_beam,
                 output_root=args.output_root,
+                include_manifest_path=args.include_manifest,
+                thickness_derivation_path=args.thickness_derivation_json,
                 mu_cm_inv=args.mu,
                 sample_thickness_cm=args.sample_thickness_cm,
                 monitor_mode=args.monitor_mode,

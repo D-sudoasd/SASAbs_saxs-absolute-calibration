@@ -47,6 +47,7 @@ class TestSubtractBuffer:
             alpha_uncertainty=0.0,
         )
         expected_err = np.sqrt(e_s**2 + alpha**2 * e_b**2)
+        np.testing.assert_allclose(result.err_statistical, expected_err, rtol=1e-10)
         np.testing.assert_allclose(result.err_subtracted, expected_err, rtol=1e-10)
 
     def test_missing_alpha_uncertainty_keeps_combined_uncertainty_unknown(self):
@@ -55,6 +56,8 @@ class TestSubtractBuffer:
         result = subtract_buffer(q, i_s, e_s, q, i_b, e_b)
 
         assert result.alpha_uncertainty is None
+        expected_statistical = np.sqrt(e_s**2 + e_b**2)
+        np.testing.assert_allclose(result.err_statistical, expected_statistical)
         assert np.all(np.isnan(result.err_subtracted))
 
     @pytest.mark.parametrize("missing", ["sample", "buffer"])
@@ -111,8 +114,10 @@ class TestSubtractBuffer:
             alpha_uncertainty=0.05,
         )
 
-        expected = np.sqrt(0.1**2 + (2.0 * 0.2) ** 2 + (3.0 * 0.05) ** 2)
-        np.testing.assert_allclose(result.err_subtracted, expected)
+        expected_statistical = np.sqrt(0.1**2 + (2.0 * 0.2) ** 2)
+        expected_combined = np.sqrt(expected_statistical**2 + (3.0 * 0.05) ** 2)
+        np.testing.assert_allclose(result.err_statistical, expected_statistical)
+        np.testing.assert_allclose(result.err_subtracted, expected_combined)
 
     @pytest.mark.parametrize("alpha_uncertainty", [-0.1, np.inf, np.nan])
     def test_invalid_alpha_uncertainty_raises(self, alpha_uncertainty):

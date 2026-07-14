@@ -24,6 +24,9 @@ except ImportError as _exc:  # pragma: no cover
     ) from _exc
 
 
+XRAYDB_VERSION = str(getattr(xraydb, "__version__", "unknown"))
+
+
 def _coerce_positive_finite_scalar(name: str, value: float) -> float:
     try:
         out = float(value)

@@ -1,6 +1,7 @@
 """Basic tests for the extracted reference_matching module."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 
@@ -55,6 +56,34 @@ def test_build_reference_library_default_parser_accepts_header_keyword():
     assert refs[0]["path"] == "synthetic_ref.tif"
     assert refs[0]["shape"] == (2, 2)
     assert refs[0]["exp"] is None
+
+def test_build_reference_library_closes_open_image_after_success():
+    opened = SimpleNamespace(data=[[1, 2]], header={}, close=Mock())
+
+    refs = build_reference_library(
+        ["synthetic_ref.tif"], open_image_fn=lambda path: opened
+    )
+
+    assert len(refs) == 1
+    opened.close.assert_called_once_with()
+
+
+def test_build_reference_library_closes_open_image_after_parse_failure():
+    opened = SimpleNamespace(data=[[1, 2]], header={}, close=Mock())
+
+    def fail_parse(path, header_dict=None):
+        raise ValueError("invalid header")
+
+    refs, rejected = build_reference_library(
+        ["synthetic_ref.tif"],
+        parse_header_fn=fail_parse,
+        open_image_fn=lambda path: opened,
+        return_rejections=True,
+    )
+
+    assert refs == []
+    assert rejected[0]["reason"] == "unreadable_reference"
+    opened.close.assert_called_once_with()
 
 
 def test_select_best_reference_rejects_candidate_without_matched_header_fields():
