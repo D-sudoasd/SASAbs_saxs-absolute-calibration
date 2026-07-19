@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title desc">
+  <title id="title">saxsabs / SAXSAbs Workbench</title>
+  <desc id="desc">SAXS absolute intensity calibration with multi-standard K-factor estimation, preflight gates, and multi-format export.</desc>
+  <rect width="1200" height="340" rx="28" fill="#0c1018"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+    <text x="56" y="68" fill="#f59e0b" font-size="18" font-weight="700" letter-spacing="2">SAXS · ABSOLUTE INTENSITY</text>
+    <text x="56" y="124" fill="#f8fafc" font-size="44" font-weight="800">saxsabs</text>
+    <text x="56" y="168" fill="#94a3b8" font-size="22">SAXSAbs Workbench — calibrate K, process batches,</text>
+    <text x="56" y="198" fill="#94a3b8" font-size="22">export absolute 1D with provenance gates.</text>
+    <text x="56" y="250" fill="#64748b" font-size="16">NIST GC · water · robust K · preflight · canSAS / NXcanSAS</text>
+    <text x="56" y="290" fill="#78716c" font-size="15">DOI 10.5281/zenodo.19687104 · BSD-3-Clause</text>
+  </g>
+  <g transform="translate(700 48)" font-family="ui-monospace, monospace">
+    <rect width="440" height="244" rx="16" fill="#111827" stroke="#78350f" stroke-width="2"/>
+    <text x="24" y="40" fill="#fbbf24" font-size="16">Tab 1  K-factor (2D)</text>
+    <text x="24" y="78" fill="#e2e8f0" font-size="16">Tab 2  Batch 2D → abs 1D</text>
+    <text x="24" y="116" fill="#e2e8f0" font-size="16">Tab 3  External 1D → abs</text>
+    <text x="24" y="154" fill="#94a3b8" font-size="15">I_abs = K · I_rel · corrections…</text>
+    <polyline points="24,200 80,188 140,192 200,170 260,160 320,155 380,148" fill="none" stroke="#38bdf8" stroke-width="3"/>
+    <text x="24" y="230" fill="#64748b" font-size="13">READY / CAUTION / BLOCKED preflight</text>
+  </g>
+</svg>
